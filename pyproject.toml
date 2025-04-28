@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hipp"
+dynamic = ["version"]
+description = 'Historical Image Pre-Processing'
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+keywords = []
+authors = [
+  { name = "godinlu", email = "godin.luc2002@gmail.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = []
+
+[project.urls]
+Documentation = "https://github.com/godinlu/hipp#readme"
+Issues = "https://github.com/godinlu/hipp/issues"
+Source = "https://github.com/godinlu/hipp"
+
+[tool.hatch.version]
+path = "src/hipp/__about__.py"
+
+[tool.hatch.envs.dev]
+dependencies = [
+  "ruff",
+  "mypy",
+  "pytest",
+  "pre-commit"
+]
+[tool.hatch.envs.dev.scripts]
+check = "pre-commit run --all"
+type = "mypy . --strict"
+
+[tool.coverage.run]
+source_pkgs = ["hipp", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/hipp/__about__.py",
+]
+
+[tool.coverage.paths]
+hipp = ["src/hipp", "*/hipp/src/hipp"]
+tests = ["tests", "*/hipp/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
