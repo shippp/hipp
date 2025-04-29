@@ -24,7 +24,12 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
-dependencies = []
+dependencies = [
+  "numpy",
+  "opencv-python",
+  "pandas",
+  "matplotlib"
+]
 
 [project.urls]
 Documentation = "https://github.com/godinlu/hipp#readme"
@@ -35,15 +40,19 @@ Source = "https://github.com/godinlu/hipp"
 path = "src/hipp/__about__.py"
 
 [tool.hatch.envs.dev]
+inherit = ["default"]
 dependencies = [
   "ruff",
   "mypy",
   "pytest",
-  "pre-commit"
+  "pre-commit",
+  "ipykernel"
 ]
 [tool.hatch.envs.dev.scripts]
 check = "pre-commit run --all"
-type = "mypy . --strict"
+type = "mypy . --strict --ignore-missing-imports"
+kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
+
 
 [tool.coverage.run]
 source_pkgs = ["hipp", "tests"]
