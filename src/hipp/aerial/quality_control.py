@@ -12,6 +12,29 @@ from matplotlib.figure import Figure
 
 
 def find_fiducials_quality_control(result: dict[str, dict[str, object]], image: cv2.typing.MatLike) -> Figure:
+    """
+    Generates a matplotlib figure for visual quality control of fiducial detection results.
+
+    This function overlays detected fiducial centers (either approximate or subpixel-refined) onto
+    the original grayscale image (converted to RGB for visualization). If subpixel refinement was applied,
+    a secondary bar plot shows the Euclidean distance between the approximate and subpixel centers
+    to illustrate the precision gain for each marker.
+
+    Args:
+        result: A dictionary containing fiducial detection outputs for each marker. Each entry should include:
+                - "approx_center": the approximate center of the matched fiducial.
+                - Optionally, "subpixel_center": the refined center from subpixel matching.
+        image: The grayscale image used for detection, as an OpenCV-compatible array.
+
+    Returns:
+        A matplotlib Figure object containing:
+            - An annotated image showing detected fiducials.
+            - (If applicable) A bar chart showing subpixel precision gains.
+
+    Notes:
+        - Corner fiducials are drawn in red; midside fiducials in green.
+        - Subpixel markers improve detection accuracy by evaluating the location at higher resolution.
+    """
     image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)  # Convertit en RGB pour affichage
 
     has_subpixel = any("subpixel_center" in data for data in result.values())
