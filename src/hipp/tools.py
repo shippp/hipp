@@ -5,17 +5,15 @@ Date: 28
 Description: Generic tools
 """
 
-import numpy as np
-import numpy.typing as npt
-import cv2
-
 from typing import Any
+
+import cv2
 
 from hipp.image import apply_clahe
 
 
 def points_picker(
-    image: npt.NDArray[np.uint8], point_count: int = 1, clahe_enhancement: bool = True
+    image: cv2.typing.MatLike, point_count: int = 1, clahe_enhancement: bool = True
 ) -> list[tuple[int, int]]:
     """Pick points interactively on a image, only when Ctrl is pressed.
 
@@ -46,9 +44,7 @@ def points_picker(
                     if len(clone.shape) == 2:  # Grayscale image (single channel)
                         cv2.circle(clone, (x, y), 5, (255,), -1)  # Use white circle
                     else:  # RGB image (three channels)
-                        cv2.circle(
-                            clone, (x, y), 5, (0, 255, 0), -1
-                        )  # Use green circle
+                        cv2.circle(clone, (x, y), 5, (0, 255, 0), -1)  # Use green circle
 
                     # Update the window title
                     title = f"Pick Points with 'Ctrl + Click' ({len(picked_points)}/{point_count} points picked)"

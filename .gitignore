@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# ignore .vscode configuration file
+.vscode/
+
+# ignore all created files in examples
+examples/*
+!examples/test.ipynb

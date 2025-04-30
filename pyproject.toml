@@ -28,7 +28,8 @@ dependencies = [
   "numpy",
   "opencv-python",
   "pandas",
-  "matplotlib"
+  "matplotlib",
+  "tqdm"
 ]
 
 [project.urls]
@@ -49,8 +50,10 @@ dependencies = [
   "ipykernel"
 ]
 [tool.hatch.envs.dev.scripts]
-check = "pre-commit run --all"
-type = "mypy . --strict --ignore-missing-imports"
+check = [
+  "ruff check .",
+  "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores"
+]
 kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
 
 
@@ -72,3 +75,6 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
+
+[tool.ruff]
+line-length = 120
