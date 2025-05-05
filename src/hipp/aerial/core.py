@@ -9,6 +9,7 @@ import cv2
 
 import hipp.image
 from hipp.tools import points_picker
+from hipp.typing import DetectedFiducials, FiducialDetection
 
 
 def create_fiducial_template_from_image(
@@ -58,7 +59,7 @@ def detect_fiducials(
     subpixel_midside_fiducial: cv2.typing.MatLike | None = None,
     subpixel_factor: float = 8,
     grid_size: int = 3,
-) -> dict[str, dict[str, object]]:
+) -> DetectedFiducials:
     """
     Detects fiducial markers in a grid-divided image using template matching, with optional subpixel refinement.
 
@@ -90,93 +91,77 @@ def detect_fiducials(
     Raises:
         ValueError: If the provided grid size is not an odd number.
     """
-    if grid_size % 2 == 0:
-        raise ValueError("grid_size must be an odd number.")
+    result: DetectedFiducials = {}
 
-    splited_image = hipp.image.divide_image_into_blocks(image, grid_size, grid_size)
-    block_height, block_width = splited_image[0][0].shape
-
-    results = {}
-    positions = {}
-
-    # Define fiducial positions based on available templates
+    # Process the corners fiducials detection
     if corner_fiducial is not None:
-        positions.update(
-            {
-                (0, 0): "top_left_corner",
-                (0, grid_size - 1): "top_right_corner",
-                (grid_size - 1, grid_size - 1): "bottom_right_corner",
-                (grid_size - 1, 0): "bottom_left_corner",
-            }
-        )
+        corner_blocs, corner_coordinates = hipp.image.get_corner_blocks(image, grid_size)
+        for key in corner_blocs:
+            fiducial_detection = detect_fiducial(
+                corner_blocs[key], corner_fiducial, subpixel_corner_fiducial, subpixel_factor
+            )
+
+            # We translate the coordinate of the sub bloc to the full image
+            x0, y0 = fiducial_detection["approx_center"]
+            dx, dy = corner_coordinates[key]
+            fiducial_detection["approx_center"] = (x0 + dx, y0 + dy)
+            if fiducial_detection["subpixel_center"] is not None:
+                sx, sy = fiducial_detection["subpixel_center"]
+                fiducial_detection["subpixel_center"] = (sx + dx, sy + dy)
+            result[f"corner_{key}"] = fiducial_detection
+
+    # Process the midside fiducials detection
     if midside_fiducial is not None:
-        positions.update(
-            {
-                (0, grid_size // 2): "top_midside",
-                (grid_size // 2, grid_size - 1): "right_midside",
-                (grid_size - 1, grid_size // 2): "bottom_midside",
-                (grid_size // 2, 0): "left_midside",
-            }
+        edge_blocs, edge_coordinates = hipp.image.get_edge_middle_blocks(image, grid_size)
+        for key in edge_blocs:
+            fiducial_detection = detect_fiducial(
+                edge_blocs[key], midside_fiducial, subpixel_midside_fiducial, subpixel_factor
+            )
+
+            # We translate the coordinate of the sub bloc to the full image
+            x0, y0 = fiducial_detection["approx_center"]
+            dx, dy = edge_coordinates[key]
+            fiducial_detection["approx_center"] = (x0 + dx, y0 + dy)
+            if fiducial_detection["subpixel_center"] is not None:
+                sx, sy = fiducial_detection["subpixel_center"]
+                fiducial_detection["subpixel_center"] = (sx + dx, sy + dy)
+            result[f"edge_{key}"] = fiducial_detection
+    return result
+
+
+def detect_fiducial(
+    image: cv2.typing.MatLike,
+    fiducial: cv2.typing.MatLike,
+    subpixel_fiducial: cv2.typing.MatLike | None,
+    subpixel_factor: float = 8,
+) -> FiducialDetection:
+    h, w = fiducial.shape[:2]
+
+    matching_template_res = cv2.matchTemplate(image, fiducial, cv2.TM_CCOEFF_NORMED)
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(matching_template_res)
+
+    if subpixel_fiducial is not None:
+        crop = image[max_loc[1] : max_loc[1] + h, max_loc[0] : max_loc[0] + w]
+        resized_image = hipp.image.resize_img(crop, factor=subpixel_factor)
+
+        # Perform template matching using normalized cross-correlation and get the maximum correlation
+        matching_template_res = cv2.matchTemplate(resized_image, subpixel_fiducial, cv2.TM_CCOEFF_NORMED)
+        sub_min_val, sub_max_val, sub_min_loc, sub_max_loc = cv2.minMaxLoc(matching_template_res)
+
+        sub_h, sub_w = subpixel_fiducial.shape[:2]
+
+        # Subpixel center in resized crop, converted to crop coordinates
+        sub_center_x = (sub_max_loc[0] + sub_w / 2) / subpixel_factor
+        sub_center_y = (sub_max_loc[1] + sub_h / 2) / subpixel_factor
+
+    return {
+        "approx_center": (max_loc[0] + w / 2, max_loc[1] + h / 2),
+        "approx_score": max_val,
+        "subpixel_center": (
+            max_loc[0] + sub_center_x,
+            max_loc[1] + sub_center_y,
         )
-    for (i, j), label in positions.items():
-        template = corner_fiducial if label.endswith("_corner") else midside_fiducial
-        assert template is not None  # Ensure mypy knows this can't be None
-        h, w = template.shape[:2]
-
-        # Template matching to find fiducial location
-        result = cv2.matchTemplate(splited_image[i][j], template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-        global_x = j * block_width + max_loc[0]
-        global_y = i * block_height + max_loc[1]
-        results[label] = {"approx_center": (global_x + w / 2, global_y + h / 2), "approx_score": max_val}
-
-        # Optional subpixel refinement
-        if (label.endswith("_corner") and subpixel_corner_fiducial is not None) or (
-            label.endswith("_midside") and subpixel_midside_fiducial is not None
-        ):
-            crop = image[global_y : global_y + h, global_x : global_x + w]
-            subpixel_template = subpixel_corner_fiducial if label.endswith("_corner") else subpixel_midside_fiducial
-            assert subpixel_template is not None  # for mypy
-
-            crop_center, subpixel_score = subpixel_center(crop, subpixel_template, subpixel_factor)
-            fiducial_center = (global_x + crop_center[0], global_y + crop_center[1])
-            results[label].update({"subpixel_center": fiducial_center, "subpixel_score": subpixel_score})
-
-    return results
-
-
-def subpixel_center(
-    image: cv2.typing.MatLike, subpixel_template: cv2.typing.MatLike, subpixel_factor: float = 8
-) -> tuple[tuple[float, float], float]:
-    """
-    Computes the subpixel-accurate center of a template match within an image.
-
-    This function upsamples the input image by a given `subpixel_factor` to estimate the
-    center of the provided high-resolution template (`subpixel_template`) with subpixel accuracy,
-    using normalized cross-correlation via OpenCV's `matchTemplate`.
-
-    Args:
-        image: The source image in which to search for the template.
-        subpixel_template: The high-resolution template to match against the image.
-        subpixel_factor: The upscaling factor used to increase spatial accuracy.
-
-    Returns:
-        A tuple containing:
-        - (x, y): The subpixel-accurate coordinates of the template's center in the original image scale.
-        - score: The maximum correlation score of the template match.
-    """
-    # Upsample the input image to allow subpixel-accurate matching
-    resized_image = hipp.image.resize_img(image, factor=subpixel_factor)
-
-    # Perform template matching using normalized cross-correlation and get the maximum correlation
-    result = cv2.matchTemplate(resized_image, subpixel_template, cv2.TM_CCOEFF_NORMED)
-    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-    h, w = subpixel_template.shape[:2]
-
-    # Compute the template center in upsampled coordinates and scale it back
-    center_x = (max_loc[0] + w / 2) / subpixel_factor
-    center_y = (max_loc[1] + h / 2) / subpixel_factor
-
-    return (center_x, center_y), max_val
+        if subpixel_fiducial is not None
+        else None,
+        "subpixel_score": sub_max_val if subpixel_fiducial is not None else None,
+    }

@@ -5,75 +5,121 @@ Date: 30
 Description: All function for quality control
 """
 
+from collections import defaultdict
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 
+import hipp.image
+from hipp.typing import DetectedFiducials
 
-def find_fiducials_quality_control(result: dict[str, dict[str, object]], image: cv2.typing.MatLike) -> Figure:
+
+def generate_detect_fiducials_qc(
+    detected_fiducials: DetectedFiducials, image: cv2.typing.MatLike
+) -> cv2.typing.MatLike:
+    resized_coef = 0.1
+    circle_radius = int((image.shape[0] / 100) * resized_coef)
+
+    resized_image = hipp.image.resize_img(image, resized_coef)
+    image_rgb = cv2.cvtColor(resized_image, cv2.COLOR_GRAY2RGB)  # Convertit en RGB pour affichage
+
+    for label, data in detected_fiducials.items():
+        center = data["subpixel_center"] if data["subpixel_center"] else data["approx_center"]
+        color = (255, 0, 0) if "corner" in label else (0, 255, 0)
+        cv2.circle(image_rgb, (int(center[0] * resized_coef), int(center[1] * resized_coef)), circle_radius, color, -1)  # type: ignore[index]
+
+    return image_rgb
+
+
+def generate_detect_all_fiducials_qc(
+    all_detected_fiducials: dict[str, DetectedFiducials], image: cv2.typing.MatLike
+) -> cv2.typing.MatLike:
+    resized_coef = 0.1
+    circle_radius = int((image.shape[0] / 500) * resized_coef)
+
+    resized_image = hipp.image.resize_img(image, resized_coef)
+    image_rgb = cv2.cvtColor(resized_image, cv2.COLOR_GRAY2RGB)
+
+    for detected_fiducials in all_detected_fiducials.values():
+        for label, data in detected_fiducials.items():
+            center = data["subpixel_center"] if data["subpixel_center"] else data["approx_center"]
+            color = (255, 0, 0) if "corner" in label else (0, 255, 0)
+            cv2.circle(
+                image_rgb, (int(center[0] * resized_coef), int(center[1] * resized_coef)), circle_radius, color, -1
+            )  # type: ignore[index]
+    return image_rgb
+
+
+def plot_fiducial_center_deviation_boxplots(
+    all_detections: dict[str, DetectedFiducials], use_subpixel: bool = True
+) -> Figure:
     """
-    Generates a matplotlib figure for visual quality control of fiducial detection results.
-
-    This function overlays detected fiducial centers (either approximate or subpixel-refined) onto
-    the original grayscale image (converted to RGB for visualization). If subpixel refinement was applied,
-    a secondary bar plot shows the Euclidean distance between the approximate and subpixel centers
-    to illustrate the precision gain for each marker.
+    Affiche un boxplot pour chaque type de fiducial (corner/edge) représentant
+    la distribution de la distance à la moyenne des centres détectés.
 
     Args:
-        result: A dictionary containing fiducial detection outputs for each marker. Each entry should include:
-                - "approx_center": the approximate center of the matched fiducial.
-                - Optionally, "subpixel_center": the refined center from subpixel matching.
-        image: The grayscale image used for detection, as an OpenCV-compatible array.
-
-    Returns:
-        A matplotlib Figure object containing:
-            - An annotated image showing detected fiducials.
-            - (If applicable) A bar chart showing subpixel precision gains.
-
-    Notes:
-        - Corner fiducials are drawn in red; midside fiducials in green.
-        - Subpixel markers improve detection accuracy by evaluating the location at higher resolution.
+        all_detections: Un dictionnaire mapping ID -> DetectedFiducials
+        use_subpixel: Si True, utilise subpixel_center sinon approx_center
     """
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)  # Convertit en RGB pour affichage
+    fiducial_distances = defaultdict(list)
 
-    has_subpixel = any("subpixel_center" in data for data in result.values())
+    # Collecte des coordonnées pour chaque type de fiducial
+    for detection in all_detections.values():
+        for fiducial_key, data in detection.items():
+            if use_subpixel and data.get("subpixel_center") is not None:
+                center = data["subpixel_center"]
+            else:
+                center = data["approx_center"]
+            fiducial_distances[fiducial_key].append(center)
 
-    # create the figure
-    if has_subpixel:
-        fig, (ax_img, ax_bar) = plt.subplots(1, 2, figsize=(14, 6))
-    else:
-        fig, ax_img = plt.subplots(figsize=(7, 6))
-        ax_bar = None
+    # Calcul des distances à la moyenne
+    distance_data = {}
+    for key, centers in fiducial_distances.items():
+        arr = np.array(centers)
+        mean = np.mean(arr, axis=0)
+        distances = np.linalg.norm(arr - mean, axis=1)
+        distance_data[key] = distances
 
-    # creation of the first part with the image and the position of markers
-    for label, data in result.items():
-        center = data["subpixel_center"] if "subpixel_center" in data else data["approx_center"]
-        color = (255, 0, 0) if "corner" in label else (0, 255, 0)
-        cv2.circle(image_rgb, (int(center[0]), int(center[1])), 25, color, -1)  # type: ignore[index]
-    ax_img.imshow(image_rgb)
-    ax_img.set_title("Fiducial Detection Results")
-    ax_img.axis("off")
-
-    # if subpixel hase been used, show a plot with the precision gain
-    if has_subpixel and ax_bar:
-        labels = []
-        distances = []
-        for label, data in result.items():
-            if "subpixel_center" in data and "approx_center" in data:
-                approx = np.array(data["approx_center"])
-                subpix = np.array(data["subpixel_center"])
-                dist = np.linalg.norm(subpix - approx)
-                labels.append(label)
-                distances.append(dist)
-
-        ax_bar.bar(range(len(labels)), distances, color="orange")
-        ax_bar.set_ylabel("Precision gain (px)")
-        ax_bar.set_title("Precision subpixel")
-        ax_bar.set_xticks(range(len(labels)))
-        ax_bar.set_xticklabels(labels, rotation=45, ha="right")
-
+    # Création des boxplots
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.boxplot(list(distance_data.values()), tick_labels=list(distance_data.keys()), vert=True, patch_artist=True)
+    ax.set_ylabel("Distance à la moyenne (pixels)")
+    ax.set_title("Dispersion des détections de fiduciaux")
+    ax.tick_params(axis="x", rotation=45)
+    ax.grid(True, linestyle="--", alpha=0.5)
     fig.tight_layout()
-    plt.close(fig)
+
+    return fig
+
+
+def plot_fiducial_score_boxplots(all_detections: dict[str, DetectedFiducials], use_subpixel: bool = True) -> Figure:
+    """
+    Affiche des boxplots pour chaque type de fiducial (corner/edge),
+    représentant la distribution des scores de similarité (approx ou subpixel).
+
+    Args:
+        all_detections: Un dictionnaire mapping ID -> DetectedFiducials
+        use_subpixel: Si True, utilise subpixel_score sinon approx_score
+    """
+    fiducial_scores = defaultdict(list)
+
+    # Récupération des scores
+    for detection in all_detections.values():
+        for fiducial_key, data in detection.items():
+            score_key = "subpixel_score" if use_subpixel else "approx_score"
+            score = data.get(score_key)
+            if score is not None:
+                fiducial_scores[fiducial_key].append(score)
+
+    # Création des boxplots
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.boxplot(list(fiducial_scores.values()), tick_labels=list(fiducial_scores.keys()), vert=True, patch_artist=True)  # type: ignore[arg-type]
+    ax.set_ylabel("Score de similarité (template matching)")
+    ax.set_title("Distribution des scores de matching ")
+    ax.tick_params(axis="x", rotation=45)
+    ax.grid(True, linestyle="--", alpha=0.5)
+    fig.tight_layout()
 
     return fig

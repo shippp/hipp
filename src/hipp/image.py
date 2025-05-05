@@ -5,6 +5,8 @@ Date: 28
 Description: some function for the image processing
 """
 
+from typing import Mapping
+
 import cv2
 
 
@@ -65,42 +67,113 @@ def resize_img(
     return resized
 
 
-def divide_image_into_blocks(image: cv2.typing.MatLike, rows: int, cols: int) -> list[list[cv2.typing.MatLike]]:
+def get_corner_blocks(
+    image: cv2.typing.MatLike, grid_size: int = 3
+) -> tuple[Mapping[str, cv2.typing.MatLike], Mapping[str, tuple[int, int]]]:
+    if grid_size % 2 == 0:
+        raise ValueError("grid_size must be an odd number.")
+
+    h, w = image.shape[:2]
+    block_h = h // grid_size
+    block_w = w // grid_size
+
+    # Calculate the top_right corner of each bloc
+    coords = {
+        "top_left": (0, 0),
+        "top_right": (w - block_w, 0),
+        "bottom_left": (0, h - block_h),
+        "bottom_right": (w - block_w, h - block_h),
+    }
+
+    # Extract blocs
+    blocks = {
+        "top_left": image[:block_h, :block_w],
+        "top_right": image[:block_h, -block_w:],
+        "bottom_left": image[-block_h:, :block_w],
+        "bottom_right": image[-block_h:, -block_w:],
+    }
+
+    return blocks, coords
+
+
+def get_edge_middle_blocks(
+    image: cv2.typing.MatLike, grid_size: int = 3
+) -> tuple[Mapping[str, cv2.typing.MatLike], Mapping[str, tuple[int, int]]]:
     """
-    Divides an image into smaller blocks with specified number of rows and columns.
-    The last row/column blocks will be smaller if the division isn't even.
-
-    Parameters:
-        image (np.ndarray): The input image to be divided.
-        rows (int): The number of horizontal blocks (rows).
-        cols (int): The number of vertical blocks (columns).
-
-    Returns:
-        list[list[np.ndarray]]: A list of lists containing the divided image blocks.
+    Retourne les 4 parties situées au centre des bords (haut, bas, gauche, droite)
+    en découpant l'image en une grille tile x tile (obligatoirement impair).
     """
-    # Get image dimensions
-    height, width = image.shape[:2]
+    if grid_size % 2 == 0:
+        raise ValueError("grid_size must be an odd number.")
 
-    # Calculate block height and width
-    block_height = height // rows
-    block_width = width // cols
+    h, w = image.shape[:2]
+    block_h = h // grid_size
+    block_w = w // grid_size
 
-    # Initialize the list to store image blocks
-    blocks = []
+    center_col = grid_size // 2
+    center_row = grid_size // 2
 
-    for i in range(rows):
-        row_blocks = []
-        for j in range(cols):
-            # Calculate coordinates for the block
-            top = i * block_height
-            left = j * block_width
-            bottom = (i + 1) * block_height if i < rows - 1 else height  # Handle last row
-            right = (j + 1) * block_width if j < cols - 1 else width  # Handle last column
+    # Calculate the top_right corner of each bloc
+    coords = {
+        "top_middle": (block_w * center_col, 0),
+        "bottom_middle": (block_w * center_col, h - block_h),
+        "left_middle": (0, block_h * center_row),
+        "right_middle": (w - block_w, block_h * center_row),
+    }
 
-            # Append the block to the current row
-            row_blocks.append(image[top:bottom, left:right])
+    # Extract blocs
+    blocks = {
+        "top_middle": image[:block_h, block_w * center_col : block_w * (center_col + 1)],
+        "bottom_middle": image[-block_h:, block_w * center_col : block_w * (center_col + 1)],
+        "left_middle": image[block_h * center_row : block_h * (center_row + 1), :block_w],
+        "right_middle": image[block_h * center_row : block_h * (center_row + 1), -block_w:],
+    }
 
-        # Append the row of blocks to the final list
-        blocks.append(row_blocks)
+    return blocks, coords
 
-    return blocks
+
+# def wallis_filter(
+#     image: cv2.typing.MatLike, window_size: int, enhance_factor: float = 0.0, mean_balance: float = 0.0
+# ) -> cv2.typing.MatLike:
+#     """
+#     Optimized Wallis Filter for image enhancement using local contrast normalization.
+
+#     Parameters:
+#         image : Input grayscale image (uint8)
+#         window_size : Size of the local neighborhood window (must be odd)
+#         enhance_factor : Regularization to avoid division by small std-dev (A, default = 0.0)
+#         mean_balance : Blend between global mean and local mean (B, default = 0.0)
+
+#     Returns:
+#         Enhanced image (uint8)
+#     """
+#     # Ensure float32 precision for processing
+#     image = image.astype(np.float32)
+
+#     # Precompute global statistics
+#     global_mean = np.mean(image)
+#     global_std = np.std(image)
+
+#     # Uniform kernel for local averaging
+#     kernel = np.full((window_size, window_size), 1.0 / (window_size**2), dtype=np.float32)
+
+#     # Compute local mean and variance in a single pass
+#     local_mean = cv2.filter2D(image, -1, kernel)
+#     local_sq_mean = cv2.filter2D(image * image, -1, kernel)
+#     local_std = np.sqrt(np.maximum(local_sq_mean - local_mean**2, 1e-6))  # avoids sqrt of negative
+
+#     # Apply the Wallis filter formula
+#     contrast_term = global_std * (image - local_mean) / (local_std + enhance_factor)
+#     brightness_term = global_mean * mean_balance + local_mean * (1.0 - mean_balance)
+#     enhanced = contrast_term + brightness_term
+
+#     # Clip and convert back to uint8
+#     return np.clip(enhanced, 0, 255).astype(np.uint8)
+
+
+# def sobel_filter(image: cv2.typing.MatLike, ksize: int = 3) -> cv2.typing.MatLike:
+#     sobel_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+#     sobel_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+#     gradient = np.sqrt(sobel_x**2 + sobel_y**2)
+#     gradient = np.uint8(np.clip(gradient, 0, 255))
+#     return gradient

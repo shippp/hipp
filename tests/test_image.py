@@ -36,14 +36,3 @@ def test_resize_img() -> None:
     img = np.ones((100, 100), dtype=np.uint8) * 255
     resized = hipp.image.resize_img(img, 4)
     assert resized.shape == (400, 400)
-
-
-def test_divide_image_into_blocks() -> None:
-    image = np.ones((700, 500), dtype=np.uint8) * 255
-    blocks = hipp.image.divide_image_into_blocks(image, 3, 3)
-
-    assert len(blocks) == 3
-    assert len(blocks[0]) == 3
-
-    assert blocks[0][0].shape == (233, 166)
-    assert blocks[2][2].shape == (234, 168)

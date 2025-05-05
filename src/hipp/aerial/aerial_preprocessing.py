@@ -14,6 +14,7 @@ from tqdm import tqdm
 import hipp.aerial.quality_control as qc
 from hipp.aerial.core import create_fiducial_template_from_image, detect_fiducials
 from hipp.image import resize_img
+from hipp.typing import DetectedFiducials
 
 CORNER_FIDUCIAL_NAME = "corner_fiducial.png"
 MIDSIDE_FIDUCIAL_NAME = "midside_fiducial.png"
@@ -72,6 +73,7 @@ class AerialPreprocessing:
         self.first_images = tif_files[0]
 
         os.makedirs(self.fiducials_directory, exist_ok=True)
+        os.makedirs(self.qc_directory, exist_ok=True)
 
     def create_fiducial_template(
         self,
@@ -134,7 +136,7 @@ class AerialPreprocessing:
 
     def detect_fiducials(
         self, subpixel_factor: float = 8, grid_size: int = 3, quality_control: bool = True, progress_bar: bool = True
-    ) -> list[dict[str, dict[str, object]]]:
+    ) -> dict[str, DetectedFiducials]:
         """
         Detects fiducial markers in a batch of grayscale `.tif` images located in the input directory.
 
@@ -166,7 +168,7 @@ class AerialPreprocessing:
         """
         fiducials_template = self.load_fiducials_template()
 
-        results = []
+        results = {}
 
         # List all `.tif` images in the directory
         tif_files = [f for f in os.listdir(self.images_directory) if f.endswith(".tif")]
@@ -176,20 +178,18 @@ class AerialPreprocessing:
             image = cv2.imread(os.path.join(self.images_directory, filename), cv2.IMREAD_GRAYSCALE)
 
             # Run fiducial detection for the current image
-            fiducials_res = detect_fiducials(
+            results[filename] = detect_fiducials(
                 image=image,
                 **fiducials_template,  # give all fiducials templates in the dict
                 subpixel_factor=subpixel_factor,
                 grid_size=grid_size,
             )
 
-            results.append(fiducials_res)
-
             # Generate and save quality control figure
             if quality_control:
-                fig = qc.find_fiducials_quality_control(fiducials_res, image)
-                fig_path = os.path.join(self.qc_directory, filename.replace(".tif", ".png"))
-                fig.savefig(fig_path)
+                qc_img = qc.generate_detect_fiducials_qc(results[filename], image)
+                qc_path = os.path.join(self.qc_directory, filename.replace(".tif", ".png"))
+                cv2.imwrite(qc_path, qc_img)
 
         return results
 
