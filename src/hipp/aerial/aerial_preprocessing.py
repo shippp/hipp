@@ -7,8 +7,10 @@ Description: Contain the AerialPreprocessing class
 
 import glob
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import hipp.aerial.quality_control as qc
@@ -135,61 +137,112 @@ class AerialPreprocessing:
             cv2.imwrite(subpixel_fiducial_path, subpixel_fiducial)
 
     def detect_fiducials(
-        self, subpixel_factor: float = 8, grid_size: int = 3, quality_control: bool = True, progress_bar: bool = True
+        self,
+        subpixel_factor: float = 8,
+        grid_size: int = 3,
+        quality_control: bool = True,
+        progress_bar: bool = True,
+        max_workers: int = 4,
     ) -> dict[str, DetectedFiducials]:
         """
-        Detects fiducial markers in a batch of grayscale `.tif` images located in the input directory.
+        Detects fiducial markers in a batch of grayscale `.tif` images located in the input directory using multithreading.
 
         This method loads previously generated corner and midside fiducial templates (both standard and subpixel),
-        then applies them to each image in the dataset using template matching. Subpixel refinement is applied
-        if the subpixel templates are available. Optionally, quality control figures are saved for each image to
-        visually validate the detection accuracy.
+        then applies fiducial detection to each image in parallel using multithreading. Subpixel refinement is applied
+        when high-resolution templates are available. Optionally, quality control images are generated for visual inspection
+        of the detected subpixel centers.
+
+        The area around each fiducial used for quality control visualization is automatically inferred from the template size.
 
         Args:
-            subpixel_factor: Scaling factor used for subpixel precision. A higher value provides finer matching
-                             but increases computation time.
-            grid_size: Size of the grid into which the image is split to localize the fiducials.
-                       Must be an odd integer (e.g., 3 for a 3x3 grid).
-            quality_control: If True, generates and saves diagnostic plots showing detected fiducial positions
-                             and subpixel improvement metrics.
-            progress_bar: If True, shows a progress bar while processing the images using `tqdm`.
+            subpixel_factor: Upscaling factor used during subpixel refinement. Higher values yield more precise results
+                             but increase computation time.
+            grid_size: The number of subdivisions along one dimension of the image (must be an odd number, e.g., 3 for 3×3).
+            quality_control: If True, generates and saves quality control images showing detected fiducials and labels.
+            progress_bar: If True, displays a progress bar during image processing.
+            max_workers: Maximum number of threads used for parallel processing.
 
         Returns:
-            A list of dictionaries, each corresponding to an image, containing the detection results for all
-            fiducials found. Each fiducial entry includes approximate and possibly subpixel-refined positions,
-            along with matching confidence scores.
+            A dictionary where keys are image file paths and values are the detection results for each image.
+            Each fiducial detection entry contains:
+                - "approx_center": (x, y) coordinates from initial template matching,
+                - "approx_score": correlation score of the coarse match,
+                - "subpixel_center": refined center (if subpixel template is provided),
+                - "subpixel_score": subpixel template matching score (if applicable).
 
         Raises:
-            FileNotFoundError: If any required fiducial template is missing from disk.
+            FileNotFoundError: If any required fiducial template file is missing.
 
         Notes:
-            - Templates must be generated in advance using `create_fiducial_template`.
-            - This method assumes grayscale `.tif` images and saves quality control figures in PNG format.
+            - Fiducial templates must be pre-generated using `create_fiducial_template`.
+            - Input images are assumed to be single-channel (grayscale) `.tif` files.
+            - Quality control images are saved in PNG format under `self.qc_directory`.
         """
+        qc_detection_dir = os.path.join(self.qc_directory, "fiducials_detection")
+        individuals_qc_dir = os.path.join(qc_detection_dir, "individuals")
+        if quality_control:
+            os.makedirs(individuals_qc_dir, exist_ok=True)
+
+        # Load previously generated fiducial templates (corner and midside, standard and subpixel)
         fiducials_template = self.load_fiducials_template()
 
+        # Automatically determine the region around the fiducial to extract for quality control images
+        # This is based on the size of one of the loaded templates (assumes at least one is present)
+        any_template = (
+            fiducials_template["corner_fiducial"]
+            if "corner_fiducial" in fiducials_template
+            else fiducials_template["midside_fiducial"]
+        )
+        distance_around_fiducial = max(*any_template.shape[:2]) // 2  # Half-size used to crop around the center
+
+        # Find all .tif images in the input directory
+        tif_files = glob.glob(os.path.join(self.images_directory, "*.tif"))
         results = {}
 
-        # List all `.tif` images in the directory
-        tif_files = [f for f in os.listdir(self.images_directory) if f.endswith(".tif")]
-        iterator = tqdm(tif_files, desc="Fiducials detection") if progress_bar else tif_files
-
-        for filename in iterator:
-            image = cv2.imread(os.path.join(self.images_directory, filename), cv2.IMREAD_GRAYSCALE)
-
-            # Run fiducial detection for the current image
-            results[filename] = detect_fiducials(
-                image=image,
-                **fiducials_template,  # give all fiducials templates in the dict
+        # Function that processes a single image: detects fiducials and optionally generates a QC image
+        def process_image(image_path: str) -> tuple[str, DetectedFiducials]:
+            result = detect_fiducials(
+                image_path=image_path,
+                **fiducials_template,  # Unpack the loaded templates into the function
                 subpixel_factor=subpixel_factor,
                 grid_size=grid_size,
             )
-
-            # Generate and save quality control figure
             if quality_control:
-                qc_img = qc.generate_detect_fiducials_qc(results[filename], image)
-                qc_path = os.path.join(self.qc_directory, filename.replace(".tif", ".png"))
+                # Create a diagnostic image showing fiducials and their subpixel centers
+                qc_img = qc.generate_fiducial_qc_image_from_detection(
+                    image_path,
+                    result,
+                    distance_around_fiducial=distance_around_fiducial,
+                    grid_cols=4,
+                )
+                # Save QC image with same name as original image but in PNG format
+                qc_path = os.path.join(individuals_qc_dir, os.path.basename(image_path).replace(".tif", ".png"))
                 cv2.imwrite(qc_path, qc_img)
+            return image_path, result
+
+        # Run detection in parallel using a thread pool
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_image, path) for path in tif_files]
+
+            # Optionally wrap with tqdm progress bar
+            futures_iter = (
+                tqdm(as_completed(futures), total=len(futures), desc="Fiducials detection")
+                if progress_bar
+                else as_completed(futures)
+            )
+
+            # Collect results as they complete
+            for future in futures_iter:
+                image_path, detection_result = future.result()
+                results[image_path] = detection_result
+
+        if quality_control:
+            deviation_boxplot = qc.plot_fiducial_center_deviation_boxplots(results)
+            plt.close()
+            score_boxplot = qc.plot_fiducial_score_boxplots(results)
+            plt.close()
+            deviation_boxplot.savefig(os.path.join(qc_detection_dir, "deviation_boxplot.png"))
+            score_boxplot.savefig(os.path.join(qc_detection_dir, "score_boxplot.png"))
 
         return results
 

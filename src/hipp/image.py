@@ -5,9 +5,13 @@ Date: 28
 Description: some function for the image processing
 """
 
+import warnings
 from typing import Mapping
 
 import cv2
+import rasterio
+from rasterio.errors import NotGeoreferencedWarning
+from rasterio.windows import Window
 
 
 def apply_clahe(
@@ -130,6 +134,55 @@ def get_edge_middle_blocks(
     }
 
     return blocks, coords
+
+
+def read_image_block_grayscale(
+    dataset_reader: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_size: int = 3
+) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
+    """
+    Reads a specific block from a grayscale version of a large TIFF image using rasterio.
+
+    Parameters:
+        dataset_reader (DatasetReader): An open rasterio DatasetReader object for the image.
+        row_index (int): Row index of the desired block (0-based).
+        col_index (int): Column index of the desired block (0-based).
+        grid_size (int): Number of blocks the image is divided into along each dimension.
+                         Must be >= 1. Default is 3 (i.e., a 3x3 grid).
+
+    Returns:
+        tuple:
+            - block (ndarray): The extracted image block in grayscale (2D numpy array).
+            - top_left_coords (tuple): (x, y) pixel coordinates of the top-left corner of the block
+              in the full image.
+
+    Notes:
+        - Only the first image channel is read to save memory (grayscale).
+        - The image does not need to be georeferenced.
+        - Blocks at the edges may be slightly larger if the image dimensions are not divisible by grid_size.
+    """
+    # Suppress warnings about missing georeferencing information
+    warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
+
+    block_height = dataset_reader.height // grid_size
+    block_width = dataset_reader.width // grid_size
+
+    # Compute top-left coordinates of the target block
+    x_offset = col_index * block_width
+    y_offset = row_index * block_height
+
+    # Adjust block size for edge blocks (to include all pixels)
+    if col_index == grid_size - 1:
+        block_width = dataset_reader.width - x_offset
+    if row_index == grid_size - 1:
+        block_height = dataset_reader.height - y_offset
+
+    # Define the window (region) to read
+    window = Window(x_offset, y_offset, block_width, block_height)
+
+    # Read only the first channel (grayscale) from the specified window
+    block = dataset_reader.read(1, window=window)
+
+    return block, (x_offset, y_offset)
 
 
 # def wallis_filter(

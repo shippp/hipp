@@ -6,6 +6,7 @@ Description: functions for aerial fiducials manipulation
 """
 
 import cv2
+import rasterio
 
 import hipp.image
 from hipp.tools import points_picker
@@ -52,7 +53,7 @@ def create_fiducial_template_from_image(
 
 
 def detect_fiducials(
-    image: cv2.typing.MatLike,
+    image_path: str,
     corner_fiducial: cv2.typing.MatLike | None = None,
     midside_fiducial: cv2.typing.MatLike | None = None,
     subpixel_corner_fiducial: cv2.typing.MatLike | None = None,
@@ -61,71 +62,77 @@ def detect_fiducials(
     grid_size: int = 3,
 ) -> DetectedFiducials:
     """
-    Detects fiducial markers in a grid-divided image using template matching, with optional subpixel refinement.
+    Detects fiducial markers efficiently from a large image by reading only specific blocks from disk.
 
-    The function divides the input image into a grid of blocks based on the specified grid size,
-    and searches for fiducials in predefined locations using template matching with OpenCV.
-    Each detected fiducial is assigned a label based on its expected position (e.g., "top_left_corner", "right_midside").
-
-    For each match, the approximate center and match score are computed. If corresponding high-resolution
-    subpixel templates are provided, a refinement step is applied by upsampling the matched image region
-    and reapplying template matching to obtain a more precise center location.
+    This function avoids loading the full image into memory. Instead, it divides the image into a grid
+    and reads only the relevant blocks (corners and midsides) using lightweight I/O operations.
+    Each block is scanned using OpenCV's template matching to detect fiducial markers, and optionally refined
+    using higher-resolution subpixel templates.
 
     Args:
-        image: The input image in which to search for fiducials. Must be a valid OpenCV image format.
-        corner_fiducial: Template image for detecting corner fiducials. Used in specific grid positions.
-        midside_fiducial: Template image for detecting midside fiducials. Used in specific grid positions.
-        subpixel_corner_fiducial: High-resolution version of the corner fiducial template for subpixel refinement.
-        subpixel_midside_fiducial: High-resolution version of the midside fiducial template for subpixel refinement.
-        subpixel_factor: Factor by which to upscale image regions for subpixel template matching.
-        grid_size: The number of divisions along one dimension of the image. Must be an odd number
-                   to ensure a central block exists.
+        image_path (str): Path to the image file (e.g., TIFF). Only the needed regions will be read.
+        corner_fiducial (cv2.typing.MatLike, optional): Template for detecting corner fiducials.
+        midside_fiducial (cv2.typing.MatLike, optional): Template for detecting midside fiducials.
+        subpixel_corner_fiducial (cv2.typing.MatLike, optional): Higher-res corner fiducial template for subpixel refinement.
+        subpixel_midside_fiducial (cv2.typing.MatLike, optional): Higher-res midside template for subpixel refinement.
+        subpixel_factor (float, optional): Upscaling factor for subpixel refinement. Defaults to 8.
+        grid_size (int): Size of the grid used to divide the image (e.g., 3 means 3x3 grid). Must be odd.
 
     Returns:
-        A dictionary mapping each detected fiducial label to another dictionary with:
-            - "approx_center": Tuple[float, float], the approximate center of the match in image coordinates.
-            - "approx_score": float, the template matching confidence score.
-            - "subpixel_center": Tuple[float, float], refined center coordinates (if subpixel template is used).
-            - "subpixel_score": float, confidence score from subpixel template matching (if applicable).
+        DetectedFiducials: A dictionary mapping fiducial labels (e.g., "corner_top_left") to:
+            - "approx_center": (float, float), approximate center in full image coordinates.
+            - "approx_score": float, score of basic template matching.
+            - "subpixel_center": (float, float or None), refined center coordinates if available.
+            - "subpixel_score": float or None, confidence score for subpixel refinement.
 
     Raises:
-        ValueError: If the provided grid size is not an odd number.
+        ValueError: If grid_size is not an odd number.
+
+    Notes:
+        - This function is optimized for memory efficiency and is ideal for large TIFF images.
+        - It assumes that fiducials are located at fixed positions (corners and midsides) in the grid.
     """
-    result: DetectedFiducials = {}
-
-    # Process the corners fiducials detection
+    if grid_size % 2 == 0:
+        raise ValueError("grid_size must be an odd number.")
+    blocs = {}
     if corner_fiducial is not None:
-        corner_blocs, corner_coordinates = hipp.image.get_corner_blocks(image, grid_size)
-        for key in corner_blocs:
-            fiducial_detection = detect_fiducial(
-                corner_blocs[key], corner_fiducial, subpixel_corner_fiducial, subpixel_factor
-            )
+        blocs.update(
+            {
+                "corner_top_left": (0, 0),
+                "corner_top_right": (0, grid_size - 1),
+                "corner_bottom_left": (grid_size - 1, 0),
+                "corner_bottom_right": (grid_size - 1, grid_size - 1),
+            }
+        )
 
-            # We translate the coordinate of the sub bloc to the full image
-            x0, y0 = fiducial_detection["approx_center"]
-            dx, dy = corner_coordinates[key]
-            fiducial_detection["approx_center"] = (x0 + dx, y0 + dy)
-            if fiducial_detection["subpixel_center"] is not None:
-                sx, sy = fiducial_detection["subpixel_center"]
-                fiducial_detection["subpixel_center"] = (sx + dx, sy + dy)
-            result[f"corner_{key}"] = fiducial_detection
-
-    # Process the midside fiducials detection
     if midside_fiducial is not None:
-        edge_blocs, edge_coordinates = hipp.image.get_edge_middle_blocks(image, grid_size)
-        for key in edge_blocs:
-            fiducial_detection = detect_fiducial(
-                edge_blocs[key], midside_fiducial, subpixel_midside_fiducial, subpixel_factor
-            )
+        center = grid_size // 2
+        blocs.update(
+            {
+                "midside_top": (0, center),
+                "midside_bottom": (grid_size - 1, center),
+                "midside_left": (center, 0),
+                "midside_right": (center, grid_size - 1),
+            }
+        )
+    result = {}
+    with rasterio.open(image_path) as src:
+        for bloc_name, (bloc_row, block_col) in blocs.items():
+            bloc, (offset_x, offset_y) = hipp.image.read_image_block_grayscale(src, bloc_row, block_col, grid_size)
+
+            fiducial = corner_fiducial if "corner" in bloc_name else midside_fiducial
+            subpixel_fiducial = subpixel_corner_fiducial if "corner" in bloc_name else subpixel_midside_fiducial
+            assert fiducial is not None  # for mypy
+
+            fiducial_detection = detect_fiducial(bloc, fiducial, subpixel_fiducial, subpixel_factor)
 
             # We translate the coordinate of the sub bloc to the full image
             x0, y0 = fiducial_detection["approx_center"]
-            dx, dy = edge_coordinates[key]
-            fiducial_detection["approx_center"] = (x0 + dx, y0 + dy)
+            fiducial_detection["approx_center"] = (x0 + offset_x, y0 + offset_y)
             if fiducial_detection["subpixel_center"] is not None:
                 sx, sy = fiducial_detection["subpixel_center"]
-                fiducial_detection["subpixel_center"] = (sx + dx, sy + dy)
-            result[f"edge_{key}"] = fiducial_detection
+                fiducial_detection["subpixel_center"] = (sx + offset_x, sy + offset_y)
+            result[bloc_name] = fiducial_detection
     return result
 
 

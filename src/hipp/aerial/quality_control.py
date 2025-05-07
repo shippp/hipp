@@ -5,32 +5,74 @@ Date: 30
 Description: All function for quality control
 """
 
+import math
 from collections import defaultdict
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import rasterio
 from matplotlib.figure import Figure
 
 import hipp.image
-from hipp.typing import DetectedFiducials
+from hipp.typing import DetectedFiducials, FiducialDetection
 
 
-def generate_detect_fiducials_qc(
-    detected_fiducials: DetectedFiducials, image: cv2.typing.MatLike
+def generate_fiducial_qc_image_from_detection(
+    image_path: str,
+    detections: dict[str, FiducialDetection],
+    distance_around_fiducial: int = 100,
+    grid_cols: int | None = None,
 ) -> cv2.typing.MatLike:
-    resized_coef = 0.1
-    circle_radius = int((image.shape[0] / 100) * resized_coef)
+    """
+    Generates a single QC image composed of fiducial patches centered on subpixel locations.
 
-    resized_image = hipp.image.resize_img(image, resized_coef)
-    image_rgb = cv2.cvtColor(resized_image, cv2.COLOR_GRAY2RGB)  # Convertit en RGB pour affichage
+    Args:
+        image_path: Path to the full-resolution image.
+        detections: Dictionary from detect_fiducials_fast.
+        fiducial_size: Tuple of (height, width) to extract around each subpixel center.
+        grid_cols: Number of columns in the QC image grid (optional, auto if None).
 
-    for label, data in detected_fiducials.items():
-        center = data["subpixel_center"] if data["subpixel_center"] else data["approx_center"]
-        color = (255, 0, 0) if "corner" in label else (0, 255, 0)
-        cv2.circle(image_rgb, (int(center[0] * resized_coef), int(center[1] * resized_coef)), circle_radius, color, -1)  # type: ignore[index]
+    Returns:
+        A single image (numpy array) containing all extracted fiducial patches arranged in a grid.
+    """
+    patch_size = 2 * distance_around_fiducial
+    patches = []
 
-    return image_rgb
+    with rasterio.open(image_path) as src:
+        for label, data in detections.items():
+            cx, cy = data["subpixel_center"] if data["subpixel_center"] is not None else data["approx_center"]
+            cx_int, cy_int = int(round(cx)), int(round(cy))
+
+            window = rasterio.windows.Window(
+                cx_int - distance_around_fiducial, cy_int - distance_around_fiducial, patch_size, patch_size
+            )
+            patch = src.read(1, window=window)
+
+            # Convertir en BGR pour annotations
+            patch_bgr = cv2.cvtColor(patch, cv2.COLOR_GRAY2BGR)
+
+            # Position subpixel locale dans la vignette
+            dx = cx - (cx_int - distance_around_fiducial)
+            dy = cy - (cy_int - distance_around_fiducial)
+            cv2.circle(patch_bgr, (int(round(dx)), int(round(dy))), 2, (0, 255, 0), -1)
+
+            # Annoter le nom
+            cv2.putText(patch_bgr, label, (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
+
+            patches.append(patch_bgr)
+
+    # Organisation en grille
+    n = len(patches)
+    cols = grid_cols or math.ceil(math.sqrt(n))
+    rows = math.ceil(n / cols)
+    grid_img = np.zeros((rows * patch_size, cols * patch_size, 3), dtype=np.uint8)
+
+    for idx, patch in enumerate(patches):
+        r, c = divmod(idx, cols)
+        grid_img[r * patch_size : (r + 1) * patch_size, c * patch_size : (c + 1) * patch_size] = patch
+
+    return grid_img
 
 
 def generate_detect_all_fiducials_qc(

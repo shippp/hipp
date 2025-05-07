@@ -29,7 +29,8 @@ dependencies = [
   "opencv-python",
   "pandas",
   "matplotlib",
-  "tqdm"
+  "tqdm",
+  "rasterio"
 ]
 
 [project.urls]
