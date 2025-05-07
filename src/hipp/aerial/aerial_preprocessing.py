@@ -74,9 +74,6 @@ class AerialPreprocessing:
 
         self.first_images = tif_files[0]
 
-        os.makedirs(self.fiducials_directory, exist_ok=True)
-        os.makedirs(self.qc_directory, exist_ok=True)
-
     def create_fiducial_template(
         self,
         distance_around_fiducial: int = 100,
@@ -84,35 +81,44 @@ class AerialPreprocessing:
         corner: bool = False,
         midside: bool = False,
         fiducial_coordinate: tuple[int, int] | None = None,
+        subpixel_center_coordinate: tuple[int, int] | None = None,
         overwrite: bool = False,
     ) -> None:
         """
-        Creates and saves fiducial templates (standard and subpixel) for later matching.
+        Creates and saves fiducial templates (standard and subpixel) for later matching tasks.
 
-        This method extracts a fiducial pattern (either a corner or midside marker) from a reference image
-        and saves it as a grayscale template. A higher-resolution version is also created for subpixel
-        matching by resizing the original template and extracting a sub-region around the fiducial.
-        These templates are saved to the appropriate directory and used in downstream detection routines.
+        This method extracts image patches centered around a fiducial marker (either corner or midside)
+        from a grayscale reference image. It generates both a standard-resolution template and a higher-resolution
+        subpixel template, which can be used for more precise detection.
+
+        The method supports overwriting existing templates and allows manual specification of the fiducial
+        center (standard and subpixel) if known.
 
         Args:
-            distance_around_fiducial: Pixel distance from the fiducial center to include in the regular template.
-            subpixel_distance_around_fiducial: Pixel distance to include in the subpixel (higher-res) template.
-            corner: Whether to generate a template for a corner fiducial. Mutually exclusive with `midside`.
-            midside: Whether to generate a template for a midside fiducial. Mutually exclusive with `corner`.
-            fiducial_coordinate: The (x, y) coordinate in the image where the fiducial is located.
-                                 If None, an interactive picker or default mechanism must be used.
-            overwrite: If True, existing templates will be regenerated and overwritten.
+            distance_around_fiducial (int): Half-width of the square patch (in pixels) to extract for the standard template.
+            subpixel_distance_around_fiducial (int): Half-width of the patch (in pixels) to extract for the high-resolution template.
+            corner (bool): Whether to generate a template for a corner fiducial. Must be mutually exclusive with `midside`.
+            midside (bool): Whether to generate a template for a midside fiducial. Must be mutually exclusive with `corner`.
+            fiducial_coordinate (tuple[int, int] | None): The (x, y) pixel location of the fiducial center in the original image.
+                If None, an interactive tool or default behavior should be used to define the location.
+            subpixel_center_coordinate (tuple[int, int] | None): Pixel location of the center in the upsampled image space
+                for creating the subpixel template. If None, it defaults to the same logic as `fiducial_coordinate` but in higher resolution.
+            overwrite (bool): If True, any existing saved templates will be regenerated and overwritten.
 
         Raises:
-            ValueError: If neither `corner` nor `midside` is specified, or if both are set to True.
+            ValueError: If both `corner` and `midside` are True or both are False (must specify exactly one).
 
         Notes:
-            - Templates are saved as grayscale `.png` or `.tif` images depending on the implementation.
-            - Subpixel templates are useful for refined matching accuracy, especially in high-precision contexts.
+            - Templates are saved in the directory defined by `self.fiducials_directory`.
+            - Template filenames depend on the type (`corner` or `midside`) and resolution (standard or subpixel).
+            - Subpixel templates are created by resizing the standard template to a higher resolution before cropping.
+            - This method assumes that `self.first_images` contains a path to the reference grayscale image.
         """
         # Ensure exactly one fiducial type is selected
         if (not corner and not midside) or (corner and midside):
             raise ValueError("Need either corner of midside")
+
+        os.makedirs(self.fiducials_directory, exist_ok=True)
 
         # Determine filenames based on fiducial type
         fiducial_name = MIDSIDE_FIDUCIAL_NAME if midside else CORNER_FIDUCIAL_NAME
@@ -133,7 +139,9 @@ class AerialPreprocessing:
 
         if not os.path.exists(subpixel_fiducial_path) or overwrite:
             fiducial = resize_img(fiducial)
-            subpixel_fiducial = create_fiducial_template_from_image(fiducial, None, subpixel_distance_around_fiducial)
+            subpixel_fiducial = create_fiducial_template_from_image(
+                fiducial, subpixel_center_coordinate, subpixel_distance_around_fiducial
+            )
             cv2.imwrite(subpixel_fiducial_path, subpixel_fiducial)
 
     def detect_fiducials(

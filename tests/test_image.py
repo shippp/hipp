@@ -5,6 +5,8 @@ Date: 29
 Description: Description of the module
 """
 
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
 
@@ -36,3 +38,31 @@ def test_resize_img() -> None:
     img = np.ones((100, 100), dtype=np.uint8) * 255
     resized = hipp.image.resize_img(img, 4)
     assert resized.shape == (400, 400)
+
+
+@pytest.fixture  # type: ignore[misc]
+def mock_dataset_reader() -> MagicMock:
+    # Création d'un mock pour rasterio.DatasetReader
+    mock = MagicMock()
+    mock.width = 300
+    mock.height = 300
+    mock.read.return_value = np.ones((100, 100), dtype=np.uint8)  # Bloc d'image mocké (en niveaux de gris)
+    return mock
+
+
+def test_read_image_block_grayscale(mock_dataset_reader) -> None:  # type: ignore[no-untyped-def]
+    row_index = 1
+    col_index = 1
+    grid_size = 3
+
+    block, top_left_coords = hipp.image.read_image_block_grayscale(mock_dataset_reader, row_index, col_index, grid_size)
+
+    assert isinstance(block, np.ndarray)
+
+    expected_block_height = mock_dataset_reader.height // grid_size
+    expected_block_width = mock_dataset_reader.width // grid_size
+    assert block.shape == (expected_block_height, expected_block_width)
+
+    x_offset = col_index * expected_block_width
+    y_offset = row_index * expected_block_height
+    assert top_left_coords == (x_offset, y_offset)

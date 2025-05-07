@@ -142,6 +142,45 @@ def detect_fiducial(
     subpixel_fiducial: cv2.typing.MatLike | None,
     subpixel_factor: float = 8,
 ) -> FiducialDetection:
+    """
+    Detects a fiducial marker in a given image using template matching. It locates the fiducial marker
+    and refines the detection using subpixel accuracy if a subpixel fiducial image is provided. The function
+    returns both the approximate and subpixel-level detection centers, along with their corresponding confidence scores.
+
+    Args:
+        image (cv2.typing.MatLike): The input image (grayscale or color) in which the fiducial marker is to be detected.
+        fiducial (cv2.typing.MatLike): The template image of the fiducial marker that is used for initial template matching.
+        subpixel_fiducial (cv2.typing.MatLike | None): The high-resolution subpixel template of the fiducial marker used
+                                                      for refining the center detection. If `None`, subpixel refinement is skipped.
+        subpixel_factor (float, optional): A scaling factor used when resizing the cropped image to increase the precision
+                                           of subpixel-level matching. Default is 8.
+
+    Returns:
+        FiducialDetection: A dictionary containing the following keys:
+            - "approx_center" (tuple[float, float]): The approximate (x, y) coordinates of the fiducial marker's center
+              based on the initial template matching.
+            - "approx_score" (float): The correlation score of the initial template matching, indicating the quality of the match.
+            - "subpixel_center" (tuple[float, float] | None): The refined (x, y) coordinates of the fiducial marker's center
+              with subpixel accuracy, or `None` if no subpixel fiducial is provided.
+            - "subpixel_score" (float | None): The correlation score of the subpixel-level matching, indicating the quality
+              of the subpixel refinement, or `None` if no subpixel fiducial is provided.
+
+    Notes:
+        - The initial fiducial detection is performed using OpenCV's `cv2.matchTemplate` method with normalized cross-correlation.
+        - If a subpixel fiducial template is provided, the function first performs template matching at the approximate location,
+          then extracts and resizes the cropped region for subpixel-level refinement using the same matching method.
+        - The function assumes the fiducial marker is located within the region where the template matching is performed,
+          and that subpixel detection requires a smaller, refined image region.
+        - The function will return `None` for the subpixel-related values if no subpixel fiducial is provided.
+
+    Example:
+        detection = detect_fiducial(image, fiducial, subpixel_fiducial, subpixel_factor=8)
+        print(detection["approx_center"])  # Output: (x, y) of approximate center
+        print(detection["subpixel_center"])  # Output: (x, y) of subpixel-level center, or None
+        print(detection["approx_score"])    # Output: Score from the initial matching
+        print(detection["subpixel_score"])  # Output: Score from subpixel matching, or None
+
+    """
     h, w = fiducial.shape[:2]
 
     matching_template_res = cv2.matchTemplate(image, fiducial, cv2.TM_CCOEFF_NORMED)

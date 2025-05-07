@@ -6,7 +6,6 @@ Description: some function for the image processing
 """
 
 import warnings
-from typing import Mapping
 
 import cv2
 import rasterio
@@ -69,71 +68,6 @@ def resize_img(
 
     # Return the resized image
     return resized
-
-
-def get_corner_blocks(
-    image: cv2.typing.MatLike, grid_size: int = 3
-) -> tuple[Mapping[str, cv2.typing.MatLike], Mapping[str, tuple[int, int]]]:
-    if grid_size % 2 == 0:
-        raise ValueError("grid_size must be an odd number.")
-
-    h, w = image.shape[:2]
-    block_h = h // grid_size
-    block_w = w // grid_size
-
-    # Calculate the top_right corner of each bloc
-    coords = {
-        "top_left": (0, 0),
-        "top_right": (w - block_w, 0),
-        "bottom_left": (0, h - block_h),
-        "bottom_right": (w - block_w, h - block_h),
-    }
-
-    # Extract blocs
-    blocks = {
-        "top_left": image[:block_h, :block_w],
-        "top_right": image[:block_h, -block_w:],
-        "bottom_left": image[-block_h:, :block_w],
-        "bottom_right": image[-block_h:, -block_w:],
-    }
-
-    return blocks, coords
-
-
-def get_edge_middle_blocks(
-    image: cv2.typing.MatLike, grid_size: int = 3
-) -> tuple[Mapping[str, cv2.typing.MatLike], Mapping[str, tuple[int, int]]]:
-    """
-    Retourne les 4 parties situées au centre des bords (haut, bas, gauche, droite)
-    en découpant l'image en une grille tile x tile (obligatoirement impair).
-    """
-    if grid_size % 2 == 0:
-        raise ValueError("grid_size must be an odd number.")
-
-    h, w = image.shape[:2]
-    block_h = h // grid_size
-    block_w = w // grid_size
-
-    center_col = grid_size // 2
-    center_row = grid_size // 2
-
-    # Calculate the top_right corner of each bloc
-    coords = {
-        "top_middle": (block_w * center_col, 0),
-        "bottom_middle": (block_w * center_col, h - block_h),
-        "left_middle": (0, block_h * center_row),
-        "right_middle": (w - block_w, block_h * center_row),
-    }
-
-    # Extract blocs
-    blocks = {
-        "top_middle": image[:block_h, block_w * center_col : block_w * (center_col + 1)],
-        "bottom_middle": image[-block_h:, block_w * center_col : block_w * (center_col + 1)],
-        "left_middle": image[block_h * center_row : block_h * (center_row + 1), :block_w],
-        "right_middle": image[block_h * center_row : block_h * (center_row + 1), -block_w:],
-    }
-
-    return blocks, coords
 
 
 def read_image_block_grayscale(

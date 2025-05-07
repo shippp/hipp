@@ -30,7 +30,8 @@ dependencies = [
   "pandas",
   "matplotlib",
   "tqdm",
-  "rasterio"
+  "rasterio",
+  "usgsxplore"
 ]
 
 [project.urls]
