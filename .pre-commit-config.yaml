@@ -14,4 +14,4 @@ repos:
     rev: "v1.15.0"
     hooks:
       - id: mypy
-        args: [--strict, --ignore-missing-imports, --no-warn-unused-ignores]
+        args: [--strict, --ignore-missing-imports, --no-warn-unused-ignores, --allow-untyped-calls,]

@@ -119,6 +119,41 @@ def read_image_block_grayscale(
     return block, (x_offset, y_offset)
 
 
+def crop_image_around_point(
+    img: cv2.typing.MatLike, center: tuple[float, float], image_square_dim: int = 11250
+) -> cv2.typing.MatLike:
+    h, w = img.shape[:2]
+    x_center, y_center = int(round(center[0])), int(round(center[1]))
+
+    half_dim = image_square_dim // 2
+
+    # Compute crop boundaries
+    x1 = max(0, x_center - half_dim)
+    y1 = max(0, y_center - half_dim)
+    x2 = min(w, x_center + half_dim)
+    y2 = min(h, y_center + half_dim)
+
+    # Handle border padding if crop goes outside image
+    cropped = img[y1:y2, x1:x2]
+
+    # If the crop is smaller than image_square_dim (near border), pad it
+    pad_y = image_square_dim - cropped.shape[0]
+    pad_x = image_square_dim - cropped.shape[1]
+
+    if pad_x > 0 or pad_y > 0:
+        cropped = cv2.copyMakeBorder(
+            cropped,
+            top=pad_y // 2,
+            bottom=pad_y - (pad_y // 2),
+            left=pad_x // 2,
+            right=pad_x - (pad_x // 2),
+            borderType=cv2.BORDER_CONSTANT,
+            value=[0, 0, 0],  # Black padding
+        )
+
+    return cropped
+
+
 # def wallis_filter(
 #     image: cv2.typing.MatLike, window_size: int, enhance_factor: float = 0.0, mean_balance: float = 0.0
 # ) -> cv2.typing.MatLike:

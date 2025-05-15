@@ -31,7 +31,8 @@ dependencies = [
   "matplotlib",
   "tqdm",
   "rasterio",
-  "usgsxplore"
+  "usgsxplore",
+  "scikit-image"
 ]
 
 [project.urls]
@@ -54,7 +55,7 @@ dependencies = [
 [tool.hatch.envs.dev.scripts]
 check = [
   "ruff check .",
-  "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores"
+  "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
 ]
 kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
 
