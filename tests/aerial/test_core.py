@@ -74,5 +74,5 @@ def test_detect_fiducials_on_1978_09_06_aerial() -> None:
         "midside_left",
     ]
     for key, point in zip(detection_keys, points):
-        assert_distance_from_2_points(detections[key], point)
+        assert_distance_from_2_points(detections[key], point)  # type: ignore[arg-type]
         assert scores[key] >= 0.9

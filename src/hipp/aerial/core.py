@@ -5,6 +5,9 @@ Date: 28
 Description: functions for aerial fiducials manipulation
 """
 
+import copy
+import statistics
+from collections import defaultdict
 from typing import cast
 
 import cv2
@@ -13,8 +16,9 @@ import rasterio
 from skimage.transform import SimilarityTransform
 
 import hipp.image
+import hipp.math
 from hipp.tools import points_picker
-from hipp.typing import DetectedFiducials, FiducialDetection, MetadataImageRestituion
+from hipp.typing import FiducialDetection, Fiducials, MetadataImageRestituion
 
 
 def create_fiducial_template_from_image(
@@ -64,37 +68,39 @@ def detect_fiducials(
     subpixel_midside_fiducial: cv2.typing.MatLike | None = None,
     subpixel_factor: float = 8,
     grid_size: int = 3,
-) -> tuple[DetectedFiducials, dict[str, float], dict[str, float]]:
+) -> tuple[Fiducials, dict[str, float], dict[str, float]]:
     """
-    Detects fiducial markers efficiently from a large image by reading only specific blocks from disk.
+    Detects fiducial markers in a large image by reading only specific blocks, optimizing memory usage.
 
-    This function avoids loading the full image into memory. Instead, it divides the image into a grid
-    and reads only the relevant blocks (corners and midsides) using lightweight I/O operations.
-    Each block is scanned using OpenCV's template matching to detect fiducial markers, and optionally refined
-    using higher-resolution subpixel templates.
+    This function divides the image into a grid and reads only the blocks where fiducials are expected
+    (corners and midsides), based on the presence of corresponding templates. It applies standard and
+    subpixel template matching to locate the fiducials precisely.
 
     Args:
-        image_path (str): Path to the image file (e.g., TIFF). Only the needed regions will be read.
-        corner_fiducial (cv2.typing.MatLike, optional): Template for detecting corner fiducials.
-        midside_fiducial (cv2.typing.MatLike, optional): Template for detecting midside fiducials.
-        subpixel_corner_fiducial (cv2.typing.MatLike, optional): Higher-res corner fiducial template for subpixel refinement.
-        subpixel_midside_fiducial (cv2.typing.MatLike, optional): Higher-res midside template for subpixel refinement.
-        subpixel_factor (float, optional): Upscaling factor for subpixel refinement. Defaults to 8.
-        grid_size (int): Size of the grid used to divide the image (e.g., 3 means 3x3 grid). Must be odd.
+        image_path (str): Path to the input image file (e.g., TIFF). Only required regions are read.
+        corner_fiducial (cv2.typing.MatLike, optional): Template used to detect fiducials at the image corners.
+        midside_fiducial (cv2.typing.MatLike, optional): Template used to detect fiducials at the image midsides.
+        subpixel_corner_fiducial (cv2.typing.MatLike, optional): Higher-resolution corner template for subpixel refinement.
+        subpixel_midside_fiducial (cv2.typing.MatLike, optional): Higher-resolution midside template for subpixel refinement.
+        subpixel_factor (float, optional): Upscaling factor used for subpixel template matching. Defaults to 8.
+        grid_size (int): Size of the virtual grid used to divide the image (e.g., 3 for a 3×3 grid). Must be odd.
 
     Returns:
-        DetectedFiducials: A dictionary mapping fiducial labels (e.g., "corner_top_left") to:
-            - "approx_center": (float, float), approximate center in full image coordinates.
-            - "approx_score": float, score of basic template matching.
-            - "subpixel_center": (float, float or None), refined center coordinates if available.
-            - "subpixel_score": float or None, confidence score for subpixel refinement.
+        tuple:
+            - Fiducials: Dictionary mapping fiducial names (e.g., "corner_top_left") to their subpixel-corrected
+              coordinates in image space: (float, float).
+            - dict[str, float]: Approximate template matching scores for each fiducial.
+            - dict[str, float]: Subpixel refinement confidence scores for each fiducial.
 
     Raises:
-        ValueError: If grid_size is not an odd number.
+        ValueError: If `grid_size` is not an odd number.
 
     Notes:
-        - This function is optimized for memory efficiency and is ideal for large TIFF images.
-        - It assumes that fiducials are located at fixed positions (corners and midsides) in the grid.
+        - The image is processed block-wise, avoiding full image loading—suitable for very large files.
+        - Detected coordinates are adjusted from local block space to full image coordinates.
+        - Fiducial positions are inferred from the grid: corners and midsides are computed based on index.
+        - Both `corner_fiducial` and `midside_fiducial` must be provided to detect all positions.
+        - Subpixel templates are mandatory if standard templates are given.
     """
     if grid_size % 2 == 0:
         raise ValueError("grid_size must be an odd number.")
@@ -139,7 +145,7 @@ def detect_fiducials(
             scores[bloc_name] = fiducial_detection["approx_score"]
             subpixel_scores[bloc_name] = fiducial_detection["subpixel_score"]
 
-    return fiducials_detection, scores, subpixel_scores
+    return cast(Fiducials, fiducials_detection), scores, subpixel_scores
 
 
 def detect_fiducial(
@@ -149,43 +155,31 @@ def detect_fiducial(
     subpixel_factor: float = 8,
 ) -> FiducialDetection:
     """
-    Detects a fiducial marker in a given image using template matching. It locates the fiducial marker
-    and refines the detection using subpixel accuracy if a subpixel fiducial image is provided. The function
-    returns both the approximate and subpixel-level detection centers, along with their corresponding confidence scores.
+    Detects a fiducial marker in an image using standard and subpixel template matching.
+
+    This function first performs a coarse detection of the fiducial using OpenCV's normalized cross-correlation
+    on the original template. It then refines this detection by extracting the matched region, upscaling it, and
+    applying template matching again with a higher-resolution subpixel template to achieve subpixel accuracy.
 
     Args:
-        image (cv2.typing.MatLike): The input image (grayscale or color) in which the fiducial marker is to be detected.
-        fiducial (cv2.typing.MatLike): The template image of the fiducial marker that is used for initial template matching.
-        subpixel_fiducial (cv2.typing.MatLike | None): The high-resolution subpixel template of the fiducial marker used
-                                                      for refining the center detection. If `None`, subpixel refinement is skipped.
-        subpixel_factor (float, optional): A scaling factor used when resizing the cropped image to increase the precision
-                                           of subpixel-level matching. Default is 8.
+        image (cv2.typing.MatLike): Input grayscale or color image in which the fiducial marker is to be detected.
+        fiducial (cv2.typing.MatLike): Template used for initial coarse template matching.
+        subpixel_fiducial (cv2.typing.MatLike): High-resolution template used for subpixel refinement.
+        subpixel_factor (float, optional): Upscaling factor applied to the cropped region for subpixel matching.
+                                           Default is 8.
 
     Returns:
-        FiducialDetection: A dictionary containing the following keys:
-            - "approx_center" (tuple[float, float]): The approximate (x, y) coordinates of the fiducial marker's center
-              based on the initial template matching.
-            - "approx_score" (float): The correlation score of the initial template matching, indicating the quality of the match.
-            - "subpixel_center" (tuple[float, float] | None): The refined (x, y) coordinates of the fiducial marker's center
-              with subpixel accuracy, or `None` if no subpixel fiducial is provided.
-            - "subpixel_score" (float | None): The correlation score of the subpixel-level matching, indicating the quality
-              of the subpixel refinement, or `None` if no subpixel fiducial is provided.
+        FiducialDetection: A dictionary with the following fields:
+            - "approx_center" (tuple[float, float]): Approximate (x, y) center of the fiducial in image coordinates.
+            - "approx_score" (float): Correlation score from the initial coarse template matching.
+            - "subpixel_center" (tuple[float, float]): Refined (x, y) center after subpixel matching.
+            - "subpixel_score" (float): Correlation score from the subpixel-level template matching.
 
     Notes:
-        - The initial fiducial detection is performed using OpenCV's `cv2.matchTemplate` method with normalized cross-correlation.
-        - If a subpixel fiducial template is provided, the function first performs template matching at the approximate location,
-          then extracts and resizes the cropped region for subpixel-level refinement using the same matching method.
-        - The function assumes the fiducial marker is located within the region where the template matching is performed,
-          and that subpixel detection requires a smaller, refined image region.
-        - The function will return `None` for the subpixel-related values if no subpixel fiducial is provided.
-
-    Example:
-        detection = detect_fiducial(image, fiducial, subpixel_fiducial, subpixel_factor=8)
-        print(detection["approx_center"])  # Output: (x, y) of approximate center
-        print(detection["subpixel_center"])  # Output: (x, y) of subpixel-level center, or None
-        print(detection["approx_score"])    # Output: Score from the initial matching
-        print(detection["subpixel_score"])  # Output: Score from subpixel matching, or None
-
+        - Uses OpenCV's `cv2.matchTemplate` with `cv2.TM_CCOEFF_NORMED` for both coarse and subpixel matching.
+        - The subpixel matching is applied within a cropped region of the input image, centered at the coarse match location.
+        - The cropped region is upscaled before matching with the subpixel template to improve localization precision.
+        - The output coordinates are returned in the original image's coordinate space (not in the upscaled space).
     """
     h, w = fiducial.shape[:2]
 
@@ -221,7 +215,7 @@ def detect_fiducial(
 
 def image_restitution(
     image_path: str,
-    detected_fiducials: dict[str, tuple[float, float]],
+    detected_fiducials: Fiducials,
     true_fiducials_mm: dict[str, tuple[float, float]],
     scanning_resolution_mm: float = 0.025,
     image_square_dim: int = 10800,
@@ -232,37 +226,56 @@ def image_restitution(
     clahe_enhancement: bool = True,
 ) -> tuple[cv2.typing.MatLike | None, MetadataImageRestituion]:
     """
-    Performs image rectification and enhancement based on detected fiducials and known reference positions.
+    Performs geometric rectification, spatial alignment, and contrast enhancement of a scanned image
+    based on detected and known fiducial markers.
 
-    This function aligns an image using fiducial markers, applies geometric transformations,
-    optionally crops around the principal point, and enhances contrast using CLAHE.
+    This function computes an affine transformation matrix to align the image with a physical reference frame
+    defined by known fiducial positions (in millimeters). It optionally applies this transformation to the image,
+    recenters it around the principal point, and enhances local contrast using CLAHE (Contrast Limited Adaptive Histogram Equalization).
 
     Args:
-        image_path (str): Path to the input image (grayscale).
-        detected_fiducials (dict[str, tuple[float, float]]): Coordinates (in pixels) of detected fiducial markers.
-        true_fiducials_mm (dict[str, tuple[float, float]]): Ground truth coordinates (in millimeters) of fiducials.
-        scanning_resolution_mm (float, optional): Pixel resolution in mm. Defaults to 0.025.
-        image_square_dim (int, optional): Target image size for cropping (square). Defaults to 10800.
-        interpolation_flag (int, optional): Interpolation method for warping. Defaults to cv2.INTER_CUBIC.
-        transform_coords (bool, optional): Whether to compute and apply coordinate transformations. Defaults to True.
-        transform_image (bool, optional): Whether to warp the image using the transformation matrix. Defaults to True.
-        crop_image (bool, optional): Whether to crop the image around the principal point. Defaults to True.
-        clahe_enhancement (bool, optional): Whether to apply CLAHE enhancement. Defaults to True.
+        image_path (str): Path to the grayscale input image (typically high-resolution scan).
+        detected_fiducials (dict[str, tuple[float, float]]): Pixel-space coordinates of detected fiducial markers
+            (e.g., corners and midsides), usually obtained from template matching.
+        true_fiducials_mm (dict[str, tuple[float, float]]): Known physical positions (in millimeters) of the same fiducials
+            in a reference frame centered on the geometric principal point of the object.
+        scanning_resolution_mm (float, optional): Pixel resolution of the scan in millimeters per pixel. Default is 0.025 mm/px.
+        image_square_dim (int, optional): Final dimension (in pixels) of the cropped image. Image is cropped to a square
+            centered on the principal point. Default is 10800.
+        interpolation_flag (int, optional): OpenCV interpolation method used in image warping. Default is `cv2.INTER_CUBIC`.
+        transform_coords (bool, optional): If True, compute and apply coordinate transformations (both pixel → mm and affine alignment).
+        transform_image (bool, optional): If True, apply the affine transformation to the image.
+        crop_image (bool, optional): If True, crop the image around the (transformed) principal point.
+        clahe_enhancement (bool, optional): If True, apply CLAHE for local contrast enhancement.
 
     Returns:
         tuple:
-            - np.ndarray or None: The final processed image (or None if not processed).
-            - dict: Dictionary containing metadata:
-                - 'transformation_matrix': Affine transformation matrix (or None),
-                - 'fiducials_mm': Detected fiducials converted to mm (or None),
-                - 'transformed_fiducials': Transformed fiducial pixel coordinates (or None),
-                - 'transformed_fiducials_mm': Transformed fiducials in mm (or None).
+            - np.ndarray | None: The processed image if any transformation is applied, else `None`.
+            - MetadataImageRestituion: Dictionary of intermediate metadata for traceability and diagnostics, including:
+                - 'transformation_matrix' (np.ndarray | None): The affine matrix used to rectify the image.
+                - 'fiducials_mm' (dict | None): Detected fiducials converted from pixel coordinates to millimeters.
+                - 'true_fiducials_mm_centered' (dict | None): Reference fiducials centered on the geometric principal point.
+                - 'transformed_fiducials' (dict | None): Pixel fiducials after transformation.
+                - 'transformed_fiducials_mm' (dict | None): Transformed fiducials expressed in physical (mm) space.
+
+    Technical Notes:
+        - The function first aligns the *true* fiducial positions with the origin by subtracting the geometric principal point.
+          This ensures that the transformation matrix computed later aligns the detected image frame with a centered physical model.
+        - The affine transformation is estimated using similarity transform between
+          detected pixel positions and centered millimeter reference positions.
+        - Once the transformation is computed, all fiducial coordinates can be mapped to their rectified positions in pixel and mm space.
+        - When `transform_image=True`, `cv2.warpAffine` is applied using the transformation matrix. The image is geometrically corrected
+          (shear, rotation, scale, translation) to align with the reference.
+        - Cropping is centered on the principal point (either original or transformed) and ensures a fixed output size suitable for further analysis.
+        - CLAHE (applied via `cv2.createCLAHE`) improves local contrast, particularly useful for uneven lighting or low dynamic range scans.
     """
     output_image = None
     metadata: MetadataImageRestituion = {}
     # Compute transformation matrix and transform coordinates if requested
     if transform_coords:
-        geometric_pp = compute_principal_point_from_valid_segments(true_fiducials_mm)
+        # here we align the true fiducials coordinate with the geometric principal point, to be in the same reference as detected fiducials
+        geometric_pp = compute_principal_point_from_valid_segments(true_fiducials_mm)  # type: ignore[arg-type]
+        assert geometric_pp is not None
         metadata["true_fiducials_mm_centered"] = {
             k: (coord[0] - geometric_pp[0], coord[1] - geometric_pp[1]) for k, coord in true_fiducials_mm.items()
         }
@@ -273,10 +286,11 @@ def image_restitution(
         )
         metadata["fiducials_mm"] = convert_coordinate_in_camera_reference(detected_fiducials, scanning_resolution_mm)
         metadata["transformed_fiducials"] = {
-            key: transform_coord(coord, metadata["transformation_matrix"]) for key, coord in detected_fiducials.items()
+            key: transform_coord(coord, metadata["transformation_matrix"]) if coord is not None else None
+            for key, coord in detected_fiducials.items()
         }
         metadata["transformed_fiducials_mm"] = {
-            key: transform_coord(coord, metadata["transformation_matrix"])
+            key: transform_coord(coord, metadata["transformation_matrix"]) if coord is not None else None
             for key, coord in metadata["fiducials_mm"].items()
         }
 
@@ -298,6 +312,7 @@ def image_restitution(
                 if transform_coords
                 else detected_fiducials["principal_point"]
             )
+            assert center is not None
             output_image = hipp.image.crop_image_around_point(output_image, center, image_square_dim)
 
         # Apply CLAHE enhancement
@@ -307,7 +322,7 @@ def image_restitution(
 
 
 def estimate_transformation_matrix(
-    detected_fiducials: dict[str, tuple[float, float]],
+    detected_fiducials: Fiducials,
     true_fiducials_mm: dict[str, tuple[float, float]],
     scanning_resolution_mm: float = 0.025,
 ) -> cv2.typing.MatLike:
@@ -323,18 +338,26 @@ def estimate_transformation_matrix(
     Returns:
         np.ndarray: 3x3 similarity transformation matrix.
     """
-    used_keys = [k for k in detected_fiducials if k != "principal_point"]
+    # Exclude 'principal_point' and None values
+    used_keys = [k for k, v in detected_fiducials.items() if k != "principal_point" and v is not None]
 
-    if set(used_keys) != set(true_fiducials_mm.keys()):
+    if not used_keys:
+        raise ValueError("No valid detected fiducials found for transformation estimation.")
+
+    if not all(k in true_fiducials_mm for k in used_keys):
         raise ValueError(
-            f"true_fiducials_mm must have keys: {list(detected_fiducials.keys())}, including 'principal_point'"
+            f"true_fiducials_mm must contain the same keys as detected fiducials (excluding 'principal_point'), "
+            f"but only found: {list(true_fiducials_mm.keys())}"
         )
 
-    # Convert detected fiducial coordinates to millimeters using the scanning resolution
+    # Convert valid detected fiducials to mm
     detected_fiducials_mm = convert_coordinate_in_camera_reference(detected_fiducials, scanning_resolution_mm)
 
     detected_points = np.array([detected_fiducials_mm[k] for k in used_keys])
     true_points = np.array([true_fiducials_mm[k] for k in used_keys])
+
+    if len(detected_points) < 2:
+        raise ValueError("At least two valid fiducials are required to estimate the transformation.")
 
     # Estimate transformation
     transform = SimilarityTransform()
@@ -344,91 +367,223 @@ def estimate_transformation_matrix(
 
 
 def convert_coordinate_in_camera_reference(
-    detected_fiducials: dict[str, tuple[float, float]], scanning_resolution_mm: float = 0.025
-) -> dict[str, tuple[float, float]]:
+    detected_fiducials: Fiducials, scanning_resolution_mm: float = 0.025
+) -> Fiducials:
     """
     Converts the coordinates of detected fiducials from pixel space to camera reference space
-    (in millimeters), using the principal point as the origin. The conversion is performed
-    by subtracting the principal point from each detected fiducial and scaling the result
-    by the scanning resolution in millimeters.
+    (in millimeters), using the principal point as the origin. Ignores fiducials with None values.
 
     The conversion also inverts the Y-axis to align the coordinates with the camera reference system.
 
     Args:
-        detected_fiducials (DetectedFiducials): A dictionary containing detected fiducial points,
-                                                 where each key is a fiducial name (e.g.,
-                                                 "corner_top_left") and the value is a dictionary
-                                                 containing fiducial coordinates.
-        scanning_resolution_mm (float, optional): The scanning resolution in millimeters per pixel.
-                                                  Defaults to 0.025 mm/pixel.
+        detected_fiducials (dict): A dictionary mapping fiducial names to (x, y) tuples or None.
+        scanning_resolution_mm (float): The scanning resolution in millimeters per pixel.
 
     Returns:
         dict: A dictionary where each key is a fiducial name and the corresponding value is a tuple
               of (x, y) coordinates in camera reference space, in millimeters.
-
-    Notes:
-        - The principal point is computed using the midpoints of valid fiducial pairs, and it
-          is used as the origin for the conversion.
-        - The Y-axis is inverted after the conversion to match the camera reference system's coordinate system.
     """
     if "principal_point" not in detected_fiducials:
         raise ValueError("'principal_point' need to be in detected_fiducials.")
-    # Extraire le point principal
-    principal_point = np.array(detected_fiducials["principal_point"])
+    principal_coord = detected_fiducials["principal_point"]
+    if principal_coord is None:
+        raise ValueError("'principal_point' cannot be None.")
 
-    # Préparer la sortie
-    converted = {}
+    principal_point = np.array(principal_coord)
+    converted: Fiducials = {}
 
     for key, coord in detected_fiducials.items():
-        delta = np.array(coord) - principal_point
-        delta_mm = delta * scanning_resolution_mm
-        delta_mm[1] *= -1  # Inversion de l'axe Y
-        converted[key] = tuple(delta_mm)
+        if coord is None:
+            converted[key] = None
+        else:
+            delta = np.array(coord) - principal_point
+            delta_mm = delta * scanning_resolution_mm
+            delta_mm[1] *= -1  # Invert Y-axis
+            converted[key] = tuple(delta_mm)
 
     return converted
 
 
 def compute_principal_point_from_valid_segments(
-    detected_fiducials: DetectedFiducials,
-) -> tuple[float, float]:
+    detected_fiducials: Fiducials,
+) -> tuple[float, float] | None:
     """
-    Computes the principal point based on the midpoints of valid fiducial marker pairs.
-    The principal point is calculated as the average of the midpoints of the following pairs:
-    - corner_top_left ↔ corner_bottom_right
-    - corner_top_right ↔ corner_bottom_left
-    - mid_left ↔ mid_right
-    - mid_top ↔ mid_bottom
+    Estimates the principal point of an image based on detected fiducial markers.
+
+    The principal point is computed using both diagonal midpoints and perpendicular offsets
+    from adjacent fiducial segments. The algorithm uses two types of fiducial markers:
+    - Corners: ["corner_top_left", "corner_top_right", "corner_bottom_right", "corner_bottom_left"]
+    - Midsides: ["mid_left", "mid_top", "mid_right", "mid_bottom"]
+
+    For each group (corners and midsides), the following logic is applied:
+    1. For each fiducial and its diagonal counterpart (i and (i+2)%4), compute the midpoint if both exist.
+    2. For each adjacent pair (i and (i+1)%4), compute the midpoint of the segment and create a point
+       perpendicular to the segment direction, offset by half the segment length.
+
+    All valid midpoints and orthogonal points are averaged to return the final principal point estimate.
 
     Args:
-        detected_fiducials (dict): Dictionary with keys as fiducial names and values as (x, y) tuples.
+        detected_fiducials (dict): A dictionary mapping fiducial names to (x, y) coordinates or None.
 
     Returns:
-        tuple or None: The computed principal point as a (x, y) tuple, or None if no valid pairs found.
+        tuple[float, float] or None: The estimated principal point as an (x, y) tuple,
+                                     or None if no valid points were available.
     """
-    pairs_keys = [
-        ("corner_top_left", "corner_bottom_right"),
-        ("corner_top_right", "corner_bottom_left"),
-        ("mid_left", "mid_right"),
-        ("mid_top", "mid_bottom"),
-    ]
+    corners = ["corner_top_left", "corner_top_right", "corner_bottom_right", "corner_bottom_left"]
+    midsides = ["midside_left", "midside_top", "midside_right", "midside_bottom"]
 
+    orthogonal_points = []
     midpoints = []
+    for fiducial_names in [corners, midsides]:
+        for i in range(4):
+            # Get the points and check they are not None
+            p_ortho_1 = detected_fiducials.get(fiducial_names[i])
+            p_ortho_2 = detected_fiducials.get(fiducial_names[(i + 1) % 4])
+            p_diag_1 = detected_fiducials.get(fiducial_names[i])
+            p_diag_2 = detected_fiducials.get(fiducial_names[(i + 2) % 4])
 
-    for key1, key2 in pairs_keys:
-        if key1 in detected_fiducials and key2 in detected_fiducials:
-            p1 = detected_fiducials[key1]
-            p2 = detected_fiducials[key2]
-            if p1 is not None and p2 is not None:
-                midpoint = (np.array(p1) + np.array(p2)) / 2
-                midpoints.append(midpoint)
+            # Diagonal: compute the midpoint
+            if p_diag_1 is not None and p_diag_2 is not None:
+                midpoint_diag = (np.array(p_diag_1) + np.array(p_diag_2)) / 2
+                midpoints.append(midpoint_diag)
 
-    if midpoints:
-        return tuple(np.mean(midpoints, axis=0))
+            # Orthogonal: compute the orthogonal point at the center of the adjacent segment
+            if p_ortho_1 is not None and p_ortho_2 is not None:
+                p1 = np.array(p_ortho_1)
+                p2 = np.array(p_ortho_2)
+                mid = (p1 + p2) / 2
+
+                # Direction vector of the segment
+                direction = p2 - p1
+                norm = np.linalg.norm(direction)
+                if norm > 1e-6:
+                    # Unit orthogonal vector
+                    perp = np.array([-direction[1], direction[0]]) / norm
+
+                    # Scale the orthogonal offset (here: half the length of the segment)
+                    orth_point = mid + perp * (norm / 2)
+                    orthogonal_points.append(orth_point)
+
+    # Compute the average of all valid points (diagonals + orthogonals)
+    all_points = midpoints + orthogonal_points
+    if all_points:
+        principal_point = np.mean(all_points, axis=0)
+        return float(principal_point[0]), float(principal_point[1])
     else:
-        raise ValueError("Principal point computing error.")
+        return None
 
 
 def transform_coord(coord: tuple[float, float], transformation_matrix: cv2.typing.MatLike) -> tuple[float, float]:
-    vec = np.append(np.array(coord), 1)  # homogénéisation
+    """
+    Applies a 2D affine transformation to a single (x, y) coordinate.
+
+    Args:
+        coord (tuple[float, float]): The input coordinate to transform, as (x, y).
+        transformation_matrix (cv2.typing.MatLike): A 2x3 affine transformation matrix.
+
+    Returns:
+        tuple[float, float]: The transformed coordinate as (x', y').
+    """
+    vec = np.append(np.array(coord), 1)
     transformed = transformation_matrix @ vec
     return float(transformed[0]), float(transformed[1])
+
+
+def process_fiducials_detection(
+    all_detections: dict[str, Fiducials],
+    all_scores: dict[str, dict[str, float]],
+    all_subpixel_scores: dict[str, dict[str, float]],
+    degree_threshold: float = 0.05,
+    score_margin: float = 0.1,
+) -> dict[str, Fiducials]:
+    score_median_by_categ = compute_median_score_by_category(all_scores)
+    subpixel_score_median_by_categ = compute_median_score_by_category(all_subpixel_scores)
+
+    score_threshold_by_category = {key: value - score_margin for key, value in score_median_by_categ.items()}
+    subpixel_score_threshold_by_category = {
+        key: value - score_margin for key, value in subpixel_score_median_by_categ.items()
+    }
+
+    result = copy.deepcopy(all_detections)
+    for key in all_detections:
+        validation_angles = validate_detection_points_with_angle(all_detections[key], degree_threshold)
+        validation_score = validate_detection_points_with_matching_score(
+            all_scores[key], all_subpixel_scores[key], score_threshold_by_category, subpixel_score_threshold_by_category
+        )
+
+        validation = {name: validation_angles[name] or validation_score[name] for name in validation_angles}
+        for fiducial_name in validation:
+            if not validation[fiducial_name]:
+                result[key][fiducial_name] = None
+
+        result[key]["principal_point"] = compute_principal_point_from_valid_segments(result[key])
+
+    return result
+
+
+def compute_median_score_by_category(all_scores: dict[str, dict[str, float]]) -> dict[str, float]:
+    scores_by_category = defaultdict(list)
+
+    for image_scores in all_scores.values():
+        for fiducial_name, score in image_scores.items():
+            scores_by_category[fiducial_name].append(score)
+
+    median_by_category = {
+        fiducial_name: statistics.median(scores) for fiducial_name, scores in scores_by_category.items()
+    }
+    return median_by_category
+
+
+def validate_detection_points_with_angle(detection: Fiducials, degree_threshold: float = 0.05) -> dict[str, bool]:
+    """
+    Evaluate which corner or midside points in a quadrilateral detection are geometrically valid
+    based on angle closeness to 90 degrees.
+
+    This function dynamically adapts to whether the input contains corners, midsides, or both.
+
+    Args:
+        detection (dict): Dictionary of 4 or more fiducial coordinates (corners and/or midsides).
+        degree_threshold (float): Allowed deviation from 90° to consider an angle valid.
+
+    Returns:
+        dict[str, bool]: Dictionary mapping each evaluated point name to True (valid) or False (suspect).
+    """
+    corners = ["corner_top_left", "corner_top_right", "corner_bottom_right", "corner_bottom_left"]
+    midsides = ["mid_left", "mid_top", "mid_right", "mid_bottom"]
+
+    result: dict[str, bool | None] = {key: None for key in detection if key != "principal_point"}
+
+    # Detect whether to use corners, midsides, or both
+    groups_to_check = []
+    if all(name in detection and detection[name] is not None for name in corners):
+        groups_to_check.append(corners)
+    if all(name in detection and detection[name] is not None for name in midsides):
+        groups_to_check.append(midsides)
+
+    for group in groups_to_check:
+        for i in range(4):
+            point_names = [group[(i - 1) % 4], group[i], group[(i + 1) % 4]]
+            points = [detection[name] for name in point_names]
+            angle = hipp.math.angle_between_three_points(*points)  # type: ignore[arg-type]
+
+            for name in point_names:
+                if abs(90 - angle) < degree_threshold:
+                    result[name] = True
+                elif result[name] is None:
+                    result[name] = False
+    return cast(dict[str, bool], result)
+
+
+def validate_detection_points_with_matching_score(
+    scores: dict[str, float],
+    subpixel_scores: dict[str, float],
+    score_threshold_by_category: dict[str, float],
+    subpixel_score_threshold_by_category: dict[str, float],
+) -> dict[str, bool]:
+    result = {}
+    for key in scores:
+        result[key] = (
+            scores[key] > score_threshold_by_category[key]
+            and subpixel_scores[key] > subpixel_score_threshold_by_category[key]
+        )
+    return result

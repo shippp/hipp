@@ -13,14 +13,58 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
+from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from hipp.typing import DetectedFiducials, MetadataImageRestituion
+from hipp.typing import Fiducials, MetadataImageRestituion
+
+
+def save_fiducials_detection_qc(
+    all_detections: dict[str, dict[str, tuple[float, float] | None]],
+    all_scores: dict[str, dict[str, float]],
+    all_subpixel_scores: dict[str, dict[str, float]],
+    qc_detection_dir: str | None = None,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    plot_principal_points_deviation(all_detections, axes[0])
+    plot_fiducial_deviation_boxplots(all_detections, axes[1])
+    plt.tight_layout()
+    if qc_detection_dir is not None:
+        fig.savefig(os.path.join(qc_detection_dir, "Deviation_plot.png"))
+    plt.show()
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    plot_fiducial_score_boxplots(all_scores, axes[0])
+    plot_fiducial_score_boxplots(all_subpixel_scores, axes[1], title="Distribution of subpixel matching score")
+    plt.tight_layout()
+    if qc_detection_dir is not None:
+        fig.savefig(os.path.join(qc_detection_dir, "Scores_boxplot.png"))
+    plt.show()
+
+
+def save_process_fiducials_detection_qc(
+    all_detections: dict[str, dict[str, tuple[float, float] | None]],
+    processed_detections: dict[str, dict[str, tuple[float, float] | None]],
+    qc_detection_dir: str | None = None,
+) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    plot_principal_points_deviation(all_detections, axes[0][0])
+    plot_principal_points_deviation(
+        processed_detections, axes[0][1], "Principal points Deviation after removing wrong detection"
+    )
+    plot_fiducial_deviation_boxplots(all_detections, axes[1][0])
+    plot_fiducial_deviation_boxplots(
+        processed_detections, axes[1][1], "Fiducials Deviation after removing wrong detection"
+    )
+    plt.tight_layout()
+    if qc_detection_dir is not None:
+        fig.savefig(os.path.join(qc_detection_dir, "Deviation_correction_plot.png"))
+    plt.show()
 
 
 def generate_fiducial_qc_image_from_detection(
     image_path: str,
-    detections: DetectedFiducials,
+    detections: Fiducials,
     distance_around_fiducial: int = 100,
     grid_cols: int | None = None,
 ) -> cv2.typing.MatLike:
@@ -40,6 +84,7 @@ def generate_fiducial_qc_image_from_detection(
     patches = []
     with rasterio.open(image_path) as src:
         for label, coord in detections.items():
+            assert coord is not None  # for mypy
             cx, cy = coord
             cx_int, cy_int = int(round(cx)), int(round(cy))
 
@@ -74,56 +119,57 @@ def generate_fiducial_qc_image_from_detection(
     return grid_img
 
 
-def plot_fiducial_center_deviation_boxplots(all_coordinates: dict[str, DetectedFiducials]) -> Figure:
+def plot_fiducial_deviation_boxplots(
+    all_coordinates: dict[str, dict[str, tuple[float, float] | None]], ax: Axes, title: str = "Deviation of fiducials"
+) -> None:
     """
     Affiche un boxplot pour chaque type de fiducial (corner/edge, principal_point) représentant
     la distribution de la distance à la moyenne des centres détectés.
 
     Args:
-        all_detections: Un dictionnaire mapping ID -> DetectedFiducials
+        all_detections: Un dictionnaire mapping ID -> Fiducials
         use_subpixel: Si True, utilise subpixel_center sinon approx_center
     """
-    # Regrouper toutes les coordonnées par nom de fiducial
+    # Regrouper toutes les coordonnées valides par nom de fiducial
     fiducial_points = defaultdict(list)
     for detection in all_coordinates.values():
         for name, coord in detection.items():
-            fiducial_points[name].append(coord)
+            if coord is not None:
+                fiducial_points[name].append(coord)
 
     # Calculer les distances à la moyenne pour chaque type de fiducial
     deviations_by_fiducial = {}
     for name, coords in fiducial_points.items():
+        if len(coords) < 2:
+            # Impossible de calculer une déviation avec moins de deux points
+            continue
         coords_array = np.array(coords)
         mean = coords_array.mean(axis=0)
         distances = np.linalg.norm(coords_array - mean, axis=1)
         deviations_by_fiducial[name] = distances
 
     # Création du plot
-    fig, ax = plt.subplots(figsize=(12, 6))
     labels = sorted(deviations_by_fiducial.keys())
     data = [deviations_by_fiducial[label] for label in labels]
 
     ax.boxplot(data, vert=True, patch_artist=True)
-    ax.set_title("Deviation of fiducials")
+    ax.set_title(title)
     ax.set_ylabel("Distance from mean (pixels)")
     ax.grid(True, axis="y", linestyle="--", alpha=0.5)
 
-    ax.set_xticks(range(1, len(labels) + 1))  # 1-based index
+    ax.set_xticks(range(1, len(labels) + 1))
     ax.set_xticklabels(labels, rotation=45, ha="right")
-    plt.xticks(rotation=45, ha="right")
-
-    fig.tight_layout()
-    return fig
 
 
 def plot_fiducial_score_boxplots(
-    all_scores: dict[str, dict[str, float]], title: str = "Distribution of matching score"
-) -> Figure:
+    all_scores: dict[str, dict[str, float]], ax: Axes, title: str = "Distribution of matching score"
+) -> None:
     """
     Affiche des boxplots pour chaque type de fiducial (corner/edge),
     représentant la distribution des scores de similarité (approx ou subpixel).
 
     Args:
-        all_detections: Un dictionnaire mapping ID -> DetectedFiducials
+        all_detections: Un dictionnaire mapping ID -> Fiducials
         use_subpixel: Si True, utilise subpixel_score sinon approx_score
     """
     fiducial_scores = defaultdict(list)
@@ -131,19 +177,18 @@ def plot_fiducial_score_boxplots(
         for name, coord in detection.items():
             fiducial_scores[name].append(coord)
 
-    # Création des boxplots
-    fig, ax = plt.subplots(figsize=(10, 6))
     ax.boxplot(list(fiducial_scores.values()), tick_labels=list(fiducial_scores.keys()), vert=True, patch_artist=True)  # type: ignore[arg-type]
     ax.set_ylabel("Similarity score (template matching)")
     ax.set_title(title)
     ax.tick_params(axis="x", rotation=45)
     ax.grid(True, linestyle="--", alpha=0.5)
-    fig.tight_layout()
-
-    return fig
 
 
-def plot_principal_points_deviation(all_coordinates: dict[str, DetectedFiducials]) -> Figure:
+def plot_principal_points_deviation(
+    all_coordinates: dict[str, dict[str, tuple[float, float] | None]],
+    ax: Axes,
+    title: str = "Principal points Deviation",
+) -> None:
     # Récupération des points principaux
     entity_names = sorted(all_coordinates.keys())
     principal_points = np.array([all_coordinates[name]["principal_point"] for name in entity_names])
@@ -158,7 +203,6 @@ def plot_principal_points_deviation(all_coordinates: dict[str, DetectedFiducials
     labels = [os.path.splitext(os.path.basename(name))[0] for name in entity_names]
 
     # Création de la figure
-    fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(range(len(labels)), distances, color="skyblue")
 
     # Ajout des étiquettes proprement
@@ -166,12 +210,9 @@ def plot_principal_points_deviation(all_coordinates: dict[str, DetectedFiducials
     ax.set_xticklabels(labels, rotation=90)
 
     # Mise en forme
-    ax.set_title("Principal points Deviation ")
+    ax.set_title(title)
     ax.set_ylabel("Distance (pixels)")
     ax.grid(True, axis="y", linestyle="--", alpha=0.6)
-
-    fig.tight_layout()
-    return fig
 
 
 def plot_coordinates_transformations(metrics: dict[str, dict[str, float]]) -> Figure:
@@ -202,7 +243,9 @@ def compute_metrics_from_image_restitution(metadata: MetadataImageRestituion) ->
     ):
         raise ValueError("No metrics to compute")
 
-    used_keys = [k for k in metadata["fiducials_mm"] if k != "principal_point"]
+    used_keys = [
+        k for k in metadata["fiducials_mm"] if k != "principal_point" and metadata["fiducials_mm"][k] is not None
+    ]
     arr_fiducials_mm = np.array([metadata["fiducials_mm"][k] for k in used_keys])
     arr_transformed_fiducials_mm = np.array([metadata["transformed_fiducials_mm"][k] for k in used_keys])
     arr_true_fiducials_mm = np.array([metadata["true_fiducials_mm_centered"][k] for k in used_keys])

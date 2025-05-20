@@ -15,7 +15,7 @@ from tqdm import tqdm
 import hipp.aerial.core as core
 import hipp.aerial.quality_control as qc
 from hipp.image import resize_img
-from hipp.typing import DetectedFiducials
+from hipp.typing import Fiducials
 
 CORNER_FIDUCIAL_NAME = "corner_fiducial.png"
 MIDSIDE_FIDUCIAL_NAME = "midside_fiducial.png"
@@ -150,7 +150,7 @@ class AerialPreprocessing:
         quality_control: bool = True,
         progress_bar: bool = True,
         max_workers: int = 4,
-    ) -> tuple[dict[str, DetectedFiducials], dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    ) -> tuple[dict[str, Fiducials], dict[str, dict[str, float]], dict[str, dict[str, float]]]:
         """
         Detects fiducial markers in a batch of grayscale `.tif` images using multithreaded template matching.
 
@@ -168,7 +168,7 @@ class AerialPreprocessing:
 
         Returns:
             Tuple containing three dictionaries:
-                - detections (dict[str, DetectedFiducials]):
+                - detections (dict[str, Fiducials]):
                     Mapping from image file paths to detected fiducial positions.
                     Each detection contains:
                         * midside_* or corner_* keys → tuple[float, float]: detected center coordinates
@@ -212,7 +212,7 @@ class AerialPreprocessing:
         all_scores, all_subpixel_scores = {}, {}
 
         # Function that processes a single image: detects fiducials and optionally generates a QC image
-        def process_image(image_path: str) -> tuple[str, DetectedFiducials, dict[str, float], dict[str, float]]:
+        def process_image(image_path: str) -> tuple[str, Fiducials, dict[str, float], dict[str, float]]:
             fiducials_detection, scores, subpixel_scores = core.detect_fiducials(
                 image_path=image_path,
                 **fiducials_template,  # Unpack the loaded templates into the function
@@ -255,19 +255,30 @@ class AerialPreprocessing:
 
         # save all the plot if quality control is actived
         if quality_control:
-            deviation_boxplot = qc.plot_fiducial_center_deviation_boxplots(all_detections)
-            deviation_pp_barplot = qc.plot_principal_points_deviation(all_detections)
-            score_boxplot = qc.plot_fiducial_score_boxplots(all_scores)
-            subpixel_score_boxplot = qc.plot_fiducial_score_boxplots(
-                all_subpixel_scores, title="Distribution of subpixel matching score"
-            )
-
-            deviation_boxplot.savefig(os.path.join(qc_detection_dir, "deviation_boxplot.png"))
-            deviation_pp_barplot.savefig(os.path.join(qc_detection_dir, "deviation_pp_barplot.png"))
-            score_boxplot.savefig(os.path.join(qc_detection_dir, "score_boxplot.png"))
-            subpixel_score_boxplot.savefig(os.path.join(qc_detection_dir, "subpixel_score_boxplot.png"))
+            qc.save_fiducials_detection_qc(all_detections, all_scores, all_subpixel_scores, qc_detection_dir)
 
         return all_detections, all_scores, all_subpixel_scores
+
+    def process_fiducials_detection(
+        self,
+        all_detections: dict[str, Fiducials],
+        all_scores: dict[str, dict[str, float]],
+        all_subpixel_scores: dict[str, dict[str, float]],
+        degree_threshold: float = 0.05,
+        score_margin: float = 0.1,
+        quality_control: bool = True,
+    ) -> dict[str, Fiducials]:
+        qc_detection_dir = os.path.join(self.qc_directory, "fiducials_detection")
+        if quality_control:
+            os.makedirs(qc_detection_dir, exist_ok=True)
+
+        processed_detections = core.process_fiducials_detection(
+            all_detections, all_scores, all_subpixel_scores, degree_threshold, score_margin
+        )
+
+        if quality_control:
+            qc.save_process_fiducials_detection_qc(all_detections, processed_detections, qc_detection_dir)
+        return processed_detections
 
     def load_fiducials_template(self) -> dict[str, cv2.typing.MatLike]:
         """
@@ -306,7 +317,7 @@ class AerialPreprocessing:
 
     def images_restitution(
         self,
-        fiducials_detections: dict[str, dict[str, tuple[float, float]]],
+        fiducials_detections: dict[str, Fiducials],
         true_fiducials_mm: dict[str, tuple[float, float]],
         scanning_resolution_mm: float = 0.025,
         image_square_dim: int = 10800,
@@ -317,6 +328,39 @@ class AerialPreprocessing:
         clahe_enhancement: bool = True,
         quality_control: bool = True,
     ) -> dict[str, dict[str, float]]:
+        """
+        Performs batch image rectification based on fiducial detection and known reference positions.
+
+        For each image in the batch, this method:
+        - Computes an affine transformation to align detected fiducials with known real-world positions.
+        - Optionally warps the image using this transformation.
+        - Optionally crops the image around the principal point to a fixed square size.
+        - Optionally enhances the image contrast using CLAHE.
+        - Computes quality control (QC) metrics to evaluate the transformation accuracy.
+        - Saves the rectified image and QC visualizations if requested.
+
+        Args:
+            fiducials_detections (dict[str, dict[str, tuple[float, float]]]): Mapping of image paths to their detected
+                fiducials in pixel coordinates.
+            true_fiducials_mm (dict[str, tuple[float, float]]): Ground truth fiducial coordinates in millimeters.
+            scanning_resolution_mm (float, optional): Pixel resolution in mm/pixel. Defaults to 0.025.
+            image_square_dim (int, optional): Dimension (in pixels) of the final cropped image. Defaults to 10800.
+            interpolation_flag (int, optional): Interpolation method used for image warping (e.g., cv2.INTER_CUBIC).
+            transform_coords (bool, optional): Whether to compute and apply the coordinate transformation.
+            transform_image (bool, optional): Whether to warp the image using the computed transformation.
+            crop_image (bool, optional): Whether to crop the image around the transformed principal point.
+            clahe_enhancement (bool, optional): Whether to enhance the image contrast using CLAHE.
+            quality_control (bool, optional): Whether to compute QC metrics and generate QC plots. Defaults to True.
+
+        Returns:
+            dict[str, dict[str, float]]: Dictionary mapping each image path to a dictionary of QC metrics
+            (e.g., RMSE between true and transformed fiducial positions).
+
+        Notes:
+            - Rectified images are saved to the configured output directory.
+            - If `quality_control` is enabled, deviation boxplots are saved to the QC directory.
+            - This method is useful for bulk processing of high-resolution scans requiring precise geometric alignment.
+        """
         qc_restitution = os.path.join(self.qc_directory, "images_restitution")
         if quality_control:
             os.makedirs(qc_restitution, exist_ok=True)

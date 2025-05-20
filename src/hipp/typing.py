@@ -10,12 +10,12 @@ class FiducialDetection(TypedDict):
     subpixel_score: float
 
 
+Fiducials = dict[str, tuple[float, float] | None]
+
+
 class MetadataImageRestituion(TypedDict, total=False):
     transformation_matrix: cv2.typing.MatLike
-    fiducials_mm: dict[str, tuple[float, float]]
-    transformed_fiducials: dict[str, tuple[float, float]]
-    transformed_fiducials_mm: dict[str, tuple[float, float]]
+    fiducials_mm: Fiducials
+    transformed_fiducials: Fiducials
+    transformed_fiducials_mm: Fiducials
     true_fiducials_mm_centered: dict[str, tuple[float, float]]
-
-
-DetectedFiducials = dict[str, tuple[float, float]]
