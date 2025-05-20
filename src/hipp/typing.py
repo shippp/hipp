@@ -1,3 +1,7 @@
+"""
+Copyright (c) 2025 HIPP developers
+"""
+
 from typing import TypedDict
 
 import cv2

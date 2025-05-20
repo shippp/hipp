@@ -1,3 +1,7 @@
+"""
+Copyright (c) 2025 HIPP developers
+"""
+
 import math
 
 

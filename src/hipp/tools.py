@@ -1,7 +1,5 @@
 """
-Module: tools.py
-Author: godinlu
-Date: 28
+Copyright (c) 2025 HIPP developers
 Description: Generic tools
 """
 

@@ -1,7 +1,5 @@
 """
-Module: fiducials.py
-Author: godinlu
-Date: 28
+Copyright (c) 2025 HIPP developers
 Description: functions for aerial fiducials manipulation
 """
 

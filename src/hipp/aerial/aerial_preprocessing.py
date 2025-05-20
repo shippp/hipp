@@ -1,7 +1,5 @@
 """
-Module: preprocessing.py
-Author: godinlu
-Date: 29
+Copyright (c) 2025 HIPP developers
 Description: Contain the AerialPreprocessing class
 """
 

@@ -1,7 +1,5 @@
 """
-Module: quality_control.py
-Author: godinlu
-Date: 30
+Copyright (c) 2025 HIPP developers
 Description: All function for quality control
 """
 

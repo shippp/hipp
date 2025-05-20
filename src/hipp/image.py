@@ -1,7 +1,5 @@
 """
-Module: image.py
-Author: godinlu
-Date: 28
+Copyright (c) 2025 HIPP developers
 Description: some function for the image processing
 """
 
