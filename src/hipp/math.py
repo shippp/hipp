@@ -4,6 +4,9 @@ Copyright (c) 2025 HIPP developers
 
 import math
 
+import cv2
+import numpy as np
+
 
 def angle_between_three_points(p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float]) -> float:
     """
@@ -36,3 +39,24 @@ def angle_between_three_points(p1: tuple[float, float], p2: tuple[float, float],
     angle_deg = math.degrees(angle_rad)
 
     return angle_deg
+
+
+def transform_coord(coord: tuple[float, float], transformation_matrix: cv2.typing.MatLike) -> tuple[float, float]:
+    """
+    Applies a 2D homogeneous transformation (3x3) to a single (x, y) coordinate.
+
+    Args:
+        coord (tuple[float, float]): The input coordinate to transform, as (x, y).
+        transformation_matrix (cv2.typing.MatLike): A 3x3 homogeneous transformation matrix.
+
+    Returns:
+        tuple[float, float]: The transformed coordinate as (x', y').
+    """
+    vec = np.array([coord[0], coord[1], 1.0], dtype=np.float32)
+    transformed = transformation_matrix @ vec
+
+    # Normalize if homogeneous (third coord != 1)
+    if transformed[2] != 0 and transformed[2] != 1:
+        transformed /= transformed[2]
+
+    return float(transformed[0]), float(transformed[1])

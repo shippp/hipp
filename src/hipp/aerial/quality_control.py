@@ -14,13 +14,14 @@ import rasterio
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from hipp.typing import Fiducials, MetadataImageRestituion
+from hipp.aerial.core import MetadataImageRestituion
+from hipp.aerial.fiducials import Fiducials, FiducialsCoordinate
 
 
 def save_fiducials_detection_qc(
-    all_detections: dict[str, dict[str, tuple[float, float] | None]],
-    all_scores: dict[str, dict[str, float]],
-    all_subpixel_scores: dict[str, dict[str, float]],
+    all_detections: dict[str, FiducialsCoordinate],
+    all_scores: dict[str, Fiducials[float]],
+    all_subpixel_scores: dict[str, Fiducials[float]],
     qc_detection_dir: str | None = None,
 ) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
@@ -41,8 +42,8 @@ def save_fiducials_detection_qc(
 
 
 def save_process_fiducials_detection_qc(
-    all_detections: dict[str, dict[str, tuple[float, float] | None]],
-    processed_detections: dict[str, dict[str, tuple[float, float] | None]],
+    all_detections: dict[str, FiducialsCoordinate],
+    processed_detections: dict[str, FiducialsCoordinate],
     qc_detection_dir: str | None = None,
 ) -> None:
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -62,7 +63,7 @@ def save_process_fiducials_detection_qc(
 
 def generate_fiducial_qc_image_from_detection(
     image_path: str,
-    detections: Fiducials,
+    detections: FiducialsCoordinate,
     distance_around_fiducial: int = 100,
     grid_cols: int | None = None,
 ) -> cv2.typing.MatLike:
@@ -118,7 +119,7 @@ def generate_fiducial_qc_image_from_detection(
 
 
 def plot_fiducial_deviation_boxplots(
-    all_coordinates: dict[str, dict[str, tuple[float, float] | None]], ax: Axes, title: str = "Deviation of fiducials"
+    all_coordinates: dict[str, FiducialsCoordinate], ax: Axes, title: str = "Deviation of fiducials"
 ) -> None:
     """
     Affiche un boxplot pour chaque type de fiducial (corner/edge, principal_point) représentant
@@ -160,7 +161,7 @@ def plot_fiducial_deviation_boxplots(
 
 
 def plot_fiducial_score_boxplots(
-    all_scores: dict[str, dict[str, float]], ax: Axes, title: str = "Distribution of matching score"
+    all_scores: dict[str, Fiducials[float]], ax: Axes, title: str = "Distribution of matching score"
 ) -> None:
     """
     Affiche des boxplots pour chaque type de fiducial (corner/edge),
@@ -183,7 +184,7 @@ def plot_fiducial_score_boxplots(
 
 
 def plot_principal_points_deviation(
-    all_coordinates: dict[str, dict[str, tuple[float, float] | None]],
+    all_coordinates: dict[str, FiducialsCoordinate],
     ax: Axes,
     title: str = "Principal points Deviation",
 ) -> None:

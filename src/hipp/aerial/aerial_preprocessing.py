@@ -12,8 +12,8 @@ from tqdm import tqdm
 
 import hipp.aerial.core as core
 import hipp.aerial.quality_control as qc
+from hipp.aerial.fiducials import Fiducials, FiducialsCoordinate
 from hipp.image import resize_img
-from hipp.typing import Fiducials
 
 CORNER_FIDUCIAL_NAME = "corner_fiducial.png"
 MIDSIDE_FIDUCIAL_NAME = "midside_fiducial.png"
@@ -148,7 +148,7 @@ class AerialPreprocessing:
         quality_control: bool = True,
         progress_bar: bool = True,
         max_workers: int = 4,
-    ) -> tuple[dict[str, Fiducials], dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    ) -> tuple[dict[str, FiducialsCoordinate], dict[str, Fiducials[float]], dict[str, Fiducials[float]]]:
         """
         Detects fiducial markers in a batch of grayscale `.tif` images using multithreaded template matching.
 
@@ -210,7 +210,7 @@ class AerialPreprocessing:
         all_scores, all_subpixel_scores = {}, {}
 
         # Function that processes a single image: detects fiducials and optionally generates a QC image
-        def process_image(image_path: str) -> tuple[str, Fiducials, dict[str, float], dict[str, float]]:
+        def process_image(image_path: str) -> tuple[str, FiducialsCoordinate, Fiducials[float], Fiducials[float]]:
             fiducials_detection, scores, subpixel_scores = core.detect_fiducials(
                 image_path=image_path,
                 **fiducials_template,  # Unpack the loaded templates into the function
@@ -244,9 +244,6 @@ class AerialPreprocessing:
             # Collect results as they complete
             for future in futures_iter:
                 image_path, fiducials_detection, scores, subpixel_scores = future.result()
-                fiducials_detection["principal_point"] = core.compute_principal_point_from_valid_segments(
-                    fiducials_detection
-                )
                 all_detections[image_path] = fiducials_detection
                 all_scores[image_path] = scores
                 all_subpixel_scores[image_path] = subpixel_scores
@@ -259,21 +256,49 @@ class AerialPreprocessing:
 
     def process_fiducials_detection(
         self,
-        all_detections: dict[str, Fiducials],
-        all_scores: dict[str, dict[str, float]],
-        all_subpixel_scores: dict[str, dict[str, float]],
+        all_detections: dict[str, FiducialsCoordinate],
+        all_scores: dict[str, Fiducials[float]],
+        all_subpixel_scores: dict[str, Fiducials[float]],
         degree_threshold: float = 0.05,
         score_margin: float = 0.1,
         quality_control: bool = True,
-    ) -> dict[str, Fiducials]:
+    ) -> dict[str, FiducialsCoordinate]:
+        """
+        Wrapper method to run fiducial detection post-processing with optional quality control output.
+
+        This method wraps the core detection post-processing logic by:
+        - Applying geometric and scoring validation to a set of fiducial detections.
+        - Optionally generating and saving quality control (QC) visualizations or logs.
+
+        Parameters:
+            all_detections (dict[str, FiducialsCoordinate]):
+                Dictionary mapping image IDs to their raw fiducial detections.
+            all_scores (dict[str, Fiducials[float]]):
+                Dictionary mapping image IDs to detection confidence scores per fiducial.
+            all_subpixel_scores (dict[str, Fiducials[float]]):
+                Dictionary mapping image IDs to subpixel refinement scores per fiducial.
+            degree_threshold (float, optional):
+                Maximum allowed angular deviation for geometrical consistency check (default is 0.05°).
+            score_margin (float, optional):
+                Margin to subtract from median scores to define per-category thresholds (default is 0.1).
+            quality_control (bool, optional):
+                Whether to enable saving QC results (default is True).
+
+        Returns:
+            dict[str, FiducialsCoordinate]:
+                Processed fiducials where invalid detections are set to `None`, and optionally saved for QC.
+        """
+        # Prepare the QC output directory
         qc_detection_dir = os.path.join(self.qc_directory, "fiducials_detection")
         if quality_control:
             os.makedirs(qc_detection_dir, exist_ok=True)
 
+        # Run the main fiducial detection validation logic (core module)
         processed_detections = core.process_fiducials_detection(
             all_detections, all_scores, all_subpixel_scores, degree_threshold, score_margin
         )
 
+        # Save QC results if enabled
         if quality_control:
             qc.save_process_fiducials_detection_qc(all_detections, processed_detections, qc_detection_dir)
         return processed_detections
@@ -315,7 +340,7 @@ class AerialPreprocessing:
 
     def images_restitution(
         self,
-        fiducials_detections: dict[str, Fiducials],
+        fiducials_detections: dict[str, FiducialsCoordinate],
         true_fiducials_mm: dict[str, tuple[float, float]],
         scanning_resolution_mm: float = 0.025,
         image_square_dim: int = 10800,
