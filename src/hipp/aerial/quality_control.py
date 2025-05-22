@@ -83,27 +83,27 @@ def generate_fiducial_qc_image_from_detection(
     patches = []
     with rasterio.open(image_path) as src:
         for label, coord in detections.items():
-            assert coord is not None  # for mypy
-            cx, cy = coord
-            cx_int, cy_int = int(round(cx)), int(round(cy))
+            if label != "principal_point" and coord is not None:
+                cx, cy = coord
+                cx_int, cy_int = int(round(cx)), int(round(cy))
 
-            window = rasterio.windows.Window(
-                cx_int - distance_around_fiducial, cy_int - distance_around_fiducial, patch_size, patch_size
-            )
-            patch = src.read(1, window=window)
+                window = rasterio.windows.Window(
+                    cx_int - distance_around_fiducial, cy_int - distance_around_fiducial, patch_size, patch_size
+                )
+                patch = src.read(1, window=window)
 
-            # Convertir en BGR pour annotations
-            patch_bgr = cv2.cvtColor(patch, cv2.COLOR_GRAY2BGR)
+                # Convertir en BGR pour annotations
+                patch_bgr = cv2.cvtColor(patch, cv2.COLOR_GRAY2BGR)
 
-            # Position subpixel locale dans la vignette
-            dx = cx - (cx_int - distance_around_fiducial)
-            dy = cy - (cy_int - distance_around_fiducial)
-            cv2.circle(patch_bgr, (int(round(dx)), int(round(dy))), 2, (0, 255, 0), -1)
+                # Position subpixel locale dans la vignette
+                dx = cx - (cx_int - distance_around_fiducial)
+                dy = cy - (cy_int - distance_around_fiducial)
+                cv2.circle(patch_bgr, (int(round(dx)), int(round(dy))), 2, (0, 255, 0), -1)
 
-            # Annoter le nom
-            cv2.putText(patch_bgr, label, (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
+                # Annoter le nom
+                cv2.putText(patch_bgr, label, (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
 
-            patches.append(patch_bgr)
+                patches.append(patch_bgr)
 
     # Organisation en grille
     n = len(patches)
@@ -224,7 +224,7 @@ def plot_coordinates_transformations(metrics: dict[str, dict[str, float]]) -> Fi
     ax.plot(labels, rmse_after, label="RMSE after correction", marker="o", color="red")
 
     ax.set_ylabel("RMSE (mm)")
-    ax.set_title("RMSE before and after correction")
+    ax.set_title("RMSE between detected fiducial coordinates and true fiducials")
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=90)
     ax.grid(True)

@@ -9,13 +9,13 @@ from collections import defaultdict
 from typing import TypedDict
 
 import cv2
+import numpy as np
 import rasterio
 
 import hipp.image
 import hipp.math
 from hipp.aerial.fiducials import Fiducials, FiducialsCoordinate
 from hipp.tools import points_picker
-from hipp.typing import FiducialDetection
 
 
 class MetadataImageRestituion(TypedDict, total=False):
@@ -24,6 +24,13 @@ class MetadataImageRestituion(TypedDict, total=False):
     transformed_fiducials: FiducialsCoordinate
     transformed_fiducials_mm: FiducialsCoordinate
     true_fiducials_mm_centered: FiducialsCoordinate
+
+
+class FiducialDetection(TypedDict):
+    approx_center: tuple[float, float]
+    approx_score: float
+    subpixel_center: tuple[float, float]
+    subpixel_score: float
 
 
 def create_fiducial_template_from_image(
@@ -300,8 +307,9 @@ def image_restitution(
         # Apply geometric transformation to the image
         if transform_image:
             height, width = output_image.shape[:2]
+            inverse_matrix = np.linalg.inv(metadata["transformation_matrix"])  # type: ignore[arg-type]
             output_image = cv2.warpAffine(
-                output_image, metadata["transformation_matrix"][:2], dsize=(width, height), flags=interpolation_flag
+                output_image, inverse_matrix[:2], dsize=(width, height), flags=interpolation_flag
             )
 
         # Crop image around the principal point if requested

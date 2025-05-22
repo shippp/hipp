@@ -50,17 +50,39 @@ class AerialPreprocessing:
     def __init__(
         self,
         images_directory: str,
-        output_directory: str = "./preprocess_images",
-        fiducials_directory: str = "./fiducials",
-        qc_directory: str = "./qc",
+        output_directory: str | None = None,
+        fiducials_directory: str | None = None,
+        qc_directory: str | None = None,
     ):
+        """
+        Initialize the preprocessing object with directories for images, output, fiducials, and quality control.
+
+        Args:
+            images_directory (str): Path to the directory containing input images.
+            output_directory (str | None, optional): Directory to save processed images.
+                Defaults to a subfolder 'output_images' within the parent of images_directory.
+            fiducials_directory (str | None, optional): Directory containing fiducials data.
+                Defaults to a subfolder 'fiducials' within the parent of images_directory.
+            qc_directory (str | None, optional): Directory for saving quality control outputs.
+                Defaults to a subfolder 'qc' within the parent of images_directory.
+
+        Raises:
+            FileNotFoundError: If the images_directory does not exist or contains no .tif files.
+        """
         if not os.path.exists(images_directory):
             raise FileNotFoundError(f"The images directory {images_directory} does not exist")
 
         self.images_directory = images_directory
-        self.output_directory = output_directory
-        self.fiducials_directory = fiducials_directory
-        self.qc_directory = qc_directory
+
+        # define all path in terms of images_directory if their are not provided
+        project_dir = os.path.dirname(images_directory)
+        self.output_directory = (
+            os.path.join(project_dir, "output_images") if output_directory is None else output_directory
+        )
+        self.fiducials_directory = (
+            os.path.join(project_dir, "fiducials") if fiducials_directory is None else fiducials_directory
+        )
+        self.qc_directory = os.path.join(project_dir, "qc") if qc_directory is None else qc_directory
 
         tif_files = sorted(glob.glob(os.path.join(images_directory, "*.tif"))) + sorted(
             glob.glob(os.path.join(images_directory, "*.TIF"))
@@ -147,7 +169,7 @@ class AerialPreprocessing:
         grid_size: int = 3,
         quality_control: bool = True,
         progress_bar: bool = True,
-        max_workers: int = 4,
+        max_workers: int = 5,
     ) -> tuple[dict[str, FiducialsCoordinate], dict[str, Fiducials[float]], dict[str, Fiducials[float]]]:
         """
         Detects fiducial markers in a batch of grayscale `.tif` images using multithreaded template matching.
@@ -350,6 +372,7 @@ class AerialPreprocessing:
         crop_image: bool = True,
         clahe_enhancement: bool = True,
         quality_control: bool = True,
+        max_workers: int = 5,
     ) -> dict[str, dict[str, float]]:
         """
         Performs batch image rectification based on fiducial detection and known reference positions.
@@ -389,7 +412,12 @@ class AerialPreprocessing:
             os.makedirs(qc_restitution, exist_ok=True)
 
         metrics = {}
-        for image_path, detection in fiducials_detections.items():
+
+        # Determine whether to parallelize processing based on computationally intensive steps
+        should_parallelize = transform_image or crop_image or clahe_enhancement
+
+        # Function to process a single image: apply transformations, save result, and return metadata
+        def process(image_path: str, detection: FiducialsCoordinate) -> tuple[str, core.MetadataImageRestituion]:
             image, metadata = core.image_restitution(
                 image_path,
                 detection,
@@ -402,14 +430,36 @@ class AerialPreprocessing:
                 crop_image,
                 clahe_enhancement,
             )
-            metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
-
+            # If the image was successfully processed, save it to the output directory
             if image is not None:
                 os.makedirs(self.output_directory, exist_ok=True)
                 output_image_path = os.path.join(self.output_directory, os.path.basename(image_path))
                 cv2.imwrite(output_image_path, image)
+            return image_path, metadata
 
+        # Use multithreading if any heavy image operations are enabled
+        if should_parallelize:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all image processing tasks to the executor
+                futures = {
+                    executor.submit(process, image_path, detection): image_path
+                    for image_path, detection in fiducials_detections.items()
+                }
+                # Display progress bar for asynchronous processing
+                with tqdm(total=len(futures), desc="Image restitution", unit="img") as pbar:
+                    for future in as_completed(futures):
+                        image_path, metadata = future.result()
+                        metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
+                        pbar.update(1)
+        else:
+            # Sequential processing (fallback when no heavy operations are enabled)
+            for image_path, detection in fiducials_detections.items():
+                image_path, metadata = process(image_path, detection)
+                metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
+
+        # If quality control is enabled, generate and save deviation plots
         if quality_control:
             plot_rmse = qc.plot_coordinates_transformations(metrics)
             plot_rmse.savefig(os.path.join(qc_restitution, "deviation_boxplot.png"))
+
         return metrics
