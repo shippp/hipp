@@ -276,7 +276,7 @@ class AerialPreprocessing:
 
         return all_detections, all_scores, all_subpixel_scores
 
-    def process_fiducials_detection(
+    def filter_detected_fiducials(
         self,
         all_detections: dict[str, FiducialsCoordinate],
         all_scores: dict[str, Fiducials[float]],
@@ -316,7 +316,7 @@ class AerialPreprocessing:
             os.makedirs(qc_detection_dir, exist_ok=True)
 
         # Run the main fiducial detection validation logic (core module)
-        processed_detections = core.process_fiducials_detection(
+        processed_detections = core.filter_detected_fiducials(
             all_detections, all_scores, all_subpixel_scores, degree_threshold, score_margin
         )
 
@@ -364,7 +364,7 @@ class AerialPreprocessing:
         self,
         fiducials_detections: dict[str, FiducialsCoordinate],
         true_fiducials_mm: dict[str, tuple[float, float]],
-        scanning_resolution_mm: float = 0.025,
+        scanning_resolution_mm: float = 0.02,
         image_square_dim: int = 10800,
         interpolation_flag: int = cv2.INTER_CUBIC,
         transform_coords: bool = True,
@@ -373,7 +373,7 @@ class AerialPreprocessing:
         clahe_enhancement: bool = True,
         quality_control: bool = True,
         max_workers: int = 5,
-    ) -> dict[str, dict[str, float]]:
+    ) -> dict[str, cv2.typing.MatLike]:
         """
         Performs batch image rectification based on fiducial detection and known reference positions.
 
@@ -412,6 +412,7 @@ class AerialPreprocessing:
             os.makedirs(qc_restitution, exist_ok=True)
 
         metrics = {}
+        matrixs = {}
 
         # Determine whether to parallelize processing based on computationally intensive steps
         should_parallelize = transform_image or crop_image or clahe_enhancement
@@ -449,17 +450,19 @@ class AerialPreprocessing:
                 with tqdm(total=len(futures), desc="Image restitution", unit="img") as pbar:
                     for future in as_completed(futures):
                         image_path, metadata = future.result()
+                        matrixs[image_path] = metadata["transformation_matrix"]
                         metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
                         pbar.update(1)
         else:
             # Sequential processing (fallback when no heavy operations are enabled)
             for image_path, detection in fiducials_detections.items():
                 image_path, metadata = process(image_path, detection)
+                matrixs[image_path] = metadata["transformation_matrix"]
                 metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
 
         # If quality control is enabled, generate and save deviation plots
         if quality_control:
             plot_rmse = qc.plot_coordinates_transformations(metrics)
-            plot_rmse.savefig(os.path.join(qc_restitution, "deviation_boxplot.png"))
+            plot_rmse.savefig(os.path.join(qc_restitution, "Fiducials_RMSE.png"))
 
-        return metrics
+        return matrixs

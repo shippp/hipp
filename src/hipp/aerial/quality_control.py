@@ -223,7 +223,7 @@ def plot_coordinates_transformations(metrics: dict[str, dict[str, float]]) -> Fi
     ax.plot(labels, rmse_before, label="RMSE before correction", marker="o", color="blue")
     ax.plot(labels, rmse_after, label="RMSE after correction", marker="o", color="red")
 
-    ax.set_ylabel("RMSE (mm)")
+    ax.set_ylabel("RMSE (pixels)")
     ax.set_title("RMSE between detected fiducial coordinates and true fiducials")
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=90)
@@ -236,18 +236,20 @@ def plot_coordinates_transformations(metrics: dict[str, dict[str, float]]) -> Fi
 
 def compute_metrics_from_image_restitution(metadata: MetadataImageRestituion) -> dict[str, float]:
     if (
-        metadata["fiducials_mm"] is None
-        or metadata["transformed_fiducials_mm"] is None
-        or metadata["true_fiducials_mm_centered"] is None
+        metadata["true_fiducials"] is None
+        or metadata["transformed_fiducials"] is None
+        or metadata["detected_fiducials"] is None
     ):
         raise ValueError("No metrics to compute")
 
     used_keys = [
-        k for k in metadata["fiducials_mm"] if k != "principal_point" and metadata["fiducials_mm"][k] is not None
+        k
+        for k in metadata["detected_fiducials"]
+        if k != "principal_point" and metadata["detected_fiducials"][k] is not None
     ]
-    arr_fiducials_mm = np.array([metadata["fiducials_mm"][k] for k in used_keys])
-    arr_transformed_fiducials_mm = np.array([metadata["transformed_fiducials_mm"][k] for k in used_keys])
-    arr_true_fiducials_mm = np.array([metadata["true_fiducials_mm_centered"][k] for k in used_keys])
+    arr_fiducials_mm = np.array([metadata["detected_fiducials"][k] for k in used_keys])
+    arr_transformed_fiducials_mm = np.array([metadata["transformed_fiducials"][k] for k in used_keys])
+    arr_true_fiducials_mm = np.array([metadata["true_fiducials"][k] for k in used_keys])
 
     rmse_before = np.sqrt(np.mean(np.sum((arr_fiducials_mm - arr_true_fiducials_mm) ** 2, axis=1)))
     rmse_after = np.sqrt(np.mean(np.sum((arr_transformed_fiducials_mm - arr_true_fiducials_mm) ** 2, axis=1)))

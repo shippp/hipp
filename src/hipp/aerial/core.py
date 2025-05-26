@@ -20,10 +20,9 @@ from hipp.tools import points_picker
 
 class MetadataImageRestituion(TypedDict, total=False):
     transformation_matrix: cv2.typing.MatLike
-    fiducials_mm: FiducialsCoordinate
+    true_fiducials: FiducialsCoordinate
+    detected_fiducials: FiducialsCoordinate
     transformed_fiducials: FiducialsCoordinate
-    transformed_fiducials_mm: FiducialsCoordinate
-    true_fiducials_mm_centered: FiducialsCoordinate
 
 
 class FiducialDetection(TypedDict):
@@ -70,6 +69,43 @@ def create_fiducial_template_from_image(
     y_B = min(image.shape[0], y + distance_around_fiducial)
 
     return image[y_T:y_B, x_L:x_R]
+
+
+def create_pseudofiducials_templates_from_image(
+    image: cv2.typing.MatLike,
+    fiducials_coordinates: list[tuple[int, int]] | None = None,
+    distance_around_fiducial: int = 250,
+    threshold: int = 50,
+) -> list[cv2.typing.MatLike]:
+    if fiducials_coordinates is None:
+        coords = points_picker(image, point_count=4)
+    else:
+        coords = fiducials_coordinates
+    if len(coords) != 4:
+        raise ValueError("Not enough fiducials coordinate, need to have 4")
+
+    results = []
+
+    for coord in coords:
+        fiducial_image = create_fiducial_template_from_image(image, coord, distance_around_fiducial)
+        _, binary_mask = cv2.threshold(fiducial_image, threshold, 255, cv2.THRESH_BINARY)
+        mask_bool = binary_mask == 255
+        masked_values = fiducial_image[mask_bool]
+
+        # calculate the mean and the standard deviation of the masked value
+        mean_val = np.mean(masked_values)
+        std_val = np.std(masked_values)
+
+        # generate some gaussian noise with the same values
+        noisy_values = np.random.normal(loc=mean_val, scale=std_val, size=masked_values.shape)
+
+        # clip value to keep them between 0 and 255
+        noisy_values = np.clip(noisy_values, 0, 255).astype(np.uint8)
+
+        fiducial_image[mask_bool] = noisy_values
+        results.append(fiducial_image)
+
+    return results
 
 
 def detect_fiducials(
@@ -226,11 +262,16 @@ def detect_fiducial(
     }
 
 
+def detect_pseudofiducials(image_path: str, fiducials: list[cv2.typing.MatLike], grid_size: int = 3) -> None:
+    """TODO"""
+    pass
+
+
 def image_restitution(
     image_path: str,
     detected_fiducials: FiducialsCoordinate,
     true_fiducials_mm: FiducialsCoordinate | dict[str, tuple[float, float]],
-    scanning_resolution_mm: float = 0.025,
+    scanning_resolution_mm: float = 0.02,
     image_square_dim: int = 10800,
     interpolation_flag: int = cv2.INTER_CUBIC,
     transform_coords: bool = True,
@@ -287,18 +328,23 @@ def image_restitution(
     # Compute transformation matrix and transform coordinates if requested
     if transform_coords:
         true_fiducials_mm = FiducialsCoordinate(true_fiducials_mm)
-        # here we align the true fiducials coordinate with the geometric principal point, to be in the same reference as detected fiducials
-        metadata["true_fiducials_mm_centered"] = true_fiducials_mm.convert_in_camera_reference(1, False)
 
-        # convert the detected fiducials in camera reference
-        metadata["fiducials_mm"] = detected_fiducials.convert_in_camera_reference(scanning_resolution_mm)
+        assert detected_fiducials["principal_point"] is not None
 
-        metadata["transformation_matrix"] = metadata["fiducials_mm"].estimate_transformation_matrix(
-            metadata["true_fiducials_mm_centered"]
+        img_ref_matrix = hipp.math.affine_matrix(
+            scale_x=1 / scanning_resolution_mm,
+            scale_y=-1 / scanning_resolution_mm,
+            translate_x=detected_fiducials["principal_point"][0],
+            translate_y=detected_fiducials["principal_point"][1],
+        )
+        metadata["true_fiducials"] = true_fiducials_mm.transform(img_ref_matrix)
+        metadata["detected_fiducials"] = detected_fiducials
+
+        metadata["transformation_matrix"] = detected_fiducials.estimate_transformation_matrix(
+            metadata["true_fiducials"]
         )
 
         metadata["transformed_fiducials"] = detected_fiducials.transform(metadata["transformation_matrix"])
-        metadata["transformed_fiducials_mm"] = metadata["fiducials_mm"].transform(metadata["transformation_matrix"])
 
     # Load image if any processing is requested
     if transform_image or crop_image or clahe_enhancement:
@@ -307,9 +353,8 @@ def image_restitution(
         # Apply geometric transformation to the image
         if transform_image:
             height, width = output_image.shape[:2]
-            inverse_matrix = np.linalg.inv(metadata["transformation_matrix"])  # type: ignore[arg-type]
             output_image = cv2.warpAffine(
-                output_image, inverse_matrix[:2], dsize=(width, height), flags=interpolation_flag
+                output_image, metadata["transformation_matrix"][:2], dsize=(width, height), flags=interpolation_flag
             )
 
         # Crop image around the principal point if requested
@@ -328,7 +373,7 @@ def image_restitution(
     return output_image, metadata
 
 
-def process_fiducials_detection(
+def filter_detected_fiducials(
     all_detections: dict[str, FiducialsCoordinate],
     all_scores: dict[str, Fiducials[float]],
     all_subpixel_scores: dict[str, Fiducials[float]],

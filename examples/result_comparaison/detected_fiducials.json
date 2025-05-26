@@ -1,0 +1,1548 @@
+{
+    "preprocessing/raw_images/NAGAP_94V3_199.tif": {
+        "corner_top_left": [
+            1113.25,
+            386.25
+        ],
+        "corner_top_right": [
+            12111.25,
+            334.125
+        ],
+        "corner_bottom_left": [
+            1166.125,
+            11384.0
+        ],
+        "corner_bottom_right": [
+            12163.75,
+            11331.75
+        ],
+        "midside_top": [
+            6611.625,
+            259.75
+        ],
+        "midside_bottom": [
+            6665.25,
+            11458.0
+        ],
+        "midside_left": [
+            1039.625,
+            5885.625
+        ],
+        "midside_right": [
+            12237.25,
+            5831.625
+        ],
+        "principal_point": [
+            6638.515625,
+            5858.890625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_209.tif": {
+        "corner_top_left": [
+            1118.5,
+            379.25
+        ],
+        "corner_top_right": [
+            12116.25,
+            333.5
+        ],
+        "corner_bottom_left": [
+            1166.75,
+            11376.875
+        ],
+        "corner_bottom_right": [
+            12163.5,
+            11331.625
+        ],
+        "midside_top": [
+            6616.875,
+            256.0
+        ],
+        "midside_bottom": [
+            6665.25,
+            11454.25
+        ],
+        "midside_left": [
+            1042.875,
+            5878.5
+        ],
+        "midside_right": [
+            12239.625,
+            5831.125
+        ],
+        "principal_point": [
+            6641.203125,
+            5855.140625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_200.tif": {
+        "corner_top_left": [
+            1123.0,
+            380.875
+        ],
+        "corner_top_right": [
+            12121.25,
+            339.0
+        ],
+        "corner_bottom_left": [
+            1166.5,
+            11379.5
+        ],
+        "corner_bottom_right": [
+            12164.0,
+            11337.625
+        ],
+        "midside_top": [
+            6621.875,
+            259.75
+        ],
+        "midside_bottom": [
+            6665.625,
+            11458.5
+        ],
+        "midside_left": [
+            1044.875,
+            5881.25
+        ],
+        "midside_right": [
+            12242.625,
+            5837.25
+        ],
+        "principal_point": [
+            6643.71875,
+            5859.21875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_230.tif": {
+        "corner_top_left": [
+            1130.5,
+            376.125
+        ],
+        "corner_top_right": [
+            12128.125,
+            344.5
+        ],
+        "corner_bottom_left": [
+            1164.25,
+            11373.5
+        ],
+        "corner_bottom_right": [
+            12160.875,
+            11342.375
+        ],
+        "midside_top": [
+            6629.0,
+            260.125
+        ],
+        "midside_bottom": [
+            6662.5,
+            11458.0
+        ],
+        "midside_left": [
+            1047.75,
+            5875.25
+        ],
+        "midside_right": [
+            12244.375,
+            5842.0
+        ],
+        "principal_point": [
+            6645.921875,
+            5858.984375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_204.tif": {
+        "corner_top_left": [
+            1119.375,
+            379.875
+        ],
+        "corner_top_right": [
+            12117.375,
+            336.5
+        ],
+        "corner_bottom_left": [
+            1163.5,
+            11377.375
+        ],
+        "corner_bottom_right": [
+            12160.875,
+            11334.5
+        ],
+        "midside_top": [
+            6617.875,
+            257.875
+        ],
+        "midside_bottom": [
+            6662.25,
+            11456.125
+        ],
+        "midside_left": [
+            1041.625,
+            5879.875
+        ],
+        "midside_right": [
+            12239.0,
+            5834.5
+        ],
+        "principal_point": [
+            6640.234375,
+            5857.078125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_213.tif": {
+        "corner_top_left": [
+            1112.625,
+            384.5
+        ],
+        "corner_top_right": [
+            12110.25,
+            336.125
+        ],
+        "corner_bottom_left": [
+            1162.75,
+            11382.25
+        ],
+        "corner_bottom_right": [
+            12159.5,
+            11334.25
+        ],
+        "midside_top": [
+            6611.125,
+            260.0
+        ],
+        "midside_bottom": [
+            6661.375,
+            11458.25
+        ],
+        "midside_left": [
+            1037.875,
+            5883.625
+        ],
+        "midside_right": [
+            12234.75,
+            5834.0
+        ],
+        "principal_point": [
+            6636.28125,
+            5859.125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_203.tif": {
+        "corner_top_left": [
+            1107.375,
+            388.25
+        ],
+        "corner_top_right": [
+            12104.75,
+            332.625
+        ],
+        "corner_bottom_left": [
+            1163.625,
+            11385.875
+        ],
+        "corner_bottom_right": [
+            12161.375,
+            11330.5
+        ],
+        "midside_top": [
+            6605.5,
+            260.25
+        ],
+        "midside_bottom": [
+            6662.875,
+            11458.5
+        ],
+        "midside_left": [
+            1035.75,
+            5888.0
+        ],
+        "midside_right": [
+            12232.875,
+            5830.0
+        ],
+        "principal_point": [
+            6634.265625,
+            5859.25
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_207.tif": {
+        "corner_top_left": [
+            1105.75,
+            387.875
+        ],
+        "corner_top_right": [
+            12104.0,
+            331.875
+        ],
+        "corner_bottom_left": [
+            1164.125,
+            11385.875
+        ],
+        "corner_bottom_right": [
+            12161.0,
+            11330.375
+        ],
+        "midside_top": [
+            6604.5,
+            259.625
+        ],
+        "midside_bottom": [
+            6662.875,
+            11458.125
+        ],
+        "midside_left": [
+            1035.25,
+            5888.375
+        ],
+        "midside_right": [
+            12232.375,
+            5829.75
+        ],
+        "principal_point": [
+            6633.734375,
+            5858.984375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_227.tif": {
+        "corner_top_left": [
+            1107.625,
+            388.125
+        ],
+        "corner_top_right": [
+            12105.5,
+            332.75
+        ],
+        "corner_bottom_left": [
+            1165.75,
+            11385.5
+        ],
+        "corner_bottom_right": [
+            12162.625,
+            11330.5
+        ],
+        "midside_top": [
+            6606.25,
+            260.125
+        ],
+        "midside_bottom": [
+            6664.5,
+            11457.875
+        ],
+        "midside_left": [
+            1037.0,
+            5888.0
+        ],
+        "midside_right": [
+            12233.75,
+            5830.0
+        ],
+        "principal_point": [
+            6635.375,
+            5859.109375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_221.tif": {
+        "corner_top_left": [
+            1116.0,
+            379.125
+        ],
+        "corner_top_right": [
+            12113.625,
+            332.625
+        ],
+        "corner_bottom_left": [
+            1163.625,
+            11376.75
+        ],
+        "corner_bottom_right": [
+            12160.5,
+            11330.625
+        ],
+        "midside_top": [
+            6614.75,
+            256.0
+        ],
+        "midside_bottom": [
+            6662.375,
+            11453.75
+        ],
+        "midside_left": [
+            1040.0,
+            5879.125
+        ],
+        "midside_right": [
+            12237.125,
+            5830.375
+        ],
+        "principal_point": [
+            6638.5,
+            5854.796875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_194.tif": {
+        "corner_top_left": [
+            1116.0,
+            381.5
+        ],
+        "corner_top_right": [
+            12114.5,
+            333.625
+        ],
+        "corner_bottom_left": [
+            1165.75,
+            11380.125
+        ],
+        "corner_bottom_right": [
+            12163.375,
+            11331.25
+        ],
+        "midside_top": [
+            6615.0,
+            257.25
+        ],
+        "midside_bottom": [
+            6665.0,
+            11455.625
+        ],
+        "midside_left": [
+            1041.125,
+            5881.5
+        ],
+        "midside_right": [
+            12238.375,
+            5831.125
+        ],
+        "principal_point": [
+            6639.890625,
+            5856.5
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_223.tif": {
+        "corner_top_left": [
+            1100.625,
+            387.875
+        ],
+        "corner_top_right": [
+            12098.25,
+            326.125
+        ],
+        "corner_bottom_left": [
+            1164.875,
+            11385.125
+        ],
+        "corner_bottom_right": [
+            12161.625,
+            11323.875
+        ],
+        "midside_top": [
+            6599.0,
+            256.625
+        ],
+        "midside_bottom": [
+            6663.625,
+            11454.5
+        ],
+        "midside_left": [
+            1032.875,
+            5887.375
+        ],
+        "midside_right": [
+            12229.875,
+            5823.625
+        ],
+        "principal_point": [
+            6631.34375,
+            5855.640625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_220.tif": {
+        "corner_top_left": [
+            1112.0,
+            383.125
+        ],
+        "corner_top_right": [
+            12109.375,
+            334.125
+        ],
+        "corner_bottom_left": [
+            1163.625,
+            11380.75
+        ],
+        "corner_bottom_right": [
+            12160.875,
+            11331.75
+        ],
+        "midside_top": [
+            6610.125,
+            258.375
+        ],
+        "midside_bottom": [
+            6662.5,
+            11456.5
+        ],
+        "midside_left": [
+            1038.0,
+            5882.375
+        ],
+        "midside_right": [
+            12235.0,
+            5831.25
+        ],
+        "principal_point": [
+            6636.4375,
+            5857.28125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_201.tif": {
+        "corner_top_left": [
+            1122.25,
+            376.875
+        ],
+        "corner_top_right": [
+            12121.625,
+            337.375
+        ],
+        "corner_bottom_left": [
+            1164.375,
+            11376.125
+        ],
+        "corner_bottom_right": [
+            12162.5,
+            11335.5
+        ],
+        "midside_top": [
+            6622.125,
+            256.375
+        ],
+        "midside_bottom": [
+            6663.875,
+            11455.875
+        ],
+        "midside_left": [
+            1043.75,
+            5877.25
+        ],
+        "midside_right": [
+            12241.75,
+            5835.375
+        ],
+        "principal_point": [
+            6642.78125,
+            5856.34375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_202.tif": {
+        "corner_top_left": [
+            1112.875,
+            381.75
+        ],
+        "corner_top_right": [
+            12111.0,
+            333.625
+        ],
+        "corner_bottom_left": [
+            1162.25,
+            11379.625
+        ],
+        "corner_bottom_right": [
+            12159.875,
+            11331.5
+        ],
+        "midside_top": [
+            6611.875,
+            257.5
+        ],
+        "midside_bottom": [
+            6661.375,
+            11455.625
+        ],
+        "midside_left": [
+            1037.75,
+            5881.375
+        ],
+        "midside_right": [
+            12235.25,
+            5831.375
+        ],
+        "principal_point": [
+            6636.53125,
+            5856.546875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_226.tif": {
+        "corner_top_left": [
+            1115.125,
+            379.125
+        ],
+        "corner_top_right": [
+            12112.625,
+            333.75
+        ],
+        "corner_bottom_left": [
+            1162.625,
+            11376.625
+        ],
+        "corner_bottom_right": [
+            12159.25,
+            11331.125
+        ],
+        "midside_top": [
+            6613.625,
+            256.0
+        ],
+        "midside_bottom": [
+            6661.125,
+            11453.875
+        ],
+        "midside_left": [
+            1039.125,
+            5878.375
+        ],
+        "midside_right": [
+            12235.875,
+            5831.0
+        ],
+        "principal_point": [
+            6637.421875,
+            5854.984375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_234.tif": {
+        "corner_top_left": [
+            1122.625,
+            376.5
+        ],
+        "corner_top_right": [
+            12120.125,
+            339.875
+        ],
+        "corner_bottom_left": [
+            1162.25,
+            11374.0
+        ],
+        "corner_bottom_right": [
+            12159.125,
+            11337.625
+        ],
+        "midside_top": [
+            6621.0,
+            257.875
+        ],
+        "midside_bottom": [
+            6660.875,
+            11456.0
+        ],
+        "midside_left": [
+            1042.625,
+            5875.375
+        ],
+        "midside_right": [
+            12239.5,
+            5837.625
+        ],
+        "principal_point": [
+            6641.015625,
+            5856.859375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_211.tif": {
+        "corner_top_left": [
+            1103.375,
+            390.0
+        ],
+        "corner_top_right": [
+            12100.75,
+            330.75
+        ],
+        "corner_bottom_left": [
+            1163.625,
+            11387.75
+        ],
+        "corner_bottom_right": [
+            12160.375,
+            11328.75
+        ],
+        "midside_top": [
+            6601.25,
+            260.125
+        ],
+        "midside_bottom": [
+            6662.125,
+            11458.375
+        ],
+        "midside_left": [
+            1033.625,
+            5889.125
+        ],
+        "midside_right": [
+            12230.25,
+            5828.75
+        ],
+        "principal_point": [
+            6631.921875,
+            5859.203125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_225.tif": {
+        "corner_top_left": [
+            1113.0,
+            382.0
+        ],
+        "corner_top_right": [
+            12110.75,
+            334.875
+        ],
+        "corner_bottom_left": [
+            1162.375,
+            11379.375
+        ],
+        "corner_bottom_right": [
+            12159.25,
+            11332.625
+        ],
+        "midside_top": [
+            6611.625,
+            258.125
+        ],
+        "midside_bottom": [
+            6661.0,
+            11456.125
+        ],
+        "midside_left": [
+            1037.875,
+            5881.5
+        ],
+        "midside_right": [
+            12234.875,
+            5832.375
+        ],
+        "principal_point": [
+            6636.34375,
+            5857.125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_228.tif": {
+        "corner_top_left": [
+            1118.0,
+            379.375
+        ],
+        "corner_top_right": [
+            12115.75,
+            333.75
+        ],
+        "corner_bottom_left": [
+            1165.625,
+            11377.125
+        ],
+        "corner_bottom_right": [
+            12162.5,
+            11331.5
+        ],
+        "midside_top": [
+            6616.5,
+            256.625
+        ],
+        "midside_bottom": [
+            6664.375,
+            11454.25
+        ],
+        "midside_left": [
+            1042.0,
+            5879.0
+        ],
+        "midside_right": [
+            12238.75,
+            5831.375
+        ],
+        "principal_point": [
+            6640.4375,
+            5855.375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_198.tif": {
+        "corner_top_left": [
+            1115.5,
+            381.625
+        ],
+        "corner_top_right": [
+            12113.25,
+            334.5
+        ],
+        "corner_bottom_left": [
+            1164.375,
+            11379.875
+        ],
+        "corner_bottom_right": [
+            12161.75,
+            11332.375
+        ],
+        "midside_top": [
+            6614.125,
+            257.625
+        ],
+        "midside_bottom": [
+            6663.375,
+            11456.0
+        ],
+        "midside_left": [
+            1040.125,
+            5881.625
+        ],
+        "midside_right": [
+            12237.375,
+            5832.125
+        ],
+        "principal_point": [
+            6638.734375,
+            5856.96875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_212.tif": {
+        "corner_top_left": [
+            1104.875,
+            390.625
+        ],
+        "corner_top_right": [
+            12102.25,
+            332.375
+        ],
+        "corner_bottom_left": [
+            1164.375,
+            11388.125
+        ],
+        "corner_bottom_right": [
+            12161.125,
+            11330.375
+        ],
+        "midside_top": [
+            6603.25,
+            261.0
+        ],
+        "midside_bottom": [
+            6663.125,
+            11459.25
+        ],
+        "midside_left": [
+            1034.875,
+            5889.625
+        ],
+        "midside_right": [
+            12231.625,
+            5830.625
+        ],
+        "principal_point": [
+            6633.1875,
+            5860.25
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_222.tif": {
+        "corner_top_left": [
+            1116.375,
+            380.625
+        ],
+        "corner_top_right": [
+            12113.875,
+            332.375
+        ],
+        "corner_bottom_left": [
+            1166.25,
+            11378.25
+        ],
+        "corner_bottom_right": [
+            12163.375,
+            11330.625
+        ],
+        "midside_top": [
+            6615.0,
+            256.75
+        ],
+        "midside_bottom": [
+            6665.125,
+            11454.625
+        ],
+        "midside_left": [
+            1041.625,
+            5880.125
+        ],
+        "midside_right": [
+            12238.5,
+            5830.125
+        ],
+        "principal_point": [
+            6640.015625,
+            5855.4375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_210.tif": {
+        "corner_top_left": [
+            1118.75,
+            378.0
+        ],
+        "corner_top_right": [
+            12116.0,
+            334.875
+        ],
+        "corner_bottom_left": [
+            1163.625,
+            11376.0
+        ],
+        "corner_bottom_right": [
+            12160.75,
+            11333.125
+        ],
+        "midside_top": [
+            6617.125,
+            256.375
+        ],
+        "midside_bottom": [
+            6662.25,
+            11454.75
+        ],
+        "midside_left": [
+            1041.25,
+            5877.625
+        ],
+        "midside_right": null,
+        "principal_point": [
+            6639.8125,
+            5855.479166666667
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_229.tif": {
+        "corner_top_left": [
+            1122.75,
+            378.25
+        ],
+        "corner_top_right": [
+            12120.25,
+            342.5
+        ],
+        "corner_bottom_left": [
+            1161.25,
+            11375.625
+        ],
+        "corner_bottom_right": [
+            12157.875,
+            11339.875
+        ],
+        "midside_top": [
+            6621.5,
+            260.125
+        ],
+        "midside_bottom": [
+            6659.75,
+            11457.75
+        ],
+        "midside_left": [
+            1042.25,
+            5877.25
+        ],
+        "midside_right": [
+            12238.75,
+            5839.875
+        ],
+        "principal_point": [
+            6640.546875,
+            5858.90625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_196.tif": {
+        "corner_top_left": [
+            1109.25,
+            385.75
+        ],
+        "corner_top_right": [
+            12107.25,
+            333.5
+        ],
+        "corner_bottom_left": [
+            1162.0,
+            11383.875
+        ],
+        "corner_bottom_right": [
+            12159.75,
+            11331.125
+        ],
+        "midside_top": [
+            6607.875,
+            259.375
+        ],
+        "midside_bottom": [
+            6661.375,
+            11457.5
+        ],
+        "midside_left": [
+            1035.75,
+            5885.25
+        ],
+        "midside_right": [
+            12233.375,
+            5830.75
+        ],
+        "principal_point": [
+            6634.578125,
+            5858.390625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_205.tif": {
+        "corner_top_left": [
+            1117.25,
+            380.5
+        ],
+        "corner_top_right": [
+            12115.25,
+            334.25
+        ],
+        "corner_bottom_left": [
+            1165.25,
+            11378.125
+        ],
+        "corner_bottom_right": [
+            12162.625,
+            11332.25
+        ],
+        "midside_top": [
+            6616.125,
+            256.875
+        ],
+        "midside_bottom": [
+            6664.125,
+            11455.25
+        ],
+        "midside_left": [
+            1041.375,
+            5880.5
+        ],
+        "midside_right": [
+            12238.75,
+            5832.375
+        ],
+        "principal_point": [
+            6640.09375,
+            5856.265625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_208.tif": {
+        "corner_top_left": [
+            1116.875,
+            383.375
+        ],
+        "corner_top_right": [
+            12114.75,
+            335.125
+        ],
+        "corner_bottom_left": [
+            1166.875,
+            11381.125
+        ],
+        "corner_bottom_right": [
+            12164.0,
+            11333.125
+        ],
+        "midside_top": [
+            6615.5,
+            258.75
+        ],
+        "midside_bottom": [
+            6665.75,
+            11457.125
+        ],
+        "midside_left": [
+            1042.125,
+            5882.375
+        ],
+        "midside_right": [
+            12239.25,
+            5832.875
+        ],
+        "principal_point": [
+            6640.640625,
+            5857.984375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_233.tif": {
+        "corner_top_left": [
+            1128.25,
+            374.125
+        ],
+        "corner_top_right": [
+            12125.875,
+            337.75
+        ],
+        "corner_bottom_left": [
+            1166.5,
+            11371.125
+        ],
+        "corner_bottom_right": [
+            12163.125,
+            11335.875
+        ],
+        "midside_top": [
+            6626.625,
+            255.625
+        ],
+        "midside_bottom": [
+            6664.75,
+            11453.5
+        ],
+        "midside_left": [
+            1048.125,
+            5873.125
+        ],
+        "midside_right": [
+            12244.25,
+            5835.875
+        ],
+        "principal_point": [
+            6645.9375,
+            5854.625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_197.tif": {
+        "corner_top_left": [
+            1109.5,
+            384.0
+        ],
+        "corner_top_right": [
+            12107.5,
+            332.0
+        ],
+        "corner_bottom_left": [
+            1163.375,
+            11382.125
+        ],
+        "corner_bottom_right": [
+            12160.625,
+            11329.75
+        ],
+        "midside_top": [
+            6608.125,
+            257.5
+        ],
+        "midside_bottom": [
+            6662.25,
+            11455.875
+        ],
+        "midside_left": [
+            1036.5,
+            5883.875
+        ],
+        "midside_right": [
+            12233.875,
+            5829.375
+        ],
+        "principal_point": [
+            6635.21875,
+            5856.8125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_224.tif": {
+        "corner_top_left": [
+            1107.75,
+            382.75
+        ],
+        "corner_top_right": [
+            12105.125,
+            331.0
+        ],
+        "corner_bottom_left": [
+            1161.875,
+            11380.125
+        ],
+        "corner_bottom_right": [
+            12158.625,
+            11328.5
+        ],
+        "midside_top": [
+            6606.125,
+            256.5
+        ],
+        "midside_bottom": [
+            6660.5,
+            11454.375
+        ],
+        "midside_left": [
+            1035.125,
+            5881.625
+        ],
+        "midside_right": [
+            12231.875,
+            5828.125
+        ],
+        "principal_point": [
+            6633.375,
+            5855.375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_214.tif": {
+        "corner_top_left": [
+            1107.875,
+            385.25
+        ],
+        "corner_top_right": [
+            12105.25,
+            333.0
+        ],
+        "corner_bottom_left": [
+            1162.25,
+            11382.75
+        ],
+        "corner_bottom_right": [
+            12159.125,
+            11331.125
+        ],
+        "midside_top": [
+            6606.25,
+            258.875
+        ],
+        "midside_bottom": [
+            6660.875,
+            11457.125
+        ],
+        "midside_left": [
+            1035.25,
+            5885.25
+        ],
+        "midside_right": [
+            12232.0,
+            5830.75
+        ],
+        "principal_point": [
+            6633.609375,
+            5858.015625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_231.tif": {
+        "corner_top_left": [
+            1115.875,
+            383.375
+        ],
+        "corner_top_right": [
+            12113.5,
+            335.25
+        ],
+        "corner_bottom_left": [
+            1166.5,
+            11380.75
+        ],
+        "corner_bottom_right": [
+            12163.375,
+            11333.375
+        ],
+        "midside_top": [
+            6614.375,
+            259.375
+        ],
+        "midside_bottom": [
+            6665.0,
+            11457.125
+        ],
+        "midside_left": [
+            1041.75,
+            5882.75
+        ],
+        "midside_right": [
+            12238.25,
+            5833.0
+        ],
+        "principal_point": [
+            6639.828125,
+            5858.125
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_216.tif": {
+        "corner_top_left": [
+            1104.75,
+            385.625
+        ],
+        "corner_top_right": [
+            12101.75,
+            328.5
+        ],
+        "corner_bottom_left": [
+            1163.875,
+            11383.25
+        ],
+        "corner_bottom_right": [
+            12160.875,
+            11326.125
+        ],
+        "midside_top": [
+            6602.75,
+            256.75
+        ],
+        "midside_bottom": [
+            6662.75,
+            11454.75
+        ],
+        "midside_left": [
+            1034.5,
+            5885.125
+        ],
+        "midside_right": [
+            12231.375,
+            5825.625
+        ],
+        "principal_point": [
+            6632.828125,
+            5855.71875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_215.tif": {
+        "corner_top_left": [
+            1106.5,
+            388.625
+        ],
+        "corner_top_right": [
+            12103.875,
+            332.375
+        ],
+        "corner_bottom_left": [
+            1164.875,
+            11386.125
+        ],
+        "corner_bottom_right": [
+            12161.75,
+            11330.5
+        ],
+        "midside_top": [
+            6604.75,
+            260.375
+        ],
+        "midside_bottom": [
+            6663.625,
+            11458.375
+        ],
+        "midside_left": [
+            1036.125,
+            5888.75
+        ],
+        "midside_right": [
+            12232.625,
+            5830.125
+        ],
+        "principal_point": [
+            6634.265625,
+            5859.40625
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_219.tif": {
+        "corner_top_left": [
+            1105.375,
+            385.375
+        ],
+        "corner_top_right": [
+            12103.5,
+            330.5
+        ],
+        "corner_bottom_left": [
+            1162.75,
+            11383.5
+        ],
+        "corner_bottom_right": [
+            12160.125,
+            11328.5
+        ],
+        "midside_top": [
+            6604.25,
+            257.375
+        ],
+        "midside_bottom": [
+            6661.875,
+            11456.125
+        ],
+        "midside_left": [
+            1034.375,
+            5885.625
+        ],
+        "midside_right": [
+            12231.625,
+            5828.375
+        ],
+        "principal_point": [
+            6632.984375,
+            5856.921875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_206.tif": {
+        "corner_top_left": [
+            1118.0,
+            380.25
+        ],
+        "corner_top_right": [
+            12116.25,
+            336.0
+        ],
+        "corner_bottom_left": [
+            1164.625,
+            11377.875
+        ],
+        "corner_bottom_right": [
+            12161.875,
+            11334.125
+        ],
+        "midside_top": [
+            6616.5,
+            257.625
+        ],
+        "midside_bottom": [
+            6663.5,
+            11456.0
+        ],
+        "midside_left": [
+            1041.625,
+            5879.625
+        ],
+        "midside_right": [
+            12238.875,
+            5834.0
+        ],
+        "principal_point": [
+            6640.15625,
+            5856.9375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_195.tif": {
+        "corner_top_left": null,
+        "corner_top_right": [
+            12095.875,
+            326.0
+        ],
+        "corner_bottom_left": null,
+        "corner_bottom_right": [
+            12159.75,
+            11323.625
+        ],
+        "midside_top": [
+            6596.125,
+            257.375
+        ],
+        "midside_bottom": [
+            6661.5,
+            11455.5
+        ],
+        "midside_left": null,
+        "midside_right": [
+            12227.25,
+            5823.625
+        ],
+        "principal_point": [
+            6628.725,
+            5856.475
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_218.tif": {
+        "corner_top_left": [
+            1124.25,
+            376.5
+        ],
+        "corner_top_right": [
+            12121.5,
+            336.0
+        ],
+        "corner_bottom_left": [
+            1166.75,
+            11374.25
+        ],
+        "corner_bottom_right": [
+            12163.5,
+            11334.5
+        ],
+        "midside_top": [
+            6622.5,
+            256.125
+        ],
+        "midside_bottom": [
+            6665.375,
+            11454.375
+        ],
+        "midside_left": [
+            1045.375,
+            5876.5
+        ],
+        "midside_right": [
+            12242.5,
+            5834.125
+        ],
+        "principal_point": [
+            6643.96875,
+            5855.296875
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_232.tif": {
+        "corner_top_left": [
+            1124.625,
+            377.25
+        ],
+        "corner_top_right": [
+            12122.0,
+            339.75
+        ],
+        "corner_bottom_left": [
+            1163.875,
+            11374.125
+        ],
+        "corner_bottom_right": [
+            12160.625,
+            11337.625
+        ],
+        "midside_top": [
+            6623.0,
+            258.25
+        ],
+        "midside_bottom": [
+            6662.5,
+            11455.875
+        ],
+        "midside_left": [
+            1044.375,
+            5876.5
+        ],
+        "midside_right": [
+            12241.0,
+            5837.5
+        ],
+        "principal_point": [
+            6642.75,
+            5857.109375
+        ]
+    },
+    "preprocessing/raw_images/NAGAP_94V3_217.tif": {
+        "corner_top_left": [
+            1111.75,
+            383.625
+        ],
+        "corner_top_right": [
+            12109.375,
+            334.375
+        ],
+        "corner_bottom_left": [
+            1163.125,
+            11381.125
+        ],
+        "corner_bottom_right": [
+            12159.625,
+            11331.75
+        ],
+        "midside_top": [
+            6610.125,
+            258.5
+        ],
+        "midside_bottom": [
+            6661.625,
+            11456.5
+        ],
+        "midside_left": [
+            1037.75,
+            5882.75
+        ],
+        "midside_right": [
+            12234.25,
+            5831.75
+        ],
+        "principal_point": [
+            6635.953125,
+            5857.546875
+        ]
+    }
+}

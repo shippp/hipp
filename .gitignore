@@ -177,10 +177,7 @@ cython_debug/
 .vscode/
 
 # ignore all created files in examples
-examples/*
-!examples/1978_09_06_arizona_aerial.ipynb
-!examples/1980_08_22_iceland_preproc.ipynb
-!examples/1994_06_09_aerial_scg.ipynb
+examples/fiducials_preproc/preprocessing/
 
 
 # ignore the data test_images
