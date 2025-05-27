@@ -69,13 +69,14 @@ def resize_img(
 
 
 def read_image_block_grayscale(
-    dataset_reader: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_size: int = 3
+    image_source: rasterio.io.DatasetReader | str, row_index: int, col_index: int, grid_size: int = 3
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
     """
     Reads a specific block from a grayscale version of a large TIFF image using rasterio.
 
     Parameters:
-        dataset_reader (DatasetReader): An open rasterio DatasetReader object for the image.
+        image_source (Union[DatasetReader, str]): Either an open rasterio DatasetReader object
+            or the file path to a TIFF image.
         row_index (int): Row index of the desired block (0-based).
         col_index (int): Column index of the desired block (0-based).
         grid_size (int): Number of blocks the image is divided into along each dimension.
@@ -95,8 +96,19 @@ def read_image_block_grayscale(
     # Suppress warnings about missing georeferencing information
     warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
-    block_height = dataset_reader.height // grid_size
-    block_width = dataset_reader.width // grid_size
+    # Open the dataset if a path is provided
+    if isinstance(image_source, str):
+        with rasterio.open(image_source) as dataset:
+            return _read_block(dataset, row_index, col_index, grid_size)
+    else:
+        return _read_block(image_source, row_index, col_index, grid_size)
+
+
+def _read_block(
+    dataset: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_size: int
+) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
+    block_height = dataset.height // grid_size
+    block_width = dataset.width // grid_size
 
     # Compute top-left coordinates of the target block
     x_offset = col_index * block_width
@@ -104,15 +116,15 @@ def read_image_block_grayscale(
 
     # Adjust block size for edge blocks (to include all pixels)
     if col_index == grid_size - 1:
-        block_width = dataset_reader.width - x_offset
+        block_width = dataset.width - x_offset
     if row_index == grid_size - 1:
-        block_height = dataset_reader.height - y_offset
+        block_height = dataset.height - y_offset
 
     # Define the window (region) to read
     window = Window(x_offset, y_offset, block_width, block_height)
 
     # Read only the first channel (grayscale) from the specified window
-    block = dataset_reader.read(1, window=window)
+    block = dataset.read(1, window=window)
 
     return block, (x_offset, y_offset)
 
@@ -150,50 +162,3 @@ def crop_image_around_point(
         )
 
     return cropped
-
-
-# def wallis_filter(
-#     image: cv2.typing.MatLike, window_size: int, enhance_factor: float = 0.0, mean_balance: float = 0.0
-# ) -> cv2.typing.MatLike:
-#     """
-#     Optimized Wallis Filter for image enhancement using local contrast normalization.
-
-#     Parameters:
-#         image : Input grayscale image (uint8)
-#         window_size : Size of the local neighborhood window (must be odd)
-#         enhance_factor : Regularization to avoid division by small std-dev (A, default = 0.0)
-#         mean_balance : Blend between global mean and local mean (B, default = 0.0)
-
-#     Returns:
-#         Enhanced image (uint8)
-#     """
-#     # Ensure float32 precision for processing
-#     image = image.astype(np.float32)
-
-#     # Precompute global statistics
-#     global_mean = np.mean(image)
-#     global_std = np.std(image)
-
-#     # Uniform kernel for local averaging
-#     kernel = np.full((window_size, window_size), 1.0 / (window_size**2), dtype=np.float32)
-
-#     # Compute local mean and variance in a single pass
-#     local_mean = cv2.filter2D(image, -1, kernel)
-#     local_sq_mean = cv2.filter2D(image * image, -1, kernel)
-#     local_std = np.sqrt(np.maximum(local_sq_mean - local_mean**2, 1e-6))  # avoids sqrt of negative
-
-#     # Apply the Wallis filter formula
-#     contrast_term = global_std * (image - local_mean) / (local_std + enhance_factor)
-#     brightness_term = global_mean * mean_balance + local_mean * (1.0 - mean_balance)
-#     enhanced = contrast_term + brightness_term
-
-#     # Clip and convert back to uint8
-#     return np.clip(enhanced, 0, 255).astype(np.uint8)
-
-
-# def sobel_filter(image: cv2.typing.MatLike, ksize: int = 3) -> cv2.typing.MatLike:
-#     sobel_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
-#     sobel_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-#     gradient = np.sqrt(sobel_x**2 + sobel_y**2)
-#     gradient = np.uint8(np.clip(gradient, 0, 255))
-#     return gradient
