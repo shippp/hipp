@@ -2,7 +2,8 @@ import os
 
 import pandas as pd
 
-from hipp.dataquery.utils import optimize_geotifs, thread_downloads
+from hipp.dataquery.utils import thread_downloads
+from hipp.tools import optimize_geotifs
 
 
 def NAGAP_download_images_to_disk(
