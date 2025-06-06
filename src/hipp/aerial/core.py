@@ -12,17 +12,11 @@ import cv2
 import numpy as np
 import rasterio
 
+import hipp.aerial.quality_control as qc
 import hipp.image
-import hipp.math
 from hipp.aerial.fiducials import Fiducials, FiducialsCoordinate
+from hipp.math import affine_matrix
 from hipp.tools import points_picker
-
-
-class MetadataImageRestituion(TypedDict, total=False):
-    transformation_matrix: cv2.typing.MatLike
-    true_fiducials: FiducialsCoordinate
-    detected_fiducials: FiducialsCoordinate
-    transformed_fiducials: FiducialsCoordinate
 
 
 class FiducialDetection(TypedDict):
@@ -267,110 +261,125 @@ def detect_pseudofiducials(image_path: str, fiducials: list[cv2.typing.MatLike],
     pass
 
 
+class MetadataImageRestituion(TypedDict, total=False):
+    transformation_matrix: cv2.typing.MatLike
+    rmse_before_transformation: float
+    rmse_after_transformation: float
+
+
 def image_restitution(
-    image_path: str,
     detected_fiducials: FiducialsCoordinate,
-    true_fiducials_mm: FiducialsCoordinate | dict[str, tuple[float, float]],
+    true_fiducials_mm: FiducialsCoordinate | dict[str, tuple[float, float]] | None,
+    image_path: str | None = None,
+    output_image_path: str | None = None,
     scanning_resolution_mm: float = 0.02,
-    image_square_dim: int = 10800,
+    image_square_dim: int | None = 10800,
     interpolation_flag: int = cv2.INTER_CUBIC,
-    transform_coords: bool = True,
-    transform_image: bool = True,
-    crop_image: bool = True,
     clahe_enhancement: bool = True,
-) -> tuple[cv2.typing.MatLike | None, MetadataImageRestituion]:
+) -> MetadataImageRestituion:
     """
-    Performs geometric rectification, spatial alignment, and contrast enhancement of a scanned image
-    based on detected and known fiducial markers.
+    Perform geometric image restitution using detected and reference fiducial markers.
 
-    This function computes an affine transformation matrix to align the image with a physical reference frame
-    defined by known fiducial positions (in millimeters). It optionally applies this transformation to the image,
-    recenters it around the principal point, and enhances local contrast using CLAHE (Contrast Limited Adaptive Histogram Equalization).
+    This function estimates the affine transformation between the detected fiducials and the reference
+    positions (in millimeters), optionally applies it to an input image, crops the result around the
+    principal point, and enhances the image using CLAHE. It also returns a metadata dictionary containing
+    transformation matrices and registration quality metrics.
 
-    Args:
-        image_path (str): Path to the grayscale input image (typically high-resolution scan).
-        detected_fiducials (dict[str, tuple[float, float]]): Pixel-space coordinates of detected fiducial markers
-            (e.g., corners and midsides), usually obtained from template matching.
-        true_fiducials_mm (dict[str, tuple[float, float]]): Known physical positions (in millimeters) of the same fiducials
-            in a reference frame centered on the geometric principal point of the object.
-        scanning_resolution_mm (float, optional): Pixel resolution of the scan in millimeters per pixel. Default is 0.025 mm/px.
-        image_square_dim (int, optional): Final dimension (in pixels) of the cropped image. Image is cropped to a square
-            centered on the principal point. Default is 10800.
-        interpolation_flag (int, optional): OpenCV interpolation method used in image warping. Default is `cv2.INTER_CUBIC`.
-        transform_coords (bool, optional): If True, compute and apply coordinate transformations (both pixel → mm and affine alignment).
-        transform_image (bool, optional): If True, apply the affine transformation to the image.
-        crop_image (bool, optional): If True, crop the image around the (transformed) principal point.
-        clahe_enhancement (bool, optional): If True, apply CLAHE for local contrast enhancement.
+    Parameters
+    ----------
+    detected_fiducials : FiducialsCoordinate
+        Fiducial marker coordinates detected in the raw image (in pixel units).
+    true_fiducials_mm : FiducialsCoordinate | dict[str, tuple[float, float]] | None
+        Ground truth positions of fiducials in millimeters. If None, no registration is performed.
+    image_path : str | None, optional
+        Path to the input grayscale image to be transformed. If None, no image processing is performed.
+    output_image_path : str | None, optional
+        Path to save the output image. Required if `image_path` is provided.
+    scanning_resolution_mm : float, default=0.02
+        Physical size of one pixel in millimeters (used to convert reference coordinates).
+    image_square_dim : int | None, default=10800
+        Size of the output square image (for cropping around the principal point). If None, no cropping is done.
+    interpolation_flag : int, default=cv2.INTER_CUBIC
+        OpenCV interpolation method used for image warping.
+    clahe_enhancement : bool, default=True
+        If True, apply CLAHE (Contrast Limited Adaptive Histogram Equalization) after transformation.
 
-    Returns:
-        tuple:
-            - np.ndarray | None: The processed image if any transformation is applied, else `None`.
-            - MetadataImageRestituion: Dictionary of intermediate metadata for traceability and diagnostics, including:
-                - 'transformation_matrix' (np.ndarray | None): The affine matrix used to rectify the image.
-                - 'fiducials_mm' (dict | None): Detected fiducials converted from pixel coordinates to millimeters.
-                - 'true_fiducials_mm_centered' (dict | None): Reference fiducials centered on the geometric principal point.
-                - 'transformed_fiducials' (dict | None): Pixel fiducials after transformation.
-                - 'transformed_fiducials_mm' (dict | None): Transformed fiducials expressed in physical (mm) space.
+    Returns
+    -------
+    MetadataImageRestituion
+        A dictionary containing the following keys (when available):
+        - "transformation_matrix": 3x3 affine transformation applied to the image.
+        - "rmse_before_transformation": RMSE between detected and reference fiducials (before alignment).
+        - "rmse_after_transformation": RMSE after alignment.
+        - Other intermediate fiducial sets if computed.
 
-    Technical Notes:
-        - The function first aligns the *true* fiducial positions with the origin by subtracting the geometric principal point.
-          This ensures that the transformation matrix computed later aligns the detected image frame with a centered physical model.
-        - The affine transformation is estimated using similarity transform between
-          detected pixel positions and centered millimeter reference positions.
-        - Once the transformation is computed, all fiducial coordinates can be mapped to their rectified positions in pixel and mm space.
-        - When `transform_image=True`, `cv2.warpAffine` is applied using the transformation matrix. The image is geometrically corrected
-          (shear, rotation, scale, translation) to align with the reference.
-        - Cropping is centered on the principal point (either original or transformed) and ensures a fixed output size suitable for further analysis.
-        - CLAHE (applied via `cv2.createCLAHE`) improves local contrast, particularly useful for uneven lighting or low dynamic range scans.
+    Notes
+    -----
+    - The function applies transformation and cropping in a single warp if possible, which avoids
+      multiple image resampling steps.
+    - If no `true_fiducials_mm` is provided, the image is simply cropped using the detected principal point.
+    - Fiducials that are not detected (i.e., `None`) are ignored in RMSE computation.
     """
-    output_image = None
     metadata: MetadataImageRestituion = {}
+    transformed_fiducials = None
+
     # Compute transformation matrix and transform coordinates if requested
-    if transform_coords:
+    if true_fiducials_mm is not None:
         true_fiducials_mm = FiducialsCoordinate(true_fiducials_mm)
 
         assert detected_fiducials["principal_point"] is not None
 
-        img_ref_matrix = hipp.math.affine_matrix(
+        img_ref_matrix = affine_matrix(
             scale_x=1 / scanning_resolution_mm,
             scale_y=-1 / scanning_resolution_mm,
             translate_x=detected_fiducials["principal_point"][0],
             translate_y=detected_fiducials["principal_point"][1],
         )
-        metadata["true_fiducials"] = true_fiducials_mm.transform(img_ref_matrix)
-        metadata["detected_fiducials"] = detected_fiducials
+        true_fiducials = true_fiducials_mm.transform(img_ref_matrix)
 
-        metadata["transformation_matrix"] = detected_fiducials.estimate_transformation_matrix(
-            metadata["true_fiducials"]
+        metadata["transformation_matrix"] = detected_fiducials.estimate_transformation_matrix(true_fiducials)
+
+        transformed_fiducials = detected_fiducials.transform(metadata["transformation_matrix"])
+
+        # calculate the rmse before and after the transformation
+        metadata["rmse_before_transformation"] = qc.compute_rmse(true_fiducials, detected_fiducials)
+        metadata["rmse_after_transformation"] = qc.compute_rmse(true_fiducials, transformed_fiducials)
+
+    # cropping block
+    if image_square_dim is not None:
+        center = (
+            transformed_fiducials["principal_point"]
+            if transformed_fiducials is not None
+            else detected_fiducials["principal_point"]
         )
+        assert center is not None
+        # calculate the transformation matrix for the crop (translation only)
+        top_left_x = int(center[0] - image_square_dim // 2)
+        top_left_y = int(center[1] - image_square_dim // 2)
+        crop_transformation_matrix = affine_matrix(translate_x=-top_left_x, translate_y=-top_left_y)
 
-        metadata["transformed_fiducials"] = detected_fiducials.transform(metadata["transformation_matrix"])
+        if "transformation_matrix" in metadata:
+            metadata["transformation_matrix"] = crop_transformation_matrix @ metadata["transformation_matrix"]  # type: ignore [typeddict-item]
+        else:
+            metadata["transformation_matrix"] = crop_transformation_matrix
 
-    # Load image if any processing is requested
-    if transform_image or crop_image or clahe_enhancement:
+    # we transform the image only if the image_path and the output_image are set
+    if image_path is not None and output_image_path is not None and "transformation_matrix" in metadata:
         output_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        height, width = output_image.shape[:2]
 
-        # Apply geometric transformation to the image
-        if transform_image:
-            height, width = output_image.shape[:2]
-            output_image = cv2.warpAffine(
-                output_image, metadata["transformation_matrix"][:2], dsize=(width, height), flags=interpolation_flag
-            )
+        # if a crop need to be apply we update the width and the height
+        if image_square_dim is not None:
+            width, height = image_square_dim, image_square_dim
 
-        # Crop image around the principal point if requested
-        if crop_image:
-            center = (
-                metadata["transformed_fiducials"]["principal_point"]
-                if transform_coords
-                else detected_fiducials["principal_point"]
-            )
-            assert center is not None
-            output_image = hipp.image.crop_image_around_point(output_image, center, image_square_dim)
-
-        # Apply CLAHE enhancement
+        output_image = cv2.warpAffine(
+            output_image, metadata["transformation_matrix"][:2], dsize=(width, height), flags=interpolation_flag
+        )
         if clahe_enhancement:
             output_image = hipp.image.apply_clahe(output_image)
-    return output_image, metadata
+        cv2.imwrite(output_image_path, output_image)
+
+    return metadata
 
 
 def filter_detected_fiducials(

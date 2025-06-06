@@ -1,3 +1,5 @@
+import csv
+import os
 from typing import Callable, Generic, TypeVar
 
 import cv2
@@ -329,3 +331,67 @@ class FiducialsCoordinate(Fiducials[tuple[float, float] | None]):
         return FiducialsCoordinate(
             self.apply(lambda coord: None if coord is None else hipp.math.transform_coord(coord, transformation_matrix))
         )
+
+
+def detected_fiducials_to_csv(all_detections: dict[str, FiducialsCoordinate], csv_file_path: str) -> None:
+    """
+    Save all detections into a csv file
+    """
+    res: list[dict[str, float | str | None]] = []
+    for key in sorted(all_detections.keys()):
+        elem: dict[str, float | str | None] = {}
+        elem["image_file_name"] = os.path.basename(key)
+        for name, coord in all_detections[key].items():
+            if coord is None:
+                elem[f"{name}_x"] = None
+                elem[f"{name}_y"] = None
+            else:
+                x, y = coord
+                elem[f"{name}_x"] = x
+                elem[f"{name}_y"] = y
+        res.append(elem)
+
+    fieldnames = list(res[0].keys())
+
+    with open(csv_file_path, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(res)
+
+
+def detected_fiducials_from_csv(csv_file_path: str) -> dict[str, FiducialsCoordinate]:
+    """
+    Load fiducial detections from a CSV file exported by `detected_fiducials_to_csv`.
+
+    Returns:
+        A dictionary where keys are image file names and values are dictionaries of fiducial positions.
+    """
+    detections: dict[str, FiducialsCoordinate] = {}
+
+    with open(csv_file_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            image_file_name = row["image_file_name"]
+            fiducials = FiducialsCoordinate()
+
+            for key, value in row.items():
+                if key == "image_file_name":
+                    continue
+                if key.endswith("_x"):
+                    name = key[:-2]
+                    x_str = value
+                    y_str = row.get(f"{name}_y")
+
+                    if not x_str or not y_str or x_str == "None" or y_str == "None":
+                        fiducials[name] = None
+                    else:
+                        try:
+                            x = float(x_str)
+                            y = float(y_str)
+                            fiducials[name] = (x, y)
+                        except ValueError:
+                            fiducials[name] = None  # Corrupted or invalid float value
+
+            detections[image_file_name] = fiducials
+
+    return detections

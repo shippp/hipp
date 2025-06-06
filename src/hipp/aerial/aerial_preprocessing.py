@@ -5,7 +5,7 @@ Description: Contain the AerialPreprocessing class
 
 import glob
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 import cv2
 from tqdm import tqdm
@@ -274,7 +274,11 @@ class AerialPreprocessing:
         if quality_control:
             qc.save_fiducials_detection_qc(all_detections, all_scores, all_subpixel_scores, qc_detection_dir)
 
-        return all_detections, all_scores, all_subpixel_scores
+        return (
+            dict(sorted(all_detections.items())),
+            dict(sorted(all_scores.items())),
+            dict(sorted(all_subpixel_scores.items())),
+        )
 
     def filter_detected_fiducials(
         self,
@@ -365,104 +369,114 @@ class AerialPreprocessing:
         fiducials_detections: dict[str, FiducialsCoordinate],
         true_fiducials_mm: dict[str, tuple[float, float]],
         scanning_resolution_mm: float = 0.02,
-        image_square_dim: int = 10800,
+        image_square_dim: int | None = 10800,
         interpolation_flag: int = cv2.INTER_CUBIC,
-        transform_coords: bool = True,
-        transform_image: bool = True,
-        crop_image: bool = True,
         clahe_enhancement: bool = True,
         quality_control: bool = True,
         max_workers: int = 5,
+        dry_run: bool = False,
     ) -> dict[str, cv2.typing.MatLike]:
         """
-        Performs batch image rectification based on fiducial detection and known reference positions.
+        Perform batch image restitution on a set of fiducial detections using reference coordinates.
 
-        For each image in the batch, this method:
-        - Computes an affine transformation to align detected fiducials with known real-world positions.
-        - Optionally warps the image using this transformation.
-        - Optionally crops the image around the principal point to a fixed square size.
-        - Optionally enhances the image contrast using CLAHE.
-        - Computes quality control (QC) metrics to evaluate the transformation accuracy.
-        - Saves the rectified image and QC visualizations if requested.
+        This method applies the `image_restitution` function to a collection of images (or fiducial sets),
+        computing an affine transformation for each one. If `image_path` and `output_image_path` are provided,
+        the method also performs image transformation, cropping, and optional enhancement (CLAHE).
+        Parallel processing is used to speed up execution.
 
-        Args:
-            fiducials_detections (dict[str, dict[str, tuple[float, float]]]): Mapping of image paths to their detected
-                fiducials in pixel coordinates.
-            true_fiducials_mm (dict[str, tuple[float, float]]): Ground truth fiducial coordinates in millimeters.
-            scanning_resolution_mm (float, optional): Pixel resolution in mm/pixel. Defaults to 0.025.
-            image_square_dim (int, optional): Dimension (in pixels) of the final cropped image. Defaults to 10800.
-            interpolation_flag (int, optional): Interpolation method used for image warping (e.g., cv2.INTER_CUBIC).
-            transform_coords (bool, optional): Whether to compute and apply the coordinate transformation.
-            transform_image (bool, optional): Whether to warp the image using the computed transformation.
-            crop_image (bool, optional): Whether to crop the image around the transformed principal point.
-            clahe_enhancement (bool, optional): Whether to enhance the image contrast using CLAHE.
-            quality_control (bool, optional): Whether to compute QC metrics and generate QC plots. Defaults to True.
+        Parameters
+        ----------
+        fiducials_detections : dict[str, FiducialsCoordinate]
+            Dictionary mapping image file paths to detected fiducial coordinates in pixel space.
+        true_fiducials_mm : dict[str, tuple[float, float]]
+            Ground truth fiducial positions in millimeters. Used to compute affine registration for each image.
+        scanning_resolution_mm : float, default=0.02
+            Physical resolution of the scan in millimeters per pixel.
+        image_square_dim : int | None, default=10800
+            Output image dimension for cropping. If None, cropping is skipped.
+        interpolation_flag : int, default=cv2.INTER_CUBIC
+            Interpolation method used for image warping (see OpenCV options).
+        clahe_enhancement : bool, default=True
+            If True, applies CLAHE to enhance image contrast after transformation.
+        quality_control : bool, default=True
+            If True, generates RMSE diagnostic plots after image registration.
+        max_workers : int, default=5
+            Number of parallel processes to use for image restitution.
+        dry_run : bool, default=False
+            If True, no image processing is performed, and only the transformation matrices are computed.
 
-        Returns:
-            dict[str, dict[str, float]]: Dictionary mapping each image path to a dictionary of QC metrics
-            (e.g., RMSE between true and transformed fiducial positions).
+        Returns
+        -------
+        dict[str, cv2.typing.MatLike]
+            A dictionary mapping image file paths to the computed 3×3 transformation matrices.
 
-        Notes:
-            - Rectified images are saved to the configured output directory.
-            - If `quality_control` is enabled, deviation boxplots are saved to the QC directory.
-            - This method is useful for bulk processing of high-resolution scans requiring precise geometric alignment.
+        Notes
+        -----
+        - This method uses multiprocessing (`ProcessPoolExecutor`) to parallelize image restitution tasks.
+        - If `dry_run=True`, image files are not required and only transformation matrices are estimated.
+        - If the fiducial markers are located outside the cropped region (especially in cases of large cropping),
+          they will be excluded from the final transformed image.
+        - RMSE plots comparing detected and reference fiducials are saved in the quality control directory
+          if `quality_control=True`.
         """
         qc_restitution = os.path.join(self.qc_directory, "images_restitution")
         if quality_control:
             os.makedirs(qc_restitution, exist_ok=True)
 
-        metrics = {}
-        matrixs = {}
-
-        # Determine whether to parallelize processing based on computationally intensive steps
-        should_parallelize = transform_image or crop_image or clahe_enhancement
-
-        # Function to process a single image: apply transformations, save result, and return metadata
-        def process(image_path: str, detection: FiducialsCoordinate) -> tuple[str, core.MetadataImageRestituion]:
-            image, metadata = core.image_restitution(
-                image_path,
-                detection,
-                true_fiducials_mm,
-                scanning_resolution_mm,
-                image_square_dim,
-                interpolation_flag,
-                transform_coords,
-                transform_image,
-                crop_image,
-                clahe_enhancement,
-            )
-            # If the image was successfully processed, save it to the output directory
-            if image is not None:
-                os.makedirs(self.output_directory, exist_ok=True)
-                output_image_path = os.path.join(self.output_directory, os.path.basename(image_path))
-                cv2.imwrite(output_image_path, image)
-            return image_path, metadata
-
-        # Use multithreading if any heavy image operations are enabled
-        if should_parallelize:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all image processing tasks to the executor
-                futures = {
-                    executor.submit(process, image_path, detection): image_path
-                    for image_path, detection in fiducials_detections.items()
-                }
-                # Display progress bar for asynchronous processing
-                with tqdm(total=len(futures), desc="Image restitution", unit="img") as pbar:
-                    for future in as_completed(futures):
-                        image_path, metadata = future.result()
-                        matrixs[image_path] = metadata["transformation_matrix"]
-                        metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
-                        pbar.update(1)
+        if dry_run:
+            # Serial execution without image processing (transformation matrix only)
+            results = {
+                key: core.image_restitution(
+                    detected_fiducials,
+                    true_fiducials_mm,
+                    None,
+                    None,
+                    scanning_resolution_mm,
+                    image_square_dim,
+                    interpolation_flag,
+                    clahe_enhancement,
+                )
+                for key, detected_fiducials in fiducials_detections.items()
+            }
         else:
-            # Sequential processing (fallback when no heavy operations are enabled)
-            for image_path, detection in fiducials_detections.items():
-                image_path, metadata = process(image_path, detection)
-                matrixs[image_path] = metadata["transformation_matrix"]
-                metrics[image_path] = qc.compute_metrics_from_image_restitution(metadata)
+            results = {}
+            future_to_key = {}
+            # Parallel execution with image processing using process pool
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                for key, detected_fiducials in fiducials_detections.items():
+                    image_path = None if dry_run else key
+                    output_image_path = None if dry_run else os.path.join(self.output_directory, os.path.basename(key))
 
-        # If quality control is enabled, generate and save deviation plots
+                    # Submit task for each image to the executor
+                    future = executor.submit(
+                        core.image_restitution,
+                        detected_fiducials,
+                        true_fiducials_mm,
+                        image_path,
+                        output_image_path,
+                        scanning_resolution_mm,
+                        image_square_dim,
+                        interpolation_flag,
+                        clahe_enhancement,
+                    )
+                    future_to_key[future] = key
+
+                # Progress bar with result collection
+                for future in tqdm(as_completed(future_to_key), total=len(future_to_key), desc="Restitution en cours"):
+                    key = future_to_key[future]
+                    try:
+                        results[key] = future.result()
+                    except Exception as e:
+                        print(f"Erreur lors du traitement de {key} : {e}")
+
+        # Extract transformation matrices from results
+        transformations_matrixs = {key: val["transformation_matrix"] for key, val in results.items()}
         if quality_control:
-            plot_rmse = qc.plot_coordinates_transformations(metrics)
-            plot_rmse.savefig(os.path.join(qc_restitution, "Fiducials_RMSE.png"))
+            # Generate QC RMSE plots
+            rmse_before_transform = {key: val["rmse_before_transformation"] for key, val in results.items()}
+            rmse_after_transform = {key: val["rmse_after_transformation"] for key, val in results.items()}
 
-        return matrixs
+            qc.plot_rmse_after_vs_before(
+                rmse_before_transform, rmse_after_transform, os.path.join(qc_restitution, "Fiducials_RMSE.png")
+            )
+        return transformations_matrixs

@@ -12,9 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from matplotlib.axes import Axes
-from matplotlib.figure import Figure
 
-from hipp.aerial.core import MetadataImageRestituion
 from hipp.aerial.fiducials import Fiducials, FiducialsCoordinate
 
 
@@ -214,47 +212,41 @@ def plot_principal_points_deviation(
     ax.grid(True, axis="y", linestyle="--", alpha=0.6)
 
 
-def plot_coordinates_transformations(metrics: dict[str, dict[str, float]]) -> Figure:
-    rmse_before = [metrics[k]["rmse_before"] for k in metrics]
-    rmse_after = [metrics[k]["rmse_after"] for k in metrics]
-    labels = [os.path.splitext(os.path.basename(k))[0] for k in metrics]
+def plot_rmse_after_vs_before(rmse_before: dict[str, float], rmse_after: dict[str, float], figure_path: str) -> None:
+    labels = [os.path.splitext(os.path.basename(k))[0] for k in sorted(rmse_before)]
+    rmse_before_values = [rmse_before[k] for k in sorted(rmse_before.keys())]
+    rmse_after_values = [rmse_after[k] for k in sorted(rmse_before.keys())]
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(labels, rmse_before, label="RMSE before correction", marker="o", color="blue")
-    ax.plot(labels, rmse_after, label="RMSE after correction", marker="o", color="red")
+    ax.plot(labels, rmse_before_values, label="RMSE before correction", marker="o", color="blue")
+    ax.plot(labels, rmse_after_values, label="RMSE after correction", marker="o", color="red")
 
     ax.set_ylabel("RMSE (pixels)")
-    ax.set_title("RMSE between detected fiducial coordinates and true fiducials")
+    ax.set_title("RMSE before vs after correction")
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=90)
     ax.grid(True)
     ax.legend()
     fig.tight_layout()
 
-    return fig
+    fig.savefig(figure_path)
 
 
-def compute_metrics_from_image_restitution(metadata: MetadataImageRestituion) -> dict[str, float]:
-    if (
-        metadata["true_fiducials"] is None
-        or metadata["transformed_fiducials"] is None
-        or metadata["detected_fiducials"] is None
-    ):
-        raise ValueError("No metrics to compute")
+def compute_rmse(detection1: FiducialsCoordinate, detection2: FiducialsCoordinate) -> float:
+    squared_errors = []
+    for key in detection1.keys():
+        coord1 = detection1.get(key)
+        coord2 = detection2.get(key)
+        if coord1 is not None and coord2 is not None:
+            dx = coord1[0] - coord2[0]
+            dy = coord1[1] - coord2[1]
+            squared_errors.append(dx**2 + dy**2)
 
-    used_keys = [
-        k
-        for k in metadata["detected_fiducials"]
-        if k != "principal_point" and metadata["detected_fiducials"][k] is not None
-    ]
-    arr_fiducials_mm = np.array([metadata["detected_fiducials"][k] for k in used_keys])
-    arr_transformed_fiducials_mm = np.array([metadata["transformed_fiducials"][k] for k in used_keys])
-    arr_true_fiducials_mm = np.array([metadata["true_fiducials"][k] for k in used_keys])
+    if not squared_errors:
+        raise ValueError("No common valid fiducials to compare.")
 
-    rmse_before = np.sqrt(np.mean(np.sum((arr_fiducials_mm - arr_true_fiducials_mm) ** 2, axis=1)))
-    rmse_after = np.sqrt(np.mean(np.sum((arr_transformed_fiducials_mm - arr_true_fiducials_mm) ** 2, axis=1)))
-
-    return {"rmse_before": rmse_before, "rmse_after": rmse_after}
+    mse = sum(squared_errors) / len(squared_errors)
+    return math.sqrt(mse)
 
 
 def compute_intersections_angles(fiducials: dict[str, tuple[float, float]]) -> dict[str, float]:

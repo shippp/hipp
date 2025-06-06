@@ -6,7 +6,7 @@ from .core import (
     filter_detected_fiducials,
     image_restitution,
 )
-from .fiducials import Fiducials, FiducialsCoordinate
+from .fiducials import Fiducials, FiducialsCoordinate, detected_fiducials_from_csv, detected_fiducials_to_csv
 
 __all__ = [
     "create_fiducial_template_from_image",
@@ -17,4 +17,6 @@ __all__ = [
     "compute_median_score_by_category",
     "Fiducials",
     "FiducialsCoordinate",
+    "detected_fiducials_from_csv",
+    "detected_fiducials_to_csv",
 ]
