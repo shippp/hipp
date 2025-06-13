@@ -4,12 +4,12 @@ Description: functions for aerial fiducials manipulation
 """
 
 import copy
+import os
 import statistics
 from collections import defaultdict
 from typing import TypedDict
 
 import cv2
-import numpy as np
 import rasterio
 
 import hipp.aerial.quality_control as qc
@@ -30,7 +30,7 @@ def create_fiducial_template_from_image(
     image: cv2.typing.MatLike,
     fiducial_coordinate: tuple[int, int] | None = None,
     distance_around_fiducial: int = 100,
-) -> cv2.typing.MatLike:
+) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
     """
     Create a fiducial template by cropping a portion of an input image around a fiducial point.
 
@@ -42,7 +42,9 @@ def create_fiducial_template_from_image(
             in pixels. Defaults to 100.
 
     Returns:
-        np.ndarray: Cropped image (fiducial template).
+        tuple:
+            - np.ndarray: Cropped image (fiducial template).
+            - tuple[int, int]: Fiducial coordinate used.
 
     Raises:
         ValueError: If no fiducial point is provided and the interactive point picker fails.
@@ -62,44 +64,44 @@ def create_fiducial_template_from_image(
     y_T = max(0, y - distance_around_fiducial)
     y_B = min(image.shape[0], y + distance_around_fiducial)
 
-    return image[y_T:y_B, x_L:x_R]
+    return image[y_T:y_B, x_L:x_R], fiducial_coordinate
 
 
-def create_pseudofiducials_templates_from_image(
-    image: cv2.typing.MatLike,
-    fiducials_coordinates: list[tuple[int, int]] | None = None,
-    distance_around_fiducial: int = 250,
-    threshold: int = 50,
-) -> list[cv2.typing.MatLike]:
-    if fiducials_coordinates is None:
-        coords = points_picker(image, point_count=4)
-    else:
-        coords = fiducials_coordinates
-    if len(coords) != 4:
-        raise ValueError("Not enough fiducials coordinate, need to have 4")
+# def create_pseudofiducials_templates_from_image(
+#     image: cv2.typing.MatLike,
+#     fiducials_coordinates: list[tuple[int, int]] | None = None,
+#     distance_around_fiducial: int = 250,
+#     threshold: int = 50,
+# ) -> list[cv2.typing.MatLike]:
+#     if fiducials_coordinates is None:
+#         coords = points_picker(image, point_count=4)
+#     else:
+#         coords = fiducials_coordinates
+#     if len(coords) != 4:
+#         raise ValueError("Not enough fiducials coordinate, need to have 4")
 
-    results = []
+#     results = []
 
-    for coord in coords:
-        fiducial_image = create_fiducial_template_from_image(image, coord, distance_around_fiducial)
-        _, binary_mask = cv2.threshold(fiducial_image, threshold, 255, cv2.THRESH_BINARY)
-        mask_bool = binary_mask == 255
-        masked_values = fiducial_image[mask_bool]
+#     for coord in coords:
+#         fiducial_image = create_fiducial_template_from_image(image, coord, distance_around_fiducial)
+#         _, binary_mask = cv2.threshold(fiducial_image, threshold, 255, cv2.THRESH_BINARY)
+#         mask_bool = binary_mask == 255
+#         masked_values = fiducial_image[mask_bool]
 
-        # calculate the mean and the standard deviation of the masked value
-        mean_val = np.mean(masked_values)
-        std_val = np.std(masked_values)
+#         # calculate the mean and the standard deviation of the masked value
+#         mean_val = np.mean(masked_values)
+#         std_val = np.std(masked_values)
 
-        # generate some gaussian noise with the same values
-        noisy_values = np.random.normal(loc=mean_val, scale=std_val, size=masked_values.shape)
+#         # generate some gaussian noise with the same values
+#         noisy_values = np.random.normal(loc=mean_val, scale=std_val, size=masked_values.shape)
 
-        # clip value to keep them between 0 and 255
-        noisy_values = np.clip(noisy_values, 0, 255).astype(np.uint8)
+#         # clip value to keep them between 0 and 255
+#         noisy_values = np.clip(noisy_values, 0, 255).astype(np.uint8)
 
-        fiducial_image[mask_bool] = noisy_values
-        results.append(fiducial_image)
+#         fiducial_image[mask_bool] = noisy_values
+#         results.append(fiducial_image)
 
-    return results
+#     return results
 
 
 def detect_fiducials(
@@ -377,6 +379,8 @@ def image_restitution(
         )
         if clahe_enhancement:
             output_image = hipp.image.apply_clahe(output_image)
+
+        os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
         cv2.imwrite(output_image_path, output_image)
 
     return metadata

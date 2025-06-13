@@ -4,6 +4,8 @@
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hipp.svg)](https://pypi.org/project/hipp)
 [![Hatch project](https://img.shields.io/badge/%F0%9F%A5%9A-Hatch-4051b5.svg)](https://github.com/pypa/hatch)
 
+HIPP (Historical Image Pre-Processing) is a python library to pre-process scanned historical images for Structure from Motion surface reconstruction and photogrammetric analysis.
+
 -----
 
 ## Table of Contents

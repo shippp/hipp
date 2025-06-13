@@ -102,7 +102,7 @@ class AerialPreprocessing:
         fiducial_coordinate: tuple[int, int] | None = None,
         subpixel_center_coordinate: tuple[int, int] | None = None,
         overwrite: bool = False,
-    ) -> None:
+    ) -> dict[str, tuple[int, int] | None]:
         """
         Creates and saves fiducial templates (standard and subpixel) for later matching tasks.
 
@@ -147,7 +147,9 @@ class AerialPreprocessing:
         if not os.path.exists(fiducial_path) or overwrite:
             img = cv2.imread(self.first_images, cv2.IMREAD_GRAYSCALE)
 
-            fiducial = core.create_fiducial_template_from_image(img, fiducial_coordinate, distance_around_fiducial)
+            fiducial, fiducial_coordinate = core.create_fiducial_template_from_image(
+                img, fiducial_coordinate, distance_around_fiducial
+            )
             cv2.imwrite(fiducial_path, fiducial)
         else:
             fiducial = cv2.imread(fiducial_path, cv2.IMREAD_GRAYSCALE)
@@ -158,10 +160,11 @@ class AerialPreprocessing:
 
         if not os.path.exists(subpixel_fiducial_path) or overwrite:
             fiducial = resize_img(fiducial)
-            subpixel_fiducial = core.create_fiducial_template_from_image(
+            subpixel_fiducial, subpixel_center_coordinate = core.create_fiducial_template_from_image(
                 fiducial, subpixel_center_coordinate, subpixel_distance_around_fiducial
             )
             cv2.imwrite(subpixel_fiducial_path, subpixel_fiducial)
+        return {"fiducial_coordinate": fiducial_coordinate, "subpixel_center_coordinate": subpixel_center_coordinate}
 
     def detect_fiducials(
         self,

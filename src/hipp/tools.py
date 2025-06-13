@@ -136,6 +136,7 @@ def generate_quickviews(
     image_extension: str = ".tif",
     output_image_extension: str = ".jpg",
     max_workers: int = 5,
+    overwrite: bool = False,
 ) -> None:
     """
     Generate downsampled preview images (quickviews) from large GeoTIFF files using `gdal_translate`.
@@ -158,6 +159,8 @@ def generate_quickviews(
         Extension/format of the generated quickviews.
     max_workers : int, default=5
         Maximum number of threads used for parallel processing.
+    overwrite : bool, default=False
+        If False, skip processing files that already have corresponding output files.
 
     Notes
     -----
@@ -202,7 +205,8 @@ def generate_quickviews(
             input_path = os.path.join(directory, filename)
             base_name = os.path.splitext(filename)[0]
             output_path = os.path.join(output_directory, f"{base_name}{output_image_extension}")
-            tasks.append((input_path, output_path))
+            if overwrite or not os.path.exists(output_path):
+                tasks.append((input_path, output_path))
 
     # Run with multithreading and progress bar
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

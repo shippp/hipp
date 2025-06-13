@@ -181,5 +181,4 @@ examples/fiducials_preproc/preprocessing/
 
 
 # ignore the data test_images
-data/test_images/*
-!data/test_images/querying_test_images.py
+tests/aerial/data
