@@ -37,6 +37,7 @@ jobs:
     - name: Update version in __about__.py
       run: |
         VERSION=${{ github.event.release.tag_name }}
+        VERSION=${VERSION#v}  # strip leading "v" if present
         sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/hipp/__about__.py
 
     - name: Build package
