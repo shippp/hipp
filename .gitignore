@@ -172,3 +172,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# ignore .vscode configuration file
+.vscode/
+
+# ignore all created files in examples
+examples/fiducials_preproc/preprocessing/
+
+
+# ignore the data test_images
+tests/aerial/data

@@ -24,7 +24,15 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
-dependencies = []
+dependencies = [
+  "numpy",
+  "opencv-python",
+  "pandas",
+  "matplotlib",
+  "tqdm",
+  "rasterio",
+  "scikit-image"
+]
 
 [project.urls]
 Documentation = "https://github.com/godinlu/hipp#readme"
@@ -35,15 +43,22 @@ Source = "https://github.com/godinlu/hipp"
 path = "src/hipp/__about__.py"
 
 [tool.hatch.envs.dev]
+inherit = ["default"]
 dependencies = [
   "ruff",
   "mypy",
   "pytest",
-  "pre-commit"
+  "pre-commit",
+  "usgsxplore",
+  "ipykernel",
 ]
 [tool.hatch.envs.dev.scripts]
-check = "pre-commit run --all"
-type = "mypy . --strict"
+check = [
+  "ruff check .",
+  "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
+]
+kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
+
 
 [tool.coverage.run]
 source_pkgs = ["hipp", "tests"]
@@ -62,4 +77,16 @@ exclude_lines = [
   "no cov",
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    "ignore::UserWarning",
+    # note the use of single quote below to denote "raw" strings in TOML
+    'ignore:function ham\(\) is deprecated:DeprecationWarning',
+    "ignore::rasterio.errors.NotGeoreferencedWarning"
 ]
