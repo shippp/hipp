@@ -57,7 +57,7 @@ See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
 ## Installation
 
 ```bash
-pip install git+https://github.com/shippp/hipp.git
+pip install hipp
 ```
 
 ## License
