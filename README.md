@@ -36,6 +36,8 @@ HIPP (Historical Image Pre-Processing) is a python library to pre-process scanne
   - Applies CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance features for SfM (Structure from Motion)
   - Computes the full affine transformation matrix (including crop transformation)
 
+See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
+
 ### Preprocessing of KH-9 Panoramic Camera Satellite Images *(feature in development)*
 
 - **Image Joining** *(feature in development)*

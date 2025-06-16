@@ -8,6 +8,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 import cv2
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 import hipp.aerial.core as core
@@ -91,7 +92,7 @@ class AerialPreprocessing:
         if not tif_files:
             raise FileNotFoundError(f"No .tif file found in directory '{images_directory}'.")
 
-        self.first_images = tif_files[0]
+        self.first_image_path = tif_files[0]
 
     def create_fiducial_template(
         self,
@@ -145,7 +146,7 @@ class AerialPreprocessing:
 
         # Create and save the regular-resolution fiducial template if needed
         if not os.path.exists(fiducial_path) or overwrite:
-            img = cv2.imread(self.first_images, cv2.IMREAD_GRAYSCALE)
+            img = cv2.imread(self.first_image_path, cv2.IMREAD_GRAYSCALE)
 
             fiducial, fiducial_coordinate = core.create_fiducial_template_from_image(
                 img, fiducial_coordinate, distance_around_fiducial
@@ -288,7 +289,7 @@ class AerialPreprocessing:
         all_detections: dict[str, FiducialsCoordinate],
         all_scores: dict[str, Fiducials[float]],
         all_subpixel_scores: dict[str, Fiducials[float]],
-        degree_threshold: float = 0.05,
+        degree_threshold: float = 0.01,
         score_margin: float = 0.1,
         quality_control: bool = True,
     ) -> dict[str, FiducialsCoordinate]:
@@ -307,7 +308,7 @@ class AerialPreprocessing:
             all_subpixel_scores (dict[str, Fiducials[float]]):
                 Dictionary mapping image IDs to subpixel refinement scores per fiducial.
             degree_threshold (float, optional):
-                Maximum allowed angular deviation for geometrical consistency check (default is 0.05°).
+                Maximum allowed angular deviation for geometrical consistency check (default is 0.01°).
             score_margin (float, optional):
                 Margin to subtract from median scores to define per-category thresholds (default is 0.1).
             quality_control (bool, optional):
@@ -465,12 +466,14 @@ class AerialPreprocessing:
                     future_to_key[future] = key
 
                 # Progress bar with result collection
-                for future in tqdm(as_completed(future_to_key), total=len(future_to_key), desc="Restitution en cours"):
+                for future in tqdm(
+                    as_completed(future_to_key), total=len(future_to_key), desc="Images restitution", unit="image"
+                ):
                     key = future_to_key[future]
                     try:
                         results[key] = future.result()
                     except Exception as e:
-                        print(f"Erreur lors du traitement de {key} : {e}")
+                        print(f"Preproccessing error of {key} : {e}")
 
         # Extract transformation matrices from results
         transformations_matrixs = {key: val["transformation_matrix"] for key, val in results.items()}
@@ -483,3 +486,27 @@ class AerialPreprocessing:
                 rmse_before_transform, rmse_after_transform, os.path.join(qc_restitution, "Fiducials_RMSE.png")
             )
         return transformations_matrixs
+
+    def plot_fiducial_templates(self) -> None:
+        """
+        Plots available fiducial and subpixel fiducial templates in a 2x2 grid.
+
+        Templates are loaded using `load_fiducials_template()`.
+        Only existing templates are displayed. Missing ones are skipped.
+
+        Raises:
+            FileNotFoundError: If no templates are found.
+        """
+        templates = self.load_fiducials_template()
+
+        fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+        axes = axes.flatten()
+
+        # Plot each template if it exists
+        for i, key in enumerate(templates):
+            axes[i].imshow(templates[key], cmap="gray")
+            axes[i].set_title(key)
+            axes[i].axis("off")
+
+        plt.tight_layout()
+        plt.show()

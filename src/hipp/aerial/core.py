@@ -390,7 +390,7 @@ def filter_detected_fiducials(
     all_detections: dict[str, FiducialsCoordinate],
     all_scores: dict[str, Fiducials[float]],
     all_subpixel_scores: dict[str, Fiducials[float]],
-    degree_threshold: float = 0.05,
+    degree_threshold: float = 0.01,
     score_margin: float = 0.1,
 ) -> dict[str, FiducialsCoordinate]:
     """
