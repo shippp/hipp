@@ -34,7 +34,7 @@ def test_detect_fiducial(dataset, fiducials) -> None:  # type: ignore[no-untyped
     corner_fiducial = cv2.imread(os.path.join(fiducials, "corner_fiducial.png"), cv2.IMREAD_GRAYSCALE)
     subpixel_corner_fiducial = cv2.imread(os.path.join(fiducials, "subpixel_corner_fiducial.png"), cv2.IMREAD_GRAYSCALE)
     image_path = os.path.join(dataset.raw_images, "NAGAP_94V3_196.tif")
-    bloc, _ = read_image_block_grayscale(image_path, 0, 0, 5)
+    bloc, _ = read_image_block_grayscale(image_path, 0, 0, (5, 5))
 
     detection = core.detect_fiducial(bloc, corner_fiducial, subpixel_corner_fiducial)
 

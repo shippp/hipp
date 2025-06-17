@@ -69,7 +69,7 @@ def resize_img(
 
 
 def read_image_block_grayscale(
-    image_source: rasterio.io.DatasetReader | str, row_index: int, col_index: int, grid_size: int = 3
+    image_source: rasterio.io.DatasetReader | str, row_index: int, col_index: int, grid_shape: tuple[int, int] = (3, 3)
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
     """
     Reads a specific block from a grayscale version of a large TIFF image using rasterio.
@@ -79,8 +79,8 @@ def read_image_block_grayscale(
             or the file path to a TIFF image.
         row_index (int): Row index of the desired block (0-based).
         col_index (int): Column index of the desired block (0-based).
-        grid_size (int): Number of blocks the image is divided into along each dimension.
-                         Must be >= 1. Default is 3 (i.e., a 3x3 grid).
+        grid_shape (tuple[int, int]): Number of blocks in (rows, cols) used to divide the image.
+            Must be (>= 1, >= 1). Default is (3, 3).
 
     Returns:
         tuple:
@@ -91,7 +91,7 @@ def read_image_block_grayscale(
     Notes:
         - Only the first image channel is read to save memory (grayscale).
         - The image does not need to be georeferenced.
-        - Blocks at the edges may be slightly larger if the image dimensions are not divisible by grid_size.
+        - Edge blocks may be slightly larger to accommodate image dimensions not divisible by the grid.
     """
     # Suppress warnings about missing georeferencing information
     warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
@@ -99,31 +99,37 @@ def read_image_block_grayscale(
     # Open the dataset if a path is provided
     if isinstance(image_source, str):
         with rasterio.open(image_source) as dataset:
-            return _read_block(dataset, row_index, col_index, grid_size)
+            return _read_block(dataset, row_index, col_index, grid_shape)
     else:
-        return _read_block(image_source, row_index, col_index, grid_size)
+        return _read_block(image_source, row_index, col_index, grid_shape)
 
 
 def _read_block(
-    dataset: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_size: int
+    dataset: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_shape: tuple[int, int]
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
-    block_height = dataset.height // grid_size
-    block_width = dataset.width // grid_size
+    """
+    Internal function to read a block from a raster based on a (rows, cols) grid.
+    """
+    num_rows, num_cols = grid_shape
 
-    # Compute top-left coordinates of the target block
+    # Compute standard block dimensions
+    block_height = dataset.height // num_rows
+    block_width = dataset.width // num_cols
+
+    # Compute top-left corner of the block
     x_offset = col_index * block_width
     y_offset = row_index * block_height
 
-    # Adjust block size for edge blocks (to include all pixels)
-    if col_index == grid_size - 1:
+    # Adjust size for edge blocks
+    if col_index == num_cols - 1:
         block_width = dataset.width - x_offset
-    if row_index == grid_size - 1:
+    if row_index == num_rows - 1:
         block_height = dataset.height - y_offset
 
-    # Define the window (region) to read
+    # Define rasterio window to read
     window = Window(x_offset, y_offset, block_width, block_height)
 
-    # Read only the first channel (grayscale) from the specified window
+    # Read only the first band (grayscale)
     block = dataset.read(1, window=window)
 
     return block, (x_offset, y_offset)

@@ -173,7 +173,9 @@ def detect_fiducials(
     scores, subpixel_scores = Fiducials[float](), Fiducials[float]()
     with rasterio.open(image_path) as src:
         for bloc_name, (bloc_row, block_col) in blocs.items():
-            bloc, (offset_x, offset_y) = hipp.image.read_image_block_grayscale(src, bloc_row, block_col, grid_size)
+            bloc, (offset_x, offset_y) = hipp.image.read_image_block_grayscale(
+                src, bloc_row, block_col, (grid_size, grid_size)
+            )
 
             fiducial = corner_fiducial if "corner" in bloc_name else midside_fiducial
             subpixel_fiducial = subpixel_corner_fiducial if "corner" in bloc_name else subpixel_midside_fiducial

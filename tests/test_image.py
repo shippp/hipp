@@ -53,14 +53,16 @@ def mock_dataset_reader() -> MagicMock:
 def test_read_image_block_grayscale(mock_dataset_reader) -> None:  # type: ignore[no-untyped-def]
     row_index = 1
     col_index = 1
-    grid_size = 3
+    grid_shape = (3, 3)
 
-    block, top_left_coords = hipp.image.read_image_block_grayscale(mock_dataset_reader, row_index, col_index, grid_size)
+    block, top_left_coords = hipp.image.read_image_block_grayscale(
+        mock_dataset_reader, row_index, col_index, grid_shape
+    )
 
     assert isinstance(block, np.ndarray)
 
-    expected_block_height = mock_dataset_reader.height // grid_size
-    expected_block_width = mock_dataset_reader.width // grid_size
+    expected_block_height = mock_dataset_reader.height // grid_shape[0]
+    expected_block_width = mock_dataset_reader.width // grid_shape[1]
     assert block.shape == (expected_block_height, expected_block_width)
 
     x_offset = col_index * expected_block_width
