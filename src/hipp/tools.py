@@ -75,6 +75,46 @@ def points_picker(
     return picked_points
 
 
+def pick_point_from_image(
+    image: cv2.typing.MatLike,
+    window_name: str = "Point Pick",
+    window_title: str = "Pick a point (Ctrl + Click)",
+) -> tuple[int, int] | None:
+    """
+    Display a single image and wait for the user to Ctrl+Click on one point.
+
+    Args:
+        window_name (str): Name of the persistent OpenCV window.
+        image (np.ndarray): Image to display.
+        clahe_enhancement (bool): Apply CLAHE enhancement. Default is False.
+
+    Returns:
+        (x, y): Coordinates of the picked point in the image, or None if aborted.
+
+    Note:
+        The function don't close the window so don't hesitate to close it with the ``
+    """
+    picked_point = None
+
+    def mouse_callback(event: int, x: int, y: int, flags: int, param: Any) -> None:
+        nonlocal picked_point
+        if event == cv2.EVENT_LBUTTONDOWN and (flags & cv2.EVENT_FLAG_CTRLKEY):
+            picked_point = (x, y)
+
+    # Setup window only once
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.imshow(window_name, image)
+    cv2.setMouseCallback(window_name, mouse_callback)
+    cv2.setWindowTitle(window_name, window_title)
+
+    while picked_point is None:
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q") or cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+    return picked_point
+
+
 def optimize_geotifs(
     geotifs_directory: str, keep: bool = False, max_workers: int = 5, show_progress: bool = True
 ) -> None:

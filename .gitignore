@@ -180,6 +180,7 @@ cython_debug/
 notebooks/data/aerial/*
 !notebooks/data/aerial/1994_06_09_aerial_scg.csv
 !notebooks/data/aerial/calibration_report.pdf
+notebooks/data/kh9pc/*
 
 
 # ignore the data test_images
