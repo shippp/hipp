@@ -36,19 +36,18 @@ def test_detect_fiducial(dataset, fiducials) -> None:  # type: ignore[no-untyped
     image_path = os.path.join(dataset.raw_images, "NAGAP_94V3_196.tif")
     bloc, _ = read_image_block_grayscale(image_path, 0, 0, 5)
 
-    detection = core.detect_fiducial(bloc, corner_fiducial, subpixel_corner_fiducial)
+    center, score = core.detect_fiducial(bloc, corner_fiducial, subpixel_corner_fiducial)
 
-    assert_distance_from_2_points(detection["subpixel_center"], (1108, 385))
-    assert detection["approx_score"] >= 0.9
+    assert_distance_from_2_points(center, (1108, 385))
+    assert score >= 0.9
 
 
 def test_detect_fiducials(dataset, fiducials) -> None:  # type: ignore[no-untyped-def]
     preproc = AerialPreprocessing(dataset.raw_images, fiducials_directory=fiducials)
-    fiducial_templates = preproc.load_fiducials_template()
     image_path = os.path.join(dataset.raw_images, "NAGAP_94V3_196.tif")
-    detections, scores, _ = core.detect_fiducials(
+    detection = core.detect_fiducials(
         image_path,
-        **fiducial_templates,
+        **preproc.get_fiducial_template_paths(),
         subpixel_factor=8,
         grid_size=5,
     )
@@ -74,5 +73,6 @@ def test_detect_fiducials(dataset, fiducials) -> None:  # type: ignore[no-untype
         "midside_left",
     ]
     for key, point in zip(detection_keys, points):
-        assert_distance_from_2_points(detections[key], point)  # type: ignore[arg-type]
-        assert scores[key] >= 0.7
+        detected_point = (detection[f"{key}_x"], detection[f"{key}_y"])
+        assert_distance_from_2_points(detected_point, point)  # type: ignore[arg-type]
+        assert detection[f"{key}_score"] >= 0.7  # type: ignore[operator]

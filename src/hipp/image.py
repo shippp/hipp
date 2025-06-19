@@ -10,6 +10,8 @@ import rasterio
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.windows import Window
 
+warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
+
 
 def apply_clahe(
     image: cv2.typing.MatLike,
@@ -93,9 +95,6 @@ def read_image_block_grayscale(
         - The image does not need to be georeferenced.
         - Blocks at the edges may be slightly larger if the image dimensions are not divisible by grid_size.
     """
-    # Suppress warnings about missing georeferencing information
-    warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
-
     # Open the dataset if a path is provided
     if isinstance(image_source, str):
         with rasterio.open(image_source) as dataset:

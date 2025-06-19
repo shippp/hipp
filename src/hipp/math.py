@@ -50,7 +50,7 @@ def estimate_transformation_matrix(
     transform: SimilarityTransform | AffineTransform
 
     if num_points == 0:
-        raise ValueError("No points provided for transformation estimation.")
+        return np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
 
     if num_points == 1:
         src_pt = src_points[0]
