@@ -113,8 +113,8 @@ def detect_fiducials(
     qc_crops = []
 
     with rasterio.open(image_path) as src:
-        for bloc_name, (row, col) in blocs.items():
-            block, (offset_x, offset_y) = read_image_block_grayscale(src, row, col, grid_size)
+        for bloc_name, (bloc_row, block_col) in blocs.items():
+            block, (offset_x, offset_y) = read_image_block_grayscale(src, bloc_row, block_col, (grid_size, grid_size))
 
             kind = "corner" if "corner" in bloc_name else "midside"
             fiducial, subpixel_fiducial = fiducial_map[kind]

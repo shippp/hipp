@@ -6,9 +6,11 @@ Description: some function for the image processing
 import warnings
 
 import cv2
+import numpy as np
 import rasterio
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.windows import Window
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
@@ -71,7 +73,7 @@ def resize_img(
 
 
 def read_image_block_grayscale(
-    image_source: rasterio.io.DatasetReader | str, row_index: int, col_index: int, grid_size: int = 3
+    image_source: rasterio.io.DatasetReader | str, row_index: int, col_index: int, grid_shape: tuple[int, int] = (3, 3)
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
     """
     Reads a specific block from a grayscale version of a large TIFF image using rasterio.
@@ -81,8 +83,8 @@ def read_image_block_grayscale(
             or the file path to a TIFF image.
         row_index (int): Row index of the desired block (0-based).
         col_index (int): Column index of the desired block (0-based).
-        grid_size (int): Number of blocks the image is divided into along each dimension.
-                         Must be >= 1. Default is 3 (i.e., a 3x3 grid).
+        grid_shape (tuple[int, int]): Number of blocks in (rows, cols) used to divide the image.
+            Must be (>= 1, >= 1). Default is (3, 3).
 
     Returns:
         tuple:
@@ -93,71 +95,213 @@ def read_image_block_grayscale(
     Notes:
         - Only the first image channel is read to save memory (grayscale).
         - The image does not need to be georeferenced.
-        - Blocks at the edges may be slightly larger if the image dimensions are not divisible by grid_size.
+        - Edge blocks may be slightly larger to accommodate image dimensions not divisible by the grid.
     """
     # Open the dataset if a path is provided
     if isinstance(image_source, str):
         with rasterio.open(image_source) as dataset:
-            return _read_block(dataset, row_index, col_index, grid_size)
+            return _read_block(dataset, row_index, col_index, grid_shape)
     else:
-        return _read_block(image_source, row_index, col_index, grid_size)
+        return _read_block(image_source, row_index, col_index, grid_shape)
 
 
 def _read_block(
-    dataset: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_size: int
+    dataset: rasterio.io.DatasetReader, row_index: int, col_index: int, grid_shape: tuple[int, int]
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
-    block_height = dataset.height // grid_size
-    block_width = dataset.width // grid_size
+    """
+    Internal function to read a block from a raster based on a (rows, cols) grid.
+    """
+    num_rows, num_cols = grid_shape
 
-    # Compute top-left coordinates of the target block
+    # Compute standard block dimensions
+    block_height = dataset.height // num_rows
+    block_width = dataset.width // num_cols
+
+    # Compute top-left corner of the block
     x_offset = col_index * block_width
     y_offset = row_index * block_height
 
-    # Adjust block size for edge blocks (to include all pixels)
-    if col_index == grid_size - 1:
+    # Adjust size for edge blocks
+    if col_index == num_cols - 1:
         block_width = dataset.width - x_offset
-    if row_index == grid_size - 1:
+    if row_index == num_rows - 1:
         block_height = dataset.height - y_offset
 
-    # Define the window (region) to read
+    # Define rasterio window to read
     window = Window(x_offset, y_offset, block_width, block_height)
 
-    # Read only the first channel (grayscale) from the specified window
+    # Read only the first band (grayscale)
     block = dataset.read(1, window=window)
 
     return block, (x_offset, y_offset)
 
 
-def crop_image_around_point(
-    img: cv2.typing.MatLike, center: tuple[float, float], image_square_dim: int = 11250
-) -> cv2.typing.MatLike:
-    h, w = img.shape[:2]
-    x_center, y_center = int(round(center[0])), int(round(center[1]))
+def warp_tif_blockwise(
+    input_path: str,
+    output_path: str,
+    transformation_matrix: cv2.typing.MatLike,
+    output_size: tuple[int, int],
+    block_size: int = 256,
+    interpolation: int = cv2.INTER_CUBIC,
+    pbar: bool = True,
+    pbar_desc: str = "Warping blocks",
+) -> None:
+    """
+    Applies a geometric transformation (warping) to a raster image in block-wise fashion
+    using a provided transformation matrix, and writes the result to a new file.
 
-    half_dim = image_square_dim // 2
+    Args:
+        input_path (str): Path to the input raster image (GeoTIFF).
+        output_path (str): Path where the warped image will be saved.
+        transformation_matrix (cv2.typing.MatLike): 3x3 homogeneous transformation matrix to apply.
+        output_size (tuple[int, int]): Dimensions (width, height) of the output image.
+        block_size (int, optional): Size of the processing blocks (in pixels). Defaults to 256.
+        interpolation (int, optional): Interpolation method for remapping (e.g., cv2.INTER_LINEAR or cv2.INTER_CUBIC).
+        pbar (bool, optional): Whether to display a progress bar with tqdm. Defaults to True.
+        pbar_desc (str, optional): Description label for the progress bar. Defaults to "Warping blocks".
+    """
+    out_width, out_height = output_size
 
-    # Compute crop boundaries
-    x1 = max(0, x_center - half_dim)
-    y1 = max(0, y_center - half_dim)
-    x2 = min(w, x_center + half_dim)
-    y2 = min(h, y_center + half_dim)
+    # Compute the inverse of the transformation matrix for mapping output to input coordinates
+    M_inv = np.linalg.inv(transformation_matrix)[0:2, :]  # type: ignore[arg-type]
 
-    # Handle border padding if crop goes outside image
-    cropped = img[y1:y2, x1:x2]
-
-    # If the crop is smaller than image_square_dim (near border), pad it
-    pad_y = image_square_dim - cropped.shape[0]
-    pad_x = image_square_dim - cropped.shape[1]
-
-    if pad_x > 0 or pad_y > 0:
-        cropped = cv2.copyMakeBorder(
-            cropped,
-            top=pad_y // 2,
-            bottom=pad_y - (pad_y // 2),
-            left=pad_x // 2,
-            right=pad_x - (pad_x // 2),
-            borderType=cv2.BORDER_CONSTANT,
-            value=[0, 0, 0],  # Black padding
+    with rasterio.open(input_path) as src:
+        # Copy the input image profile and update it for the output image
+        profile = src.profile.copy()
+        profile.update(
+            {
+                "width": out_width,
+                "height": out_height,
+                "transform": rasterio.Affine.identity(),  # reset spatial transform, since we're applying a custom one
+                "compress": "lzw",
+                "driver": "GTiff",
+                "BIGTIFF": "YES",  # allow large output files
+            }
         )
 
-    return cropped
+        # Open output image for writing
+        with rasterio.open(output_path, "w", **profile) as dst:
+            # Create a list of output block coordinates (top-left corners)
+            blocks = [
+                (x_out, y_out)
+                for y_out in range(0, out_height, block_size)
+                for x_out in range(0, out_width, block_size)
+            ]
+            # Wrap block iterator with a tqdm progress bar if enabled
+            iterator = tqdm(blocks, desc=pbar_desc, unit="block") if pbar else blocks
+
+            for x_out, y_out in iterator:
+                # Determine the actual block dimensions (handle border cases)
+                w = min(block_size, out_width - x_out)
+                h = min(block_size, out_height - y_out)
+
+                # Generate grid of destination (output) coordinates
+                dst_grid_x, dst_grid_y = np.meshgrid(np.arange(x_out, x_out + w), np.arange(y_out, y_out + h))
+
+                # Stack destination points in homogeneous coordinates (3xN)
+                dst_pts = np.stack([dst_grid_x.ravel(), dst_grid_y.ravel(), np.ones(dst_grid_x.size)], axis=0)
+
+                # Apply inverse transformation to get corresponding input coordinates
+                src_pts = (M_inv @ dst_pts).T
+                x_src = src_pts[:, 0].reshape(h, w).astype(np.float32)
+                y_src = src_pts[:, 1].reshape(h, w).astype(np.float32)
+
+                # Compute bounding box of source region to read
+                x_min = int(np.floor(x_src.min()))
+                y_min = int(np.floor(y_src.min()))
+                x_max = int(np.ceil(x_src.max()))
+                y_max = int(np.ceil(y_src.max()))
+
+                read_width = x_max - x_min + 1
+                read_height = y_max - y_min + 1
+
+                # Skip block if invalid region (completely outside bounds)
+                if read_width <= 0 or read_height <= 0:
+                    continue
+
+                # Apply padding for better interpolation at block edges
+                padding = 2  # safe margin for INTER_CUBIC
+                x_pad_min = max(x_min - padding, 0)
+                y_pad_min = max(y_min - padding, 0)
+                x_pad_max = x_max + padding
+                y_pad_max = y_max + padding
+
+                pad_width = x_pad_max - x_pad_min + 1
+                pad_height = y_pad_max - y_pad_min + 1
+
+                # Define padded read window in source image
+                read_window = Window(x_pad_min, y_pad_min, pad_width, pad_height)
+
+                # Read source data block with boundless mode and padding
+                src_block = src.read(1, window=read_window, boundless=True, fill_value=0)
+
+                # Shift coordinates relative to padded window origin
+                x_src_shifted = x_src - x_pad_min
+                y_src_shifted = y_src - y_pad_min
+
+                # Remap the source block to the warped output using OpenCV
+                warped = cv2.remap(  # type: ignore[call-overload]
+                    src_block,
+                    x_src_shifted,
+                    y_src_shifted,
+                    interpolation=interpolation,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+
+                # Write the warped block to the corresponding location in the output image
+                dst.write(warped.astype(src.dtypes[0]), 1, window=Window(x_out, y_out, w, h))
+
+
+def apply_clahe_to_tif_blockwise(
+    input_tif_path: str,
+    output_tif_path: str,
+    block_size: int = 256,
+    clip_limit: float = 2.0,
+    tile_grid_size: tuple[int, int] = (8, 8),
+) -> None:
+    """
+    Apply CLAHE on a GeoTIFF image block by block and save the result.
+
+    Args:
+        input_tif_path (str): Path to input .tif image.
+        output_tif_path (str): Path to save the output .tif image.
+        block_size (int): Size of the square block/window to process.
+        clip_limit (float): CLAHE clip limit parameter.
+        tile_grid_size (tuple[int, int]): CLAHE tile grid size.
+
+    """
+
+    # Open source image with rasterio
+    with rasterio.open(input_tif_path) as src:
+        profile = src.profile.copy()
+
+        # Update profile for output
+        profile.update(
+            dtype=rasterio.uint8,  # CLAHE output is uint8
+            count=src.count,
+            compress="lzw",
+            bigtiff="TRUE",
+        )
+
+        # Create CLAHE object from OpenCV
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+
+        with rasterio.open(output_tif_path, "w", **profile) as dst:
+            height = src.height
+            width = src.width
+
+            # Read only the first band (grayscale)
+            for row_off in range(0, height, block_size):
+                for col_off in range(0, width, block_size):
+                    # Define window dimensions (may be smaller on edges)
+                    win_width = min(block_size, width - col_off)
+                    win_height = min(block_size, height - row_off)
+
+                    window = Window(col_off, row_off, win_width, win_height)
+
+                    # Read block from source (as ndarray)
+                    block = src.read(1, window=window)
+
+                    # Write result block to destination
+                    dst.write(clahe.apply(block), 1, window=window)
