@@ -136,7 +136,7 @@ def _read_block(
     return block, (x_offset, y_offset)
 
 
-def warp_image_by_block(
+def warp_tif_blockwise(
     input_path: str,
     output_path: str,
     transformation_matrix: cv2.typing.MatLike,
@@ -256,7 +256,7 @@ def warp_image_by_block(
 def apply_clahe_to_tif_blockwise(
     input_tif_path: str,
     output_tif_path: str,
-    block_size: int = 512,
+    block_size: int = 256,
     clip_limit: float = 2.0,
     tile_grid_size: tuple[int, int] = (8, 8),
 ) -> None:

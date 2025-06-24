@@ -107,7 +107,7 @@ def test_warp_image_by_block_vs_cv2(synthetic_image: tuple[Path, cv2.typing.MatL
 
     output_path = tmp_path / "warped_block.tif"
 
-    hipp.image.warp_image_by_block(
+    hipp.image.warp_tif_blockwise(
         input_path=str(input_path),
         output_path=str(output_path),
         transformation_matrix=matrix,

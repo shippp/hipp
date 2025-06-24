@@ -9,7 +9,7 @@ from collections import defaultdict
 import cv2
 import pandas as pd
 
-from hipp.image import warp_image_by_block
+from hipp.image import warp_tif_blockwise
 from hipp.kh9pc.core import compute_cropping_matrix, image_mosaic, pick_points_in_corners
 
 
@@ -157,7 +157,7 @@ def crop_images(
             print(f"\t- Transformation matrix : \n{cropping_matrix}")
 
             if not dry_run:
-                warp_image_by_block(
+                warp_tif_blockwise(
                     input_path, output_path, cropping_matrix, output_size, pbar=True, pbar_desc=f"[{image_id}] warping"
                 )
             print(f"\t- Image saved at '{output_path}'\n")
