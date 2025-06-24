@@ -9,7 +9,8 @@ from collections import defaultdict
 import cv2
 import pandas as pd
 
-from hipp.kh9pc.core import image_mosaic, pick_points_in_corners
+from hipp.image import warp_image_by_block
+from hipp.kh9pc.core import compute_cropping_matrix, image_mosaic, pick_points_in_corners
 
 
 def join_images(
@@ -93,3 +94,70 @@ def select_all_cropping_points(
         cv2.destroyWindow("Corner Point Picker")
     except cv2.error:
         pass
+
+
+def crop_images(
+    images_directory: str,
+    csv_file: str,
+    output_directory: str,
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """
+    Crop and rotate .tif images based on coordinates provided in a CSV file.
+
+    For each image in the input directory, this function looks up its corresponding
+    cropping points in the CSV file, rotates the image to align the top edge,
+    crops it accordingly, and saves the result in the output directory.
+
+    Args:
+        images_directory (str): Path to the directory containing input .tif images.
+        csv_file (str): Path to the CSV file containing image IDs and cropping coordinates.
+                        The CSV must have an 'image_id' index and columns for each corner point:
+                        top_left_x, top_left_y, top_right_x, top_right_y, etc.
+        output_directory (str): Directory to save the cropped and rotated images.
+        overwrite (bool, optional): If False, skip images whose output already exists. Defaults to False.
+    """
+    # Load the CSV into a DataFrame indexed by image_id
+    df = pd.read_csv(csv_file, index_col="image_id")
+
+    os.makedirs(output_directory, exist_ok=True)
+
+    for filename in os.listdir(images_directory):
+        if filename.endswith(".tif"):
+            image_id = filename.replace(".tif", "")
+            input_path = os.path.join(images_directory, filename)
+            output_path = os.path.join(output_directory, filename)
+
+            # Skip if output already exists and overwrite is disabled
+            if os.path.exists(output_path) and not overwrite:
+                print(f"[{image_id}] Skipped: output already exists at '{output_path}'")
+                continue
+
+            # Skip if image_id is not in the CSV
+            if image_id not in df.index:
+                print(f"[{image_id}] No cropping points found in CSV. Please update '{csv_file}'")
+                continue
+
+            # Retrieve the four corner points from the CSV and convert to int
+            row = df.loc[image_id]
+            points = [
+                (int(row["top_left_x"]), int(row["top_left_y"])),
+                (int(row["top_right_x"]), int(row["top_right_y"])),
+                (int(row["bottom_right_x"]), int(row["bottom_right_y"])),
+                (int(row["bottom_left_x"]), int(row["bottom_left_y"])),
+            ]
+
+            cropping_matrix, output_size = compute_cropping_matrix(input_path, points)
+            # Print cropping info and perform cropping + rotation
+            print(f"Image '{image_id}' :")
+            print(f"\t- Cropping points : {points}")
+
+            print(f"\t- Output size : {output_size}")
+            print(f"\t- Transformation matrix : \n{cropping_matrix}")
+
+            if not dry_run:
+                warp_image_by_block(
+                    input_path, output_path, cropping_matrix, output_size, pbar=True, pbar_desc=f"[{image_id}] warping"
+                )
+            print(f"\t- Image saved at '{output_path}'\n")

@@ -4,13 +4,22 @@ Description: core functions for the preprocessing of KH-9 PC images
 """
 
 import glob
+import math
 import os
 import subprocess
 
 import cv2
+import numpy as np
+import rasterio
 
+# import pyvips
 from hipp.image import apply_clahe, read_image_block_grayscale
+from hipp.math import transform_coord
 from hipp.tools import pick_point_from_image
+
+####################################################################################################################################
+#                                                   MAIN FUNCTIONS
+####################################################################################################################################
 
 
 def image_mosaic(
@@ -109,3 +118,71 @@ def pick_points_in_corners(
     if destroy_window:
         cv2.destroyWindow(window_name)
     return result
+
+
+def compute_cropping_matrix(
+    input_path: str, points: list[tuple[int, int]]
+) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
+    """
+    Compute a transformation matrix to rotate and crop an image around two reference points.
+
+    The function computes the affine transformation matrix that rotates the image so that the line
+    defined by the first two input points becomes horizontal. Then it computes the minimal bounding box
+    of the transformed points and applies a translation to crop the rotated image to this region.
+
+    Args:
+        input_path (str): Path to the input image.
+        points (list[tuple[float, float]]): List of at least two (x, y) points used to compute the rotation.
+
+    Returns:
+        tuple:
+            - final_matrix (np.ndarray): 3x3 affine transformation matrix (rotation + translation).
+            - (out_width, out_height): Size of the cropped output image.
+    """
+    # Calculate angle in degrees between two points relative to horizontal axis
+    angle = angle_from_points(*points[0], *points[1])
+
+    # Open the input image to get its dimensions
+    with rasterio.open(input_path) as src:
+        img_width = src.width
+        img_height = src.height
+
+    # Create a rotation matrix around the center of the image
+    rotation_matrix = np.vstack([cv2.getRotationMatrix2D((img_width // 2, img_height // 2), angle, 1), [0, 0, 1]])
+
+    # Rotate the input points using the rotation matrix
+    rotated_points = [transform_coord(coord, rotation_matrix) for coord in points]
+
+    # Compute the bounding box of the rotated points
+    left, top, out_width, out_height = bounding_rect(rotated_points)
+
+    # Create a translation matrix to crop the image to the bounding box
+    translation_matrix = np.array([[1, 0, -left], [0, 1, -top], [0, 0, 1]])
+
+    # Combine translation and rotation matrices
+    final_matrix = translation_matrix @ rotation_matrix
+    return final_matrix, (out_width, out_height)
+
+
+####################################################################################################################################
+#                                                   PRIVATE FUNCTIONS
+####################################################################################################################################
+
+
+def angle_from_points(x1: float, y1: float, x2: float, y2: float) -> float:
+    """Calculate angle in degrees between two points relative to horizontal axis"""
+    dx = x2 - x1
+    dy = y2 - y1
+    angle_rad = math.atan2(dy, dx)
+    return math.degrees(angle_rad)
+
+
+def bounding_rect(points: list[tuple[float, float]]) -> tuple[int, int, int, int]:
+    """Get bounding rectangle (left, top, width, height) from list of (x,y) points"""
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    left = int(min(xs))
+    top = int(min(ys))
+    width = int(max(xs)) - left
+    height = int(max(ys)) - top
+    return left, top, width, height
