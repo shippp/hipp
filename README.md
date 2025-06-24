@@ -38,17 +38,19 @@ HIPP (Historical Image Pre-Processing) is a python library to pre-process scanne
 
 See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
 
-### Preprocessing of KH-9 Panoramic Camera Satellite Images *(feature in development)*
+### Preprocessing of KH-9 Panoramic Camera Satellite Images
 
-- **Image Joining** *(feature in development)*
+- **Image Joining**
   - Joins split images into a single composite image
   - Requires input images named sequentially (e.g. `ImageId_a`, `ImageId_b`, `ImageId_c`, …)
   - A small overlap between image parts is required for proper stitching
   - Uses [`image_mosaic`](https://stereopipeline.readthedocs.io/en/latest/tools/image_mosaic.html) from the [ASP toolkit](https://stereopipeline.readthedocs.io/en/latest/introduction.html)
 
-- **Image Cropping** *(feature in development)*
+- **Image Cropping**
   - Built-in interactive tool to manually select corners of the region of interest
   - Rotates and crops the image to align the selected top edge horizontally
+
+See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for example.
 
 ### Preprocessing of KH-9 Mapping Camera Satellite Images *(feature in development)*
 
