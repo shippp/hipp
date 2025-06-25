@@ -31,8 +31,7 @@ dependencies = [
   "matplotlib",
   "tqdm",
   "rasterio",
-  "scikit-image",
-  "gdal"
+  "scikit-image"
 ]
 
 [project.urls]

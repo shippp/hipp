@@ -58,6 +58,37 @@ See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for example.
 
 ## Installation
 
+This pipeline requires the [ASP toolkit](https://stereopipeline.readthedocs.io/en/latest/introduction.html) to be installed and accessible in your system's PATH.
+
+### Steps to install the ASP toolkit (2025-06-22 daily build)
+
+```bash
+# Navigate to your home directory
+cd ~
+
+# Download the 2025-06-22 daily build of the ASP toolkit
+wget https://github.com/NeoGeographyToolkit/StereoPipeline/releases/download/2025-06-22-daily-build/StereoPipeline-3.6.0-alpha-2025-06-22-x86_64-Linux.tar.bz2
+
+# Extract the downloaded archive
+tar xvf StereoPipeline-3.6.0-alpha-2025-06-22-x86_64-Linux.tar.bz2 
+
+# (Optional) Remove the archive to free up space
+rm -f StereoPipeline-3.6.0-alpha-2025-06-22-x86_64-Linux.tar.bz2
+
+# To permanently add the ASP executable subdirectory to your PATH, add to your shell configuration (e.g., ~/.bashrc), a line similar to:
+export PATH="${PATH}":"$HOME/StereoPipeline-3.6.0-alpha-2025-06-22-x86_64-Linux/bin"
+```
+
+After completing these steps, verify that the ASP toolkit is correctly installed and accessible by running:
+
+```bash
+which stereo
+```
+
+### Installing hipp
+
+Once the ASP toolkit is properly installed and available in your PATH, you can install **hipp** using pip:
+  
 ```bash
 pip install hipp
 ```
