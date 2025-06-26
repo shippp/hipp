@@ -107,9 +107,7 @@ def detect_fiducials(
             }
         )
 
-    result: dict[str, tuple[float, float] | float | str] = {
-        "image_id": os.path.basename(image_path).replace(".tif", "")
-    }
+    result: dict[str, tuple[float, float] | float | str] = {"image_id": os.path.basename(image_path)}
     qc_crops = []
 
     with rasterio.open(image_path) as src:

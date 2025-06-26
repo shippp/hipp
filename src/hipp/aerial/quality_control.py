@@ -3,13 +3,13 @@ Copyright (c) 2025 HIPP developers
 Description: All function for quality control
 """
 
-import os
-
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
+
+from hipp.aerial.fiducials import _get_groups, compute_principal_point
 
 
 def create_qc_crop(
@@ -130,7 +130,7 @@ def plot_detection_score_boxplot(detected_fiducials_df: pd.DataFrame, figure_pat
 
 
 def plot_rmse_after_vs_before(rmse_before: dict[str, float], rmse_after: dict[str, float], figure_path: str) -> None:
-    labels = [os.path.splitext(os.path.basename(k))[0] for k in sorted(rmse_before)]
+    labels = sorted(rmse_before)
     rmse_before_values = [rmse_before[k] for k in sorted(rmse_before.keys())]
     rmse_after_values = [rmse_after[k] for k in sorted(rmse_before.keys())]
 
@@ -147,6 +147,29 @@ def plot_rmse_after_vs_before(rmse_before: dict[str, float], rmse_after: dict[st
     fig.tight_layout()
 
     fig.savefig(figure_path)
+
+
+def plot_true_fiducials(fiducials: pd.Series) -> None:
+    for group in _get_groups(fiducials):
+        for i in range(4):
+            coord1 = fiducials[[group[i] + "_x", group[i] + "_y"]]
+            coord2 = fiducials[[group[(i + 1) % 4] + "_x", group[(i + 1) % 4] + "_y"]]
+            coord3 = fiducials[[group[(i + 2) % 4] + "_x", group[(i + 2) % 4] + "_y"]]
+            plt.scatter(*coord1, color="black", zorder=10)
+            if "corner" in group[0]:
+                plt.plot(
+                    [coord1.iloc[0], coord2.iloc[0]], [coord1.iloc[1], coord2.iloc[1]], linestyle="-", color="gray"
+                )
+            plt.plot([coord1.iloc[0], coord3.iloc[0]], [coord1.iloc[1], coord3.iloc[1]], linestyle="-", color="gray")
+
+    principal_point = compute_principal_point(fiducials)
+    assert principal_point is not None
+    plt.scatter(*principal_point, color="red", s=100, marker="+", zorder=10)
+
+    plt.title("True fiducials")
+    plt.axis("equal")
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.show()
 
 
 def compute_rmse(s1: pd.Series, s2: pd.Series) -> float:

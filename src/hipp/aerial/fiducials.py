@@ -190,6 +190,29 @@ def warp_fiducial_coordinates(fiducials: pd.Series, transformation_matrix: cv2.t
     return fiducials
 
 
+def open_camera_model_intrinsics(csv_file: str) -> tuple[float, pd.Series]:
+    """
+    Load scanning resolution and true fiducial positions from a camera model CSV file.
+
+    :param csv_file: Path to the CSV file containing camera intrinsics.
+    :return: A tuple containing the scanning resolution (in mm) and a Series of fiducial positions.
+    :raises ValueError: If the file format is invalid or required keys are missing.
+    """
+    try:
+        df_row = pd.read_csv(csv_file).iloc[0]
+        df_row.index = df_row.index.str.replace("_mm", "", regex=False)
+        scanning_resolution_mm = float(df_row["pixel_pitch"])
+
+        fiducials_keys = [key + suffix for key in CORNER_KEYS + MIDSIDE_KEYS for suffix in ["_x", "_y"]]
+        true_fiducials_mm = df_row[fiducials_keys]
+        return scanning_resolution_mm, true_fiducials_mm
+    except Exception as e:
+        raise ValueError(
+            "Invalid CSV format. Expected structure similar to:\n"
+            "https://github.com/shippp/hipp/blob/main/notebooks/data/aerial/camera_model_intrinsics.csv"
+        ) from e
+
+
 ####################################################################################################################################
 #                                                   PRIVATE FUNCTIONS
 ####################################################################################################################################

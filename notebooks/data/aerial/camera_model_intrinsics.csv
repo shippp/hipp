@@ -1,0 +1,2 @@
+focal_length,pixel_pitch,midside_left_x_mm,midside_left_y_mm,midside_top_x_mm,midside_top_y_mm,midside_right_x_mm,midside_right_y_mm,midside_bottom_x_mm,midside_bottom_y_mm,corner_top_left_x_mm,corner_top_left_y_mm,corner_top_right_x_mm,corner_top_right_y_mm,corner_bottom_left_x_mm,corner_bottom_left_y_mm,corner_bottom_right_x_mm,corner_bottom_right_y_mm
+152.299,0.02,-111.998,-0.004,-0.014,111.993,112.004,0.000,0.000,-112.002,-109.989,109.9995,110.010,109.999,-109.990,-110.002,109.998,-110.002

@@ -63,9 +63,9 @@ class AerialPreprocessing:
         Args:
             images_directory (str): Path to the directory containing input images.
             output_directory (str | None, optional): Directory to save processed images.
-                Defaults to a subfolder 'output_images' within the parent of images_directory.
+                Defaults to a subfolder 'preprocessed_images' within the parent of images_directory.
             fiducials_directory (str | None, optional): Directory containing fiducials data.
-                Defaults to a subfolder 'fiducials' within the parent of images_directory.
+                Defaults to a subfolder 'fiducial_templates' within the parent of images_directory.
             qc_directory (str | None, optional): Directory for saving quality control outputs.
                 Defaults to a subfolder 'qc' within the parent of images_directory.
 
@@ -80,10 +80,10 @@ class AerialPreprocessing:
         # define all path in terms of images_directory if their are not provided
         project_dir = os.path.dirname(images_directory)
         self.output_directory = (
-            os.path.join(project_dir, "output_images") if output_directory is None else output_directory
+            os.path.join(project_dir, "preprocessed_images") if output_directory is None else output_directory
         )
         self.fiducials_directory = (
-            os.path.join(project_dir, "fiducials") if fiducials_directory is None else fiducials_directory
+            os.path.join(project_dir, "fiducial_templates") if fiducials_directory is None else fiducials_directory
         )
         self.qc_directory = os.path.join(project_dir, "qc") if qc_directory is None else qc_directory
 
@@ -333,8 +333,8 @@ class AerialPreprocessing:
             # Parallel execution with image processing using process pool
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 for index, row in fiducials_detections_df.iterrows():
-                    image_path = os.path.join(self.images_directory, f"{index}.tif")
-                    output_image_path = os.path.join(self.output_directory, f"{index}.tif")
+                    image_path = os.path.join(self.images_directory, index)
+                    output_image_path = os.path.join(self.output_directory, index)
 
                     # Submit task for each image to the executor
                     future = executor.submit(
