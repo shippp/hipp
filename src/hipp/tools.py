@@ -9,9 +9,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import cv2
+import rasterio
+from rasterio.shutil import copy as rio_copy
 from tqdm import tqdm
 
-from hipp.image import apply_clahe
+from hipp.image import apply_clahe, resize_raster_blockwise
 
 
 def points_picker(
@@ -115,7 +117,7 @@ def pick_point_from_image(
     return picked_point
 
 
-def optimize_geotifs(
+def optimize_geotifs_gdal(
     geotifs_directory: str, keep: bool = False, max_workers: int = 5, show_progress: bool = True
 ) -> None:
     """
@@ -169,6 +171,52 @@ def optimize_geotifs(
                 pass
 
 
+def optimize_geotifs(
+    geotifs_directory: str,
+    show_progress: bool = True,
+    overwrite: bool = False,
+) -> None:
+    """
+    Optimize GeoTIFF files in a directory by applying compression and using the BigTIFF format if necessary.
+    Files are rewritten only if not already optimized unless 'overwrite' is set to True.
+
+    :param geotifs_directory: Directory containing the GeoTIFF files to optimize.
+    :param show_progress: Whether to display a progress bar.
+    :param overwrite: If False, skip files already optimized.
+    """
+    desired_options = {
+        "compress": "lzw",
+        "tiled": True,
+        "driver": "GTiff",
+    }
+
+    files = [f for f in os.listdir(geotifs_directory) if f.endswith(".tif")]
+    iterator = tqdm(files, desc="Optimizing", unit="file") if show_progress else files
+
+    for filename in iterator:
+        tif = os.path.join(geotifs_directory, filename)
+        tmp_tif = tif + ".tmp"
+
+        with rasterio.open(tif) as src:
+            profile = src.profile.copy()
+
+            # Check if already optimized
+            already_optimized = all(
+                str(profile.get(k, "")).lower() == str(v).lower() for k, v in desired_options.items()
+            )
+            if already_optimized and not overwrite:
+                continue
+
+            profile.update(desired_options.update({"BIGTIFF": "IF_SAFER"}))
+
+            # Write to temporary file
+            rio_copy(src, tmp_tif, **profile)
+
+        # Replace or keep original
+        os.remove(tif)
+        os.rename(tmp_tif, tif)
+
+
 def generate_quickviews(
     directory: str,
     factor: float = 0.2,
@@ -178,63 +226,6 @@ def generate_quickviews(
     max_workers: int = 5,
     overwrite: bool = False,
 ) -> None:
-    """
-    Generate downsampled preview images (quickviews) from large GeoTIFF files using `gdal_translate`.
-
-    This function creates JPEG quickviews by resizing input GeoTIFF images based on a scaling factor.
-    It runs in parallel using a thread pool to improve performance and disables GDAL auxiliary metadata
-    to avoid the creation of `.aux.xml` sidecar files.
-
-    Parameters
-    ----------
-    directory : str
-        Path to the directory containing input GeoTIFF files.
-    factor : float, default=0.2
-        Downsampling factor (e.g., 0.2 = 20% of the original dimensions).
-    output_directory : str or None, optional
-        Directory where output quickviews will be saved. If None, a `quickviews` subdirectory is created.
-    image_extension : str, default=".tif"
-        Extension of the input images to process (case-insensitive).
-    output_image_extension : str, default=".jpg"
-        Extension/format of the generated quickviews.
-    max_workers : int, default=5
-        Maximum number of threads used for parallel processing.
-    overwrite : bool, default=False
-        If False, skip processing files that already have corresponding output files.
-
-    Notes
-    -----
-    - The function uses `gdal_translate` under the hood with JPEG output format and LZW compression.
-    - Auxiliary metadata generation is disabled via the `GDAL_PAM_ENABLED=NO` environment variable.
-    - Output images are generated only for files matching the specified input extension.
-
-    Examples
-    --------
-    >>> generate_quickviews("input_dir", factor=0.1)
-
-    This will create JPEG previews at 10% size for all `.tif` files in "input_dir",
-    and store them in "input_dir/quickviews".
-    """
-
-    def create_quickview(input_path: str, output_path: str) -> None:
-        try:
-            command = [
-                "gdal_translate",
-                "-of",
-                "JPEG",
-                "-co",
-                "QUALITY=85",
-                "-outsize",
-                f"{int(factor * 100)}%",
-                f"{int(factor * 100)}%",
-                input_path,
-                output_path,
-            ]
-            os.environ["GDAL_PAM_ENABLED"] = "NO"  # avoid to generate .jpg.aux.xml files
-            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] Failed to process {input_path}: {e}")
-
     if output_directory is None:
         output_directory = os.path.join(directory, "quickviews")
     os.makedirs(output_directory, exist_ok=True)
@@ -246,10 +237,10 @@ def generate_quickviews(
             base_name = os.path.splitext(filename)[0]
             output_path = os.path.join(output_directory, f"{base_name}{output_image_extension}")
             if overwrite or not os.path.exists(output_path):
-                tasks.append((input_path, output_path))
+                tasks.append((input_path, output_path, factor))
 
     # Run with multithreading and progress bar
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(create_quickview, inp, out) for inp, out in tasks]
+        futures = [executor.submit(resize_raster_blockwise, inp, out, factor) for inp, out, factor in tasks]
         for _ in tqdm(as_completed(futures), total=len(futures), desc="Generating quickviews", unit="image"):
             pass

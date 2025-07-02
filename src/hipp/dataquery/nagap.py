@@ -28,4 +28,4 @@ def NAGAP_download_images_to_disk(
 
     thread_downloads(output_directory, urls, file_names, show_progress, max_workers, overwrite)
 
-    optimize_geotifs(output_directory, max_workers=max_workers, show_progress=show_progress)
+    optimize_geotifs(output_directory, show_progress=show_progress)

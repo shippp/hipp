@@ -9,11 +9,13 @@ from collections import defaultdict
 import cv2
 import pandas as pd
 
+# from hipp.image import warp_tif_blockwise_to_dst
 from hipp.image import warp_tif_blockwise
 from hipp.kh9pc.core import compute_cropping_matrix, image_mosaic, pick_points_in_corners
+from hipp.kh9pc.image_mosaic import compute_sequential_alignment, stitch_images_with_transformations
 
 
-def join_images(
+def join_images_asp(
     images_directory: str,
     output_directory: str,
     overwrite: bool = False,
@@ -57,6 +59,34 @@ def join_images(
         # Call image_mosaic for each group
         # Sort image paths alphabetically to ensure consistent mosaicking order
         image_mosaic(image_paths, output_image_path, overwrite, threads, cleanup, verbose, dryrun)
+
+
+def join_images(images_directory: str, output_directory: str, overwrite: bool = False, verbose: bool = True) -> None:
+    """
+    Groups and mosaics TIF image tiles from a directory by scene ID.
+
+    Each group of images is identified by the prefix before the first underscore in the filename.
+    Images must be named in a way that ensures alphabetical ordering corresponds to spatial/temporal logic
+    (e.g., img_a.tif, img_b.tif, etc.).
+    """
+    scene_tiles = defaultdict(list)
+
+    # Group image tiles by scene ID (assumed to be the prefix before the first underscore)
+    for filename in os.listdir(images_directory):
+        if filename.endswith(".tif") and "_" in filename:
+            scene_id = filename.split("_")[0]
+            scene_tiles[scene_id].append(os.path.join(images_directory, filename))
+
+    # For each scene group, create a mosaicked image
+    for scene_id in sorted(scene_tiles):
+        output_image_path = os.path.join(output_directory, f"{scene_id}.tif")
+        image_paths = sorted(scene_tiles[scene_id])
+
+        if os.path.exists(output_image_path) and not overwrite:
+            print(f"Skipping {output_image_path}: output already exists")
+        else:
+            matrix = compute_sequential_alignment(image_paths, verbose=verbose)
+            stitch_images_with_transformations(matrix, output_image_path)
 
 
 def select_all_cropping_points(

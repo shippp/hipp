@@ -72,6 +72,73 @@ def resize_img(
     return resized
 
 
+def resize_raster_blockwise(
+    input_path: str,
+    output_path: str,
+    scale_factor: float = 0.2,
+    block_size: int = 256,
+    interpolation: int = cv2.INTER_LINEAR,
+    pbar: bool = False,
+) -> None:
+    """
+    Resize a raster image with multiple bands (e.g., RGB) using block-wise processing to limit memory usage,
+    and save the result as an image.
+
+    Notes
+    -----
+    - The function reads and processes the image in blocks to avoid loading the entire image into memory.
+    - Supports multi-band images (e.g., RGB with 3 bands).
+    - Uses low-level interpolation suitable for visualization (not for high-quality resizing).
+    - Converts RGB bands to BGR before saving with OpenCV to ensure correct color representation.
+    """
+    with rasterio.open(input_path) as src:
+        src_width, src_height = src.width, src.height
+        src_count = src.count
+        # Compute output size
+        dst_width = int(src_width * scale_factor)
+        dst_height = int(src_height * scale_factor)
+
+        # Prepare an empty array for the output image (single band assumed here)
+        dst_img = np.zeros((dst_height, dst_width, src_count), dtype=src.dtypes[0])
+
+        blocks = [(x, y) for y in range(0, dst_height, block_size) for x in range(0, dst_width, block_size)]
+        iterator = tqdm(blocks, desc="resizing", unit="block") if pbar else blocks
+
+        for x_out, y_out in iterator:
+            w_out = min(block_size, dst_width - x_out)
+            h_out = min(block_size, dst_height - y_out)
+
+            x_src_start = int(x_out / scale_factor)
+            y_src_start = int(y_out / scale_factor)
+
+            x_src_width = int(w_out / scale_factor)
+            y_src_height = int(h_out / scale_factor)
+
+            # read src window
+            src_window = Window(x_src_start, y_src_start, x_src_width, y_src_height)
+
+            # Read all bands at once: shape (bands, y, x)
+            src_block = src.read(window=src_window)
+
+            # Transpose to (y, x, bands) for cv2.resize
+            src_block = np.transpose(src_block, (1, 2, 0))
+
+            resized_block = cv2.resize(
+                src_block,
+                (w_out, h_out),
+                interpolation=interpolation,
+            )
+            if resized_block.ndim == 2:
+                resized_block = resized_block[:, :, np.newaxis]
+
+            dst_img[y_out : y_out + h_out, x_out : x_out + w_out, :] = resized_block
+
+        if dst_img.shape[2] == 3:
+            cv2.imwrite(output_path, dst_img[..., ::-1])  # RGB to BGR
+        else:
+            cv2.imwrite(output_path, dst_img[..., 0])  # write first band
+
+
 def read_image_block_grayscale(
     image_source: rasterio.io.DatasetReader | str, row_index: int, col_index: int, grid_shape: tuple[int, int] = (3, 3)
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
