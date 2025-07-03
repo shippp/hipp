@@ -1,142 +1,346 @@
 """
 Copyright (c) 2025 HIPP developers
-Description: functions for aerial fiducials manipulation
+Description: main function for aerial preprocessing
 """
 
+import glob
 import os
-from typing import TypedDict
+import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
+import numpy as np
 import pandas as pd
 import rasterio
+from tqdm import tqdm
 
-import hipp.aerial.quality_control as qc
-from hipp.aerial.fiducials import compute_transformation, warp_fiducial_coordinates
+from hipp.aerial.fiducials import (
+    CORNER_FIDUCIAL_NAME,
+    CORNER_KEYS,
+    MIDSIDE_FIDUCIAL_NAME,
+    MIDSIDE_KEYS,
+    SUBPIXEL_CORNER_FIDUCIAL_NAME,
+    SUBPIXEL_MIDSIDE_FIDUCIAL_NAME,
+    _get_fiducial_template_paths,
+    compute_fiducial_transformation,
+    compute_principal_point,
+    filter_by_angle,
+    filter_scores_by_local_median,
+    warp_fiducial_coordinates,
+)
 from hipp.image import apply_clahe, read_image_block_grayscale, resize_img
-from hipp.math import affine_matrix
-from hipp.tools import points_picker
+from hipp.math import transform_coord
+from hipp.tools import pick_point_from_image
 
 
-def create_fiducial_template_from_image(
-    image: cv2.typing.MatLike,
-    fiducial_coordinate: tuple[int, int] | None = None,
+####################################################################################################################################
+#                                                   MAIN FUNCTIONS
+####################################################################################################################################
+def create_fiducial_templates(
+    input_image_path: str,
+    output_directory: str,
     distance_around_fiducial: int = 100,
-) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
+    subpixel_distance_around_fiducial: int = 100,
+    corner: bool = False,
+    midside: bool = False,
+    fiducial_coordinate: tuple[int, int] | None = None,
+    subpixel_center_coordinate: tuple[int, int] | None = None,
+) -> dict[str, tuple[int, int]]:
     """
-    Create a fiducial template by cropping a portion of an input image around a fiducial point.
+    Generates fiducial templates from an input image by cropping regions around specified points.
 
-    Args:
-        image (np.ndarray): The input grayscale image.
-        fiducial_coordinate (tuple[int, int] | None, optional): The coordinate (x, y) of the fiducial point.
-            If None, the function will interactively allow the user to pick a point.
-        distance_around_fiducial (int, optional): The size of the region to crop around the fiducial point,
-            in pixels. Defaults to 100.
-
-    Returns:
-        tuple:
-            - np.ndarray: Cropped image (fiducial template).
-            - tuple[int, int]: Fiducial coordinate used.
-
-    Raises:
-        ValueError: If no fiducial point is provided and the interactive point picker fails.
+    This function allows creating either a corner or midside fiducial template at regular and subpixel resolutions. It prompts for user input to select fiducial coordinates if not provided, crops image patches around these points, and saves the resulting templates into the output directory. It returns the coordinates used for the fiducials and their subpixel centers.
     """
-    if len(image.shape) != 2:
-        raise ValueError("Only grayscale images are supported.")
+
+    # Ensure exactly one fiducial type is selected
+    if (not corner and not midside) or (corner and midside):
+        raise ValueError("Need either corner of midside")
+
+    os.makedirs(output_directory, exist_ok=True)
+
+    window_name = "fiducial template"
+
+    # Create and save the regular-resolution fiducial template if needed
+    full_image = cv2.imread(input_image_path, cv2.IMREAD_GRAYSCALE)
 
     if fiducial_coordinate is None:
-        points = points_picker(image)
-        if len(points) == 0:
-            raise ValueError("No fiducial point was selected interactively.")
-        fiducial_coordinate = points[0]
+        fiducial_coordinate = pick_point_from_image(full_image, window_name, destroy_window=True)
+        assert fiducial_coordinate is not None
+    fiducial_image = _crop_around_point(full_image, fiducial_coordinate, distance_around_fiducial)
 
-    x, y = fiducial_coordinate
-    x_L = max(0, x - distance_around_fiducial)
-    x_R = min(image.shape[1], x + distance_around_fiducial)
-    y_T = max(0, y - distance_around_fiducial)
-    y_B = min(image.shape[0], y + distance_around_fiducial)
+    # save the first fiducial template image
+    fiducial_name = MIDSIDE_FIDUCIAL_NAME if midside else CORNER_FIDUCIAL_NAME
+    cv2.imwrite(os.path.join(output_directory, fiducial_name), fiducial_image)
 
-    return image[y_T:y_B, x_L:x_R], fiducial_coordinate
+    # SUBPIXEL
+    enhanced_image = resize_img(fiducial_image)
+    if subpixel_center_coordinate is None:
+        subpixel_center_coordinate = pick_point_from_image(enhanced_image, window_name, destroy_window=True)
+        assert subpixel_center_coordinate is not None
+    subpixel_fiducial_image = _crop_around_point(
+        enhanced_image, subpixel_center_coordinate, subpixel_distance_around_fiducial
+    )
+    # save the subpixel fiducial template image
+    subpixel_fiducial_name = SUBPIXEL_MIDSIDE_FIDUCIAL_NAME if midside else SUBPIXEL_CORNER_FIDUCIAL_NAME
+    cv2.imwrite(os.path.join(output_directory, subpixel_fiducial_name), subpixel_fiducial_image)
+
+    return {"fiducial_coordinate": fiducial_coordinate, "subpixel_center_coordinate": subpixel_center_coordinate}
 
 
-def detect_fiducials(
-    image_path: str,
-    corner_fiducial_path: str | None = None,
-    midside_fiducial_path: str | None = None,
-    subpixel_corner_fiducial_path: str | None = None,
-    subpixel_midside_fiducial_path: str | None = None,
+def iter_detect_fiducials(
+    images_directory: str,
+    fiducials_directory: str,
     subpixel_factor: float = 8,
     grid_size: int = 3,
-    qc_output_path: str | None = None,
-) -> dict[str, tuple[float, float] | float | str]:
+    progress_bar: bool = True,
+    max_workers: int = 5,
+) -> pd.DataFrame:
+    """
+    Performs fiducial detection on a collection of images in parallel.
+
+    This function processes all TIFF images found in the specified images directory, detecting fiducials using templates from the fiducials directory. It supports subpixel accuracy and grid-based searching, executes detections concurrently up to a maximum number of workers, and optionally displays a progress bar. The results are collected and returned as a DataFrame indexed by image ID.
+    """
+
+    image_paths = sorted(glob.glob(os.path.join(images_directory, "*.tif")))
+
+    results = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for image_path in image_paths:
+            futures.append(
+                executor.submit(detect_fiducials, image_path, fiducials_directory, subpixel_factor, grid_size)
+            )
+        iterable = (
+            tqdm(as_completed(futures), total=len(futures), desc="Fiducial detections", unit="Image")
+            if progress_bar
+            else as_completed(futures)
+        )
+
+        for future in iterable:
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                print(f"[!] Error: {e}")
+
+    df = pd.DataFrame(results)
+    df = df.set_index("image_id").sort_index()
+
+    return df
+
+
+def filter_detected_fiducials(
+    detected_fiducials_df: pd.DataFrame,
+    score_threshold: float = 0.1,
+    angle_threshold: float = 0.005,
+) -> pd.DataFrame:
+    """
+    Filters detected fiducials based on matching score and angle thresholds to improve data quality.
+
+    This function applies local median filtering on scores and filters by angle deviation, then combines the filtered results. It also recalculates the principal points for each detection, warning if any principal points could not be computed. The output is a cleaned DataFrame with filtered fiducials.
+    """
+
+    # filtering with local median and remove score columns
+    filtered_scores = filter_scores_by_local_median(detected_fiducials_df, score_threshold)
+
+    filtered_angles = filter_by_angle(detected_fiducials_df, angle_threshold)
+
+    # combine both filtering
+    combined = filtered_scores.copy()
+    for col in filtered_scores.columns:
+        if col in filtered_angles.columns:
+            combined[col] = combined[col].fillna(filtered_angles[col])
+
+    # compute principal points and store them in principal_point_x, principal_point_y
+    combined[["principal_point_x", "principal_point_y"]] = combined.apply(
+        lambda row: pd.Series(compute_principal_point(row)), axis=1
+    )
+    # Check for missing principal points
+    missing_mask = combined[["principal_point_x", "principal_point_y"]].isna().any(axis=1)
+    if missing_mask.any():
+        missing_ids = combined.index[missing_mask].tolist()
+        warnings.warn(
+            f"Principal point could not be computed for {len(missing_ids)} detection(s): {missing_ids}",
+            UserWarning,
+        )
+    return combined
+
+
+def open_camera_model_intrinsics(csv_file: str) -> tuple[float, pd.Series]:
+    """
+    Load scanning resolution and true fiducial positions from a camera model CSV file.
+
+    :param csv_file: Path to the CSV file containing camera intrinsics.
+    :return: A tuple containing the scanning resolution (in mm) and a Series of fiducial positions.
+    :raises ValueError: If the file format is invalid or required keys are missing.
+    """
+    try:
+        df_row = pd.read_csv(csv_file).iloc[0]
+        df_row.index = df_row.index.str.replace("_mm", "", regex=False)
+        scanning_resolution_mm = float(df_row["pixel_pitch"])
+
+        fiducials_keys = [key + suffix for key in CORNER_KEYS + MIDSIDE_KEYS for suffix in ["_x", "_y"]]
+        true_fiducials_mm = df_row[fiducials_keys]
+        return scanning_resolution_mm, true_fiducials_mm
+    except Exception as e:
+        raise ValueError(
+            "Invalid CSV format. Expected structure similar to:\n"
+            "https://github.com/shippp/hipp/blob/main/notebooks/data/aerial/camera_model_intrinsics.csv"
+        ) from e
+
+
+def compute_transformations(
+    detected_fiducials_df: pd.DataFrame,
+    true_fiducials_mm: pd.Series | None,
+    image_square_dim: int | None = 10800,
+    scanning_resolution_mm: float = 0.02,
+) -> dict[str, cv2.typing.MatLike]:
+    """
+    Computes geometric transformation matrices for a set of images based on detected and true fiducial points.
+
+    For each image, this function optionally calculates an affine transformation aligning detected fiducials with known true fiducials, applies scaling and flipping based on scanning resolution, and recenters the image around a specified square dimension. It returns a dictionary mapping image names to their corresponding 3x3 transformation matrices.
+    """
+
+    result: dict[str, cv2.typing.MatLike] = {}
+    for image_name, detected_fiducials in detected_fiducials_df.iterrows():
+        matrix = np.eye(3)
+        principal_point = (detected_fiducials["principal_point_x"], detected_fiducials["principal_point_y"])
+
+        # if true_fiducials_mm is set we compute an affine transformation between
+        # detected fiducials and true fiducials
+        if true_fiducials_mm is not None:
+            M = np.array(
+                [
+                    [1 / scanning_resolution_mm, 0, principal_point[0]],
+                    [0, -1 / scanning_resolution_mm, principal_point[1]],
+                    [0, 0, 1],
+                ]
+            )
+            true_fiducials = warp_fiducial_coordinates(true_fiducials_mm, M)
+            matrix = compute_fiducial_transformation(detected_fiducials, true_fiducials) @ matrix
+
+        # if image_square_dim is set we translate the centered the image from the principal point in the center
+        # of the new image_square_dim
+        if image_square_dim is not None:
+            pp_transformed = transform_coord(principal_point, matrix)
+            top_left_x = int(pp_transformed[0] - image_square_dim // 2)
+            top_left_y = int(pp_transformed[1] - image_square_dim // 2)
+
+            M = np.array(
+                [
+                    [1, 0, -top_left_x],
+                    [0, 1, -top_left_y],
+                    [0, 0, 1],
+                ]
+            )
+            matrix = M @ matrix
+
+        result[image_name] = matrix
+    return result
+
+
+def iter_image_restitution(
+    images_directory: str,
+    output_directory: str,
+    transformations: dict[str, cv2.typing.MatLike],
+    image_square_dim: int | None = 10800,
+    interpolation_flag: int = cv2.INTER_CUBIC,
+    clahe_enhancement: bool = True,
+    max_workers: int = 5,
+    progress_bar: bool = True,
+) -> None:
+    """
+    Coordinates the parallel processing of image restitution tasks.
+
+    This function distributes the workload of applying geometric transformations to images across multiple worker processes, optionally displaying a progress bar. It handles image loading, transformation, enhancement, and saving to an output directory.
+    """
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for image_id, transformation_matrix in transformations.items():
+            futures.append(
+                executor.submit(
+                    restitute_image,
+                    os.path.join(images_directory, image_id),
+                    os.path.join(output_directory, image_id),
+                    transformation_matrix,
+                    image_square_dim,
+                    interpolation_flag,
+                    clahe_enhancement,
+                )
+            )
+        iterable = tqdm(as_completed(futures), total=len(futures)) if progress_bar else as_completed(futures)
+
+        for future in iterable:
+            try:
+                future.result()
+            except Exception as e:
+                print(f"[!] Error: {e}")
+
+
+def warp_fiducials_df(fiducials_df: pd.DataFrame, transformations: dict[str, cv2.typing.MatLike]) -> pd.DataFrame:
+    """
+    Applies geometric transformations to each row of fiducial coordinates in a DataFrame.
+
+    This function uses a dictionary of transformation matrices keyed by the DataFrame index to warp each set of fiducial points accordingly, producing a new DataFrame with transformed coordinates.
+    """
+    return fiducials_df.apply(lambda row: warp_fiducial_coordinates(row, transformations[row.name]), axis=1)
+
+
+####################################################################################################################################
+#                                                   PRIVATE FUNCTIONS
+####################################################################################################################################
+def detect_fiducials(
+    image_path: str,
+    fiducials_directory: str,
+    subpixel_factor: float = 8,
+    grid_size: int = 3,
+) -> pd.Series:
     if grid_size % 2 == 0:
         raise ValueError("grid_size must be an odd number.")
 
-    # Load fiducial templates once
-    corner_fiducial = cv2.imread(corner_fiducial_path, cv2.IMREAD_GRAYSCALE) if corner_fiducial_path else None
-    subpixel_corner_fiducial = (
-        cv2.imread(subpixel_corner_fiducial_path, cv2.IMREAD_GRAYSCALE) if subpixel_corner_fiducial_path else None
+    paths = _get_fiducial_template_paths(fiducials_directory)
+
+    corner_config = (
+        {
+            "corner_top_left": (0, 0),
+            "corner_top_right": (0, grid_size - 1),
+            "corner_bottom_left": (grid_size - 1, 0),
+            "corner_bottom_right": (grid_size - 1, grid_size - 1),
+        },
+        "corner_fiducial_path",
+        "subpixel_corner_fiducial_path",
     )
-    midside_fiducial = cv2.imread(midside_fiducial_path, cv2.IMREAD_GRAYSCALE) if midside_fiducial_path else None
-    subpixel_midside_fiducial = (
-        cv2.imread(subpixel_midside_fiducial_path, cv2.IMREAD_GRAYSCALE) if subpixel_midside_fiducial_path else None
+    midside_config = (
+        {
+            "midside_top": (0, grid_size // 2),
+            "midside_bottom": (grid_size - 1, grid_size // 2),
+            "midside_left": (grid_size // 2, 0),
+            "midside_right": (grid_size // 2, grid_size - 1),
+        },
+        "midside_fiducial_path",
+        "subpixel_midside_fiducial_path",
     )
 
-    fiducial_map = {
-        "corner": (corner_fiducial, subpixel_corner_fiducial),
-        "midside": (midside_fiducial, subpixel_midside_fiducial),
-    }
-
-    # Prepare block positions
-    blocs = {}
-    if corner_fiducial is not None:
-        blocs.update(
-            {
-                "corner_top_left": (0, 0),
-                "corner_top_right": (0, grid_size - 1),
-                "corner_bottom_left": (grid_size - 1, 0),
-                "corner_bottom_right": (grid_size - 1, grid_size - 1),
-            }
-        )
-    if midside_fiducial is not None:
-        blocs.update(
-            {
-                "midside_top": (0, grid_size // 2),
-                "midside_bottom": (grid_size - 1, grid_size // 2),
-                "midside_left": (grid_size // 2, 0),
-                "midside_right": (grid_size // 2, grid_size - 1),
-            }
-        )
-
-    result: dict[str, tuple[float, float] | float | str] = {"image_id": os.path.basename(image_path)}
-    qc_crops = []
+    result = {"image_id": os.path.basename(image_path)}
 
     with rasterio.open(image_path) as src:
-        for bloc_name, (bloc_row, block_col) in blocs.items():
-            block, (offset_x, offset_y) = read_image_block_grayscale(src, bloc_row, block_col, (grid_size, grid_size))
+        for blocs, k1, k2 in (corner_config, midside_config):
+            if k1 in paths and k2 in paths:
+                fiducial = cv2.imread(paths[k1], cv2.IMREAD_GRAYSCALE)
+                subpixel_fiducial = cv2.imread(paths[k2], cv2.IMREAD_GRAYSCALE)
 
-            kind = "corner" if "corner" in bloc_name else "midside"
-            fiducial, subpixel_fiducial = fiducial_map[kind]
+                for bloc_name, (bloc_row, block_col) in blocs.items():
+                    block, (offset_x, offset_y) = read_image_block_grayscale(
+                        src, bloc_row, block_col, (grid_size, grid_size)
+                    )
 
-            # Defensive programming
-            if fiducial is None or subpixel_fiducial is None:
-                raise ValueError(f"Missing fiducial or subpixel fiducial for {bloc_name}")
+                    center, score = detect_fiducial(block, fiducial, subpixel_fiducial, subpixel_factor)
 
-            center, score = detect_fiducial(block, fiducial, subpixel_fiducial, subpixel_factor)
+                    result[f"{bloc_name}_x"] = center[0] + offset_x  # type: ignore[assignment]
+                    result[f"{bloc_name}_y"] = center[1] + offset_y  # type: ignore[assignment]
+                    result[f"{bloc_name}_score"] = score  # type: ignore[assignment]
 
-            result[f"{bloc_name}_x"] = center[0] + offset_x
-            result[f"{bloc_name}_y"] = center[1] + offset_y
-            result[f"{bloc_name}_score"] = score
-
-            # For QC image
-            if qc_output_path:
-                qc_crops.append(qc.create_qc_crop(block, fiducial.shape, center, bloc_name))
-
-    # for qc image
-    if qc_output_path and qc_crops:
-        grid = qc.concat_images(qc_crops)
-        cv2.imwrite(qc_output_path, grid)
-
-    return result
+    return pd.Series(result)
 
 
 def detect_fiducial(
@@ -199,92 +403,36 @@ def detect_fiducial(
     return refined_center, max_val
 
 
-class MetadataImageRestituion(TypedDict, total=False):
-    transformation_matrix: cv2.typing.MatLike
-    rmse_before_transformation: float
-    rmse_after_transformation: float
-
-
-def image_restitution(
-    detected_fiducials: pd.Series,
-    true_fiducials_mm: pd.Series | dict[str, tuple[float, float]] | None,
-    image_path: str | None = None,
-    output_image_path: str | None = None,
-    scanning_resolution_mm: float = 0.02,
+def restitute_image(
+    image_path: str,
+    output_image_path: str,
+    transformation_matrix: cv2.typing.MatLike,
     image_square_dim: int | None = 10800,
     interpolation_flag: int = cv2.INTER_CUBIC,
     clahe_enhancement: bool = True,
-) -> MetadataImageRestituion:
-    """
-    Perform geometric image restitution using detected and reference fiducial markers.
+) -> None:
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    height, width = image.shape[:2]
 
-    This function estimates the affine transformation between the detected fiducials and the reference
-    positions (in millimeters), optionally applies it to an input image, crops the result around the
-    principal point, and enhances the image using CLAHE. It also returns a metadata dictionary containing
-    transformation matrices and registration quality metrics.
-
-    **Notes**
-    - The function applies transformation and cropping in a single warp if possible, which avoids
-      multiple image resampling steps.
-    - If no `true_fiducials_mm` is provided, the image is simply cropped using the detected principal point.
-    - Fiducials that are not detected (i.e., `None`) are ignored in RMSE computation.
-    """
-
-    metadata: MetadataImageRestituion = {}
-    if pd.isna(detected_fiducials["principal_point_x"]) or pd.isna(detected_fiducials["principal_point_y"]):
-        raise ValueError(f"Can't restitute {detected_fiducials.name} without principal point")
-
-    principal_point = (detected_fiducials["principal_point_x"], detected_fiducials["principal_point_y"])
-
-    # Compute transformation matrix and transform coordinates if requested
-    if true_fiducials_mm is not None:
-        true_fiducials_mm = pd.Series(true_fiducials_mm)
-
-        img_ref_matrix = affine_matrix(
-            scale_x=1 / scanning_resolution_mm,
-            scale_y=-1 / scanning_resolution_mm,
-            translate_x=principal_point[0],
-            translate_y=principal_point[1],
-        )
-        true_fiducials = warp_fiducial_coordinates(true_fiducials_mm, img_ref_matrix)
-
-        metadata["transformation_matrix"] = compute_transformation(detected_fiducials, true_fiducials)
-
-        transformed_fiducials = warp_fiducial_coordinates(detected_fiducials, metadata["transformation_matrix"])
-        principal_point = (transformed_fiducials["principal_point_x"], transformed_fiducials["principal_point_y"])
-
-        # calculate the rmse before and after the transformation
-        metadata["rmse_before_transformation"] = qc.compute_rmse(true_fiducials, detected_fiducials)
-        metadata["rmse_after_transformation"] = qc.compute_rmse(true_fiducials, transformed_fiducials)
-
-    # cropping block
+    # if a crop need to be apply we update the width and the height
     if image_square_dim is not None:
-        # calculate the transformation matrix for the crop (translation only)
-        top_left_x = int(principal_point[0] - image_square_dim // 2)
-        top_left_y = int(principal_point[1] - image_square_dim // 2)
-        crop_transformation_matrix = affine_matrix(translate_x=-top_left_x, translate_y=-top_left_y)
+        width, height = image_square_dim, image_square_dim
 
-        if "transformation_matrix" in metadata:
-            metadata["transformation_matrix"] = crop_transformation_matrix @ metadata["transformation_matrix"]  # type: ignore [typeddict-item]
-        else:
-            metadata["transformation_matrix"] = crop_transformation_matrix
+    image = cv2.warpAffine(image, transformation_matrix[:2], dsize=(width, height), flags=interpolation_flag)
+    if clahe_enhancement:
+        image = apply_clahe(image)
 
-    # we transform the image only if the image_path and the output_image are set
-    if image_path is not None and output_image_path is not None and "transformation_matrix" in metadata:
-        output_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        height, width = output_image.shape[:2]
+    os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
+    cv2.imwrite(output_image_path, image)
 
-        # if a crop need to be apply we update the width and the height
-        if image_square_dim is not None:
-            width, height = image_square_dim, image_square_dim
 
-        output_image = cv2.warpAffine(
-            output_image, metadata["transformation_matrix"][:2], dsize=(width, height), flags=interpolation_flag
-        )
-        if clahe_enhancement:
-            output_image = apply_clahe(output_image)
+def _crop_around_point(
+    image: cv2.typing.MatLike, point: tuple[int, int], distance_around_point: int
+) -> cv2.typing.MatLike:
+    x, y = point
+    x_L = max(0, x - distance_around_point)
+    x_R = min(image.shape[1], x + distance_around_point)
+    y_T = max(0, y - distance_around_point)
+    y_B = min(image.shape[0], y + distance_around_point)
 
-        os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
-        cv2.imwrite(output_image_path, output_image)
-
-    return metadata
+    return image[y_T:y_B, x_L:x_R]

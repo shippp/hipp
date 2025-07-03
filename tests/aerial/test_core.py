@@ -9,10 +9,8 @@ import math
 import os
 
 import cv2
-import numpy as np
 
 import hipp.aerial.core as core  # adapte le chemin
-from hipp.aerial.aerial_preprocessing import AerialPreprocessing
 from hipp.image import read_image_block_grayscale
 
 
@@ -21,13 +19,6 @@ def assert_distance_from_2_points(
 ) -> None:
     distance = math.hypot(point1[0] - point2[0], point1[1] - point2[1])
     assert distance <= distance_treshold, f"Detected point too far from expected: {distance:.2f} pixels"
-
-
-def test_create_fiducial_template_from_image() -> None:  # type: ignore[no-untyped-def]
-    img = np.ones((200, 200), dtype=np.uint8) * 255
-    fiducial_coord = (100, 100)
-    cropped, coord = core.create_fiducial_template_from_image(img, fiducial_coord, 50)
-    assert cropped.shape == (100, 100)
 
 
 def test_detect_fiducial(dataset, fiducials) -> None:  # type: ignore[no-untyped-def]
@@ -43,14 +34,8 @@ def test_detect_fiducial(dataset, fiducials) -> None:  # type: ignore[no-untyped
 
 
 def test_detect_fiducials(dataset, fiducials) -> None:  # type: ignore[no-untyped-def]
-    preproc = AerialPreprocessing(dataset.raw_images, fiducials_directory=fiducials)
     image_path = os.path.join(dataset.raw_images, "NAGAP_94V3_196.tif")
-    detection = core.detect_fiducials(
-        image_path,
-        **preproc.get_fiducial_template_paths(),
-        subpixel_factor=8,
-        grid_size=5,
-    )
+    detection = core.detect_fiducials(image_path, fiducials, grid_size=5)
     points = [
         (1108, 385),
         (6607, 259),

@@ -81,6 +81,7 @@ def pick_point_from_image(
     image: cv2.typing.MatLike,
     window_name: str = "Point Pick",
     window_title: str = "Pick a point (Ctrl + Click)",
+    destroy_window: bool = False,
 ) -> tuple[int, int] | None:
     """
     Display a single image and wait for the user to Ctrl+Click on one point.
@@ -113,6 +114,8 @@ def pick_point_from_image(
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q") or cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
             break
+    if destroy_window:
+        cv2.destroyWindow(window_name)
 
     return picked_point
 
