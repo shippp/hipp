@@ -47,7 +47,6 @@ def generate_detection_qc_plots(
         with rasterio.open(os.path.join(images_directory, image_id)) as src:
             groups = _get_groups(detected_fiducials)
             fig, axs = plt.subplots(len(groups), len(groups[0]))
-
             axs = np.array(axs).reshape(len(groups), len(groups[0]))
 
             for i, group in enumerate(groups):
@@ -59,7 +58,7 @@ def generate_detection_qc_plots(
                     ax = axs[i][j]
                     ax.imshow(img, cmap="gray")
                     ax.plot(x - int(x - d), y - int(y - d), marker="+", color="red", markersize=5, markeredgewidth=1)
-                    ax.set_title(fiducial_name)
+                    ax.set_title(fiducial_name, fontsize=10)
                     ax.axis("off")
             fig.tight_layout()
             if not show:
