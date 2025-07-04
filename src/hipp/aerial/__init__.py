@@ -1,16 +1,23 @@
+from . import fiducials
+from . import quality_control as qc
 from .core import (
-    create_fiducial_template_from_image,
-    detect_fiducial,
-    detect_fiducials,
+    compute_transformations,
+    create_fiducial_templates,
+    filter_detected_fiducials,
+    iter_detect_fiducials,
+    iter_image_restitution,
+    open_camera_model_intrinsics,
+    warp_fiducials_df,
 )
-from .fiducials import open_camera_model_intrinsics, warp_fiducial_coordinates
-from .quality_control import plot_true_fiducials
 
 __all__ = [
-    "create_fiducial_template_from_image",
-    "detect_fiducial",
-    "detect_fiducials",
-    "warp_fiducial_coordinates",
+    "compute_transformations",
+    "create_fiducial_templates",
+    "filter_detected_fiducials",
+    "iter_detect_fiducials",
+    "iter_image_restitution",
     "open_camera_model_intrinsics",
-    "plot_true_fiducials",
+    "warp_fiducials_df",
+    "qc",
+    "fiducials",
 ]

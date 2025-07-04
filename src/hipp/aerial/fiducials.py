@@ -15,6 +15,8 @@ The key orders in `CORNER_KEYS` and `MIDSIDE_KEYS` are assumed to be circular.
 This ordering is critical for angle-based geometric calculations and transformations.
 """
 
+import os
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -24,72 +26,15 @@ from hipp.math import angle_between_three_points, estimate_transformation_matrix
 CORNER_KEYS = ["corner_top_left", "corner_top_right", "corner_bottom_right", "corner_bottom_left"]
 MIDSIDE_KEYS = ["midside_left", "midside_top", "midside_right", "midside_bottom"]
 
+CORNER_FIDUCIAL_NAME = "corner_fiducial.png"
+MIDSIDE_FIDUCIAL_NAME = "midside_fiducial.png"
+SUBPIXEL_CORNER_FIDUCIAL_NAME = "subpixel_" + CORNER_FIDUCIAL_NAME
+SUBPIXEL_MIDSIDE_FIDUCIAL_NAME = "subpixel_" + MIDSIDE_FIDUCIAL_NAME
+
+
 ####################################################################################################################################
 #                                                   MAIN FUNCTIONS
 ####################################################################################################################################
-
-
-def filter_scores_by_local_median(df: pd.DataFrame, score_threshold: float = 0.1) -> pd.DataFrame:
-    """
-    Filter out low-confidence coordinates based on per-key local median score.
-
-    This function identifies all coordinate groups (e.g., "corner_top_left") by
-    finding all columns ending with "_score". For each group, it calculates the
-    median score and sets the associated x and y coordinates to NaN if their
-    score is below (median - score_threshold). After filtering, all "_score"
-    columns are removed from the DataFrame.
-
-    Args:
-        df (pd.DataFrame): The input DataFrame containing detection results,
-                           with columns named like "<key>_x", "<key>_y", and "<key>_score".
-        score_threshold (float): The margin below the median to consider a score as low-confidence.
-
-    Returns:
-        pd.DataFrame: A new DataFrame with low-confidence coordinates set to NaN
-                      and all "_score" columns removed.
-    """
-    df = df.copy()
-    all_keys = [col.replace("_score", "") for col in df.columns if col.endswith("_score")]
-
-    for key in all_keys:
-        score_col = f"{key}_score"
-        x_col = f"{key}_x"
-        y_col = f"{key}_y"
-
-        median_score = df[score_col].median()
-        low_score_mask = df[score_col] < median_score - score_threshold
-
-        df.loc[low_score_mask, [x_col, y_col]] = np.nan
-
-    # Drop all columns that end with '_score'
-    score_cols = [col for col in df.columns if col.endswith("_score")]
-    df.drop(columns=score_cols, inplace=True)
-
-    return df
-
-
-def filter_by_angle(df: pd.DataFrame, angle_threshold: float = 0.005) -> pd.DataFrame:
-    """
-    Filters all detections in a DataFrame based on the angle validity of their keypoints.
-
-    Each row in the DataFrame is processed by `filter_detection_by_angle`, which sets invalid keypoints
-    (those forming nearly right angles) to NaN based on the provided angle threshold.
-
-    Parameters:
-        df (pd.DataFrame): Input DataFrame containing detections with keypoint coordinates.
-        angle_threshold (float): Maximum deviation from 90 degrees (in degrees) to consider a point valid.
-                                 Defaults to 0.005.
-
-    Returns:
-        pd.DataFrame: A DataFrame with invalid keypoints set to NaN and '_score' columns removed.
-    """
-    df = df.copy()
-    df = df.apply(lambda row: _filter_detection_by_angle(row, angle_threshold=angle_threshold), axis=1)
-
-    # Drop all columns that end with '_score'
-    score_cols = [col for col in df.columns if col.endswith("_score")]
-    df.drop(columns=score_cols, inplace=True)
-    return df
 
 
 def compute_principal_point(detection: pd.Series) -> tuple[float, float] | None:
@@ -107,7 +52,7 @@ def compute_principal_point(detection: pd.Series) -> tuple[float, float] | None:
     return tuple(np.mean(centers, axis=0))
 
 
-def compute_transformation(detected_fiducials: pd.Series, true_fiducials: pd.Series) -> cv2.typing.MatLike:
+def compute_fiducial_transformation(detected_fiducials: pd.Series, true_fiducials: pd.Series) -> cv2.typing.MatLike:
     """
     Compute a geometric transformation matrix between detected and reference fiducial keypoints.
 
@@ -190,27 +135,67 @@ def warp_fiducial_coordinates(fiducials: pd.Series, transformation_matrix: cv2.t
     return fiducials
 
 
-def open_camera_model_intrinsics(csv_file: str) -> tuple[float, pd.Series]:
+def filter_scores_by_local_median(df: pd.DataFrame, score_threshold: float = 0.1) -> pd.DataFrame:
     """
-    Load scanning resolution and true fiducial positions from a camera model CSV file.
+    Filter out low-confidence coordinates based on per-key local median score.
 
-    :param csv_file: Path to the CSV file containing camera intrinsics.
-    :return: A tuple containing the scanning resolution (in mm) and a Series of fiducial positions.
-    :raises ValueError: If the file format is invalid or required keys are missing.
+    This function identifies all coordinate groups (e.g., "corner_top_left") by
+    finding all columns ending with "_score". For each group, it calculates the
+    median score and sets the associated x and y coordinates to NaN if their
+    score is below (median - score_threshold). After filtering, all "_score"
+    columns are removed from the DataFrame.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame containing detection results,
+                           with columns named like "<key>_x", "<key>_y", and "<key>_score".
+        score_threshold (float): The margin below the median to consider a score as low-confidence.
+
+    Returns:
+        pd.DataFrame: A new DataFrame with low-confidence coordinates set to NaN
+                      and all "_score" columns removed.
     """
-    try:
-        df_row = pd.read_csv(csv_file).iloc[0]
-        df_row.index = df_row.index.str.replace("_mm", "", regex=False)
-        scanning_resolution_mm = float(df_row["pixel_pitch"])
+    df = df.copy()
+    all_keys = [col.replace("_score", "") for col in df.columns if col.endswith("_score")]
 
-        fiducials_keys = [key + suffix for key in CORNER_KEYS + MIDSIDE_KEYS for suffix in ["_x", "_y"]]
-        true_fiducials_mm = df_row[fiducials_keys]
-        return scanning_resolution_mm, true_fiducials_mm
-    except Exception as e:
-        raise ValueError(
-            "Invalid CSV format. Expected structure similar to:\n"
-            "https://github.com/shippp/hipp/blob/main/notebooks/data/aerial/camera_model_intrinsics.csv"
-        ) from e
+    for key in all_keys:
+        score_col = f"{key}_score"
+        x_col = f"{key}_x"
+        y_col = f"{key}_y"
+
+        median_score = df[score_col].median()
+        low_score_mask = df[score_col] < median_score - score_threshold
+
+        df.loc[low_score_mask, [x_col, y_col]] = np.nan
+
+    # Drop all columns that end with '_score'
+    score_cols = [col for col in df.columns if col.endswith("_score")]
+    df.drop(columns=score_cols, inplace=True)
+
+    return df
+
+
+def filter_by_angle(df: pd.DataFrame, angle_threshold: float = 0.005) -> pd.DataFrame:
+    """
+    Filters all detections in a DataFrame based on the angle validity of their keypoints.
+
+    Each row in the DataFrame is processed by `filter_detection_by_angle`, which sets invalid keypoints
+    (those forming nearly right angles) to NaN based on the provided angle threshold.
+
+    Parameters:
+        df (pd.DataFrame): Input DataFrame containing detections with keypoint coordinates.
+        angle_threshold (float): Maximum deviation from 90 degrees (in degrees) to consider a point valid.
+                                 Defaults to 0.005.
+
+    Returns:
+        pd.DataFrame: A DataFrame with invalid keypoints set to NaN and '_score' columns removed.
+    """
+    df = df.copy()
+    df = df.apply(lambda row: _filter_detection_by_angle(row, angle_threshold=angle_threshold), axis=1)
+
+    # Drop all columns that end with '_score'
+    score_cols = [col for col in df.columns if col.endswith("_score")]
+    df.drop(columns=score_cols, inplace=True)
+    return df
 
 
 ####################################################################################################################################
@@ -299,3 +284,13 @@ def _compute_center_square(points: cv2.typing.MatLike) -> tuple[float, float] | 
         return None
 
     return tuple(np.mean(centers, axis=0))
+
+
+def _get_fiducial_template_paths(fiducials_directory: str) -> dict[str, str]:
+    paths = {
+        "corner_fiducial_path": os.path.join(fiducials_directory, CORNER_FIDUCIAL_NAME),
+        "midside_fiducial_path": os.path.join(fiducials_directory, MIDSIDE_FIDUCIAL_NAME),
+        "subpixel_corner_fiducial_path": os.path.join(fiducials_directory, SUBPIXEL_CORNER_FIDUCIAL_NAME),
+        "subpixel_midside_fiducial_path": os.path.join(fiducials_directory, SUBPIXEL_MIDSIDE_FIDUCIAL_NAME),
+    }
+    return {key: path for key, path in paths.items() if os.path.exists(path)}
