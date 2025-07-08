@@ -4,7 +4,7 @@
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hipp.svg)](https://pypi.org/project/hipp)
 [![Hatch project](https://img.shields.io/badge/%F0%9F%A5%9A-Hatch-4051b5.svg)](https://github.com/pypa/hatch)
 
-HIPP (Historical Image Pre-Processing) is a python library to pre-process scanned historical images for Structure from Motion surface reconstruction and photogrammetric analysis.
+HIPP (Historical Image Pre-Processing) is a python library to pre-process scanned historical (film based) aerial and satellite images in preparation for Structure from Motion surface reconstruction and photogrammetric analysis.
 
 -----
 
@@ -12,7 +12,7 @@ HIPP (Historical Image Pre-Processing) is a python library to pre-process scanne
 
 ### Preprocessing of Aerial Images
 
-- **Fiducial Marker Detection**
+- **Detection of fiducial markers**
   - Built-in application to generate fiducial marker templates
   - Detection of fiducial marker coordinates using OpenCV template matching
   - Sub-pixel accuracy for fiducial detection
@@ -25,7 +25,7 @@ HIPP (Historical Image Pre-Processing) is a python library to pre-process scanne
     - Matching score distributions
     - RMSE of fiducial coordinates before and after affine transformation
 
-- **Fiducial Marker Proxy Detection** *(feature in development)*
+- **Detection of fiducial marker proxies (pseudo-fiducial)** *(feature in development)*
 
 - **Image Restitution**
   - Computes the appropriate geometric transformation between detected and calibrated fiducial positions:
