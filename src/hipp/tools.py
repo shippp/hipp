@@ -5,7 +5,7 @@ Description: Generic tools
 
 import os
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import Any
 
 import cv2
@@ -175,9 +175,7 @@ def optimize_geotifs_gdal(
 
 
 def optimize_geotifs(
-    geotifs_directory: str,
-    show_progress: bool = True,
-    overwrite: bool = False,
+    geotifs_directory: str, show_progress: bool = True, overwrite: bool = False, max_workers: int = 5
 ) -> None:
     """
     Optimize GeoTIFF files in a directory by applying compression and using the BigTIFF format if necessary.
@@ -187,37 +185,46 @@ def optimize_geotifs(
     :param show_progress: Whether to display a progress bar.
     :param overwrite: If False, skip files already optimized.
     """
+    files = [os.path.join(geotifs_directory, f) for f in os.listdir(geotifs_directory) if f.endswith(".tif")]
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit optimization tasks for each file
+        futures = [executor.submit(optimize_geotif_file, f) for f in files]
+
+        if show_progress:
+            for _ in tqdm(as_completed(futures), total=len(futures), desc="Optimizing", unit="file"):
+                pass
+        else:
+            for _ in as_completed(futures):
+                pass
+
+
+def optimize_geotif_file(geotif_file: str, overwrite: bool = False) -> None:
     desired_options = {
         "compress": "lzw",
         "tiled": True,
         "driver": "GTiff",
+        "blockxsize": 256,
+        "blockysize": 256,
     }
+    tmp_tif = geotif_file + ".tmp"
 
-    files = [f for f in os.listdir(geotifs_directory) if f.endswith(".tif")]
-    iterator = tqdm(files, desc="Optimizing", unit="file") if show_progress else files
+    with rasterio.open(geotif_file) as src:
+        profile = src.profile.copy()
 
-    for filename in iterator:
-        tif = os.path.join(geotifs_directory, filename)
-        tmp_tif = tif + ".tmp"
+        # Check if already optimized
+        already_optimized = all(str(profile.get(k, "")).lower() == str(v).lower() for k, v in desired_options.items())
+        if already_optimized and not overwrite:
+            return
+        profile.update(desired_options)
+        profile.update({"BIGTIFF": "IF_SAFER"})
 
-        with rasterio.open(tif) as src:
-            profile = src.profile.copy()
+        # Write to temporary file
+        rio_copy(src, tmp_tif, **profile)
 
-            # Check if already optimized
-            already_optimized = all(
-                str(profile.get(k, "")).lower() == str(v).lower() for k, v in desired_options.items()
-            )
-            if already_optimized and not overwrite:
-                continue
-
-            profile.update(desired_options.update({"BIGTIFF": "IF_SAFER"}))
-
-            # Write to temporary file
-            rio_copy(src, tmp_tif, **profile)
-
-        # Replace or keep original
-        os.remove(tif)
-        os.rename(tmp_tif, tif)
+    # Replace or keep original
+    os.remove(geotif_file)
+    os.rename(tmp_tif, geotif_file)
 
 
 def generate_quickviews(

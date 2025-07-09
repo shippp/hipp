@@ -3,7 +3,6 @@ import os
 import pandas as pd
 
 from hipp.dataquery.utils import thread_downloads
-from hipp.tools import optimize_geotifs
 
 
 def NAGAP_download_images_to_disk(
@@ -27,5 +26,3 @@ def NAGAP_download_images_to_disk(
     file_names = list(df[file_name_column] + ".tif")
 
     thread_downloads(output_directory, urls, file_names, show_progress, max_workers, overwrite)
-
-    optimize_geotifs(output_directory, show_progress=show_progress)
