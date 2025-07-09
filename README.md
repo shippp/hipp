@@ -25,10 +25,10 @@ Examples of images that are currently supported or planned to be supported inclu
 <img src="https://ims.cr.usgs.gov/browse/aircraft/phoenix/aerial/3DTQ/3DTQ06031/3DTQ06031_006.jpg" alt="aerial_casa_grande" width="500"/>
 <!-- ![image](https://ims.cr.usgs.gov/browse/aircraft/phoenix/aerial/3DTQ/3DTQ06031/3DTQ06031_006.jpg) -->
 
-#### KH-9 panoramic camera image of South Iceland, acquired on 22 Aug 1980 (quickview)
+#### KH-9 panoramic camera image (B/W) of South Iceland, acquired on 22 Aug 1980 (quickview)
 ![KH9_pc](https://ims.cr.usgs.gov/browse/declass3/1216-2/00533/A/D3C1216-200533A023.jpg)
 
-#### KH-9 mapping camera image of South Iceland, acquired on 22 Aug 1980 (quickview)
+#### KH-9 mapping camera image (B/W) of South Iceland, acquired on 22 Aug 1980 (quickview)
 ![KH9_mc](https://ims.cr.usgs.gov/browse/declassii/1216-5/00280/DZB1216-500280L004001-00147.jpg)
 
 
@@ -61,7 +61,7 @@ Examples of images that are currently supported or planned to be supported inclu
     - 2 points → Similarity transformation
     - 3+ points → Affine transformation
   - Crops the image around the estimated principal point to a standard size
-  - Applies CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance features fin the image
+  - Applies CLAHE (Contrast Limited Adaptive Histogram Equalization) to enhance features in the image
   - Computes the full affine transformation matrix (including crop transformation)
 
 See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
