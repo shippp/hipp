@@ -3,6 +3,8 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/hipp.svg)](https://pypi.org/project/hipp)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hipp.svg)](https://pypi.org/project/hipp)
 [![Hatch project](https://img.shields.io/badge/%F0%9F%A5%9A-Hatch-4051b5.svg)](https://github.com/pypa/hatch)
+![Static Badge](https://img.shields.io/badge/type%20checked-mypy-039dfc)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 HIPP (Historical Image Pre-Processing) is a python library to pre-process scanned historical (film based) aerial and satellite images in preparation for Structure from Motion surface reconstruction and photogrammetric analysis.
 
