@@ -26,7 +26,7 @@ Examples of images that are currently supported or planned to be supported inclu
 <!-- ![image](https://ims.cr.usgs.gov/browse/aircraft/phoenix/aerial/3DTQ/3DTQ06031/3DTQ06031_006.jpg) -->
 
 #### KH-9 panoramic camera image (B/W) of South Iceland, acquired on 22 Aug 1980 (quickview)
-<img src="https://ims.cr.usgs.gov/browse/declass3/1216-2/00533/A/D3C1216-200533A023.jpg" alt="kh9_pc" width="800"/>
+<img src="https://ims.cr.usgs.gov/browse/declass3/1216-2/00533/A/D3C1216-200533A023.jpg" alt="kh9_pc" width="500"/>
 <!-- ![KH9_pc](https://ims.cr.usgs.gov/browse/declass3/1216-2/00533/A/D3C1216-200533A023.jpg) -->
 
 #### KH-9 mapping camera image (B/W) of South Iceland, acquired on 22 Aug 1980 (quickview)
