@@ -185,3 +185,5 @@ notebooks/data/*/*
 
 # ignore the data test_images
 tests/aerial/data
+
+dev/

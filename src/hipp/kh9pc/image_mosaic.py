@@ -8,6 +8,8 @@ import os
 import cv2
 import numpy as np
 import rasterio
+import rasterio.transform
+import rasterio.warp
 from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
@@ -81,29 +83,18 @@ def compute_sequential_alignment(
     return transformation_matrixs  # type: ignore[return-value]
 
 
-def stitch_images_with_transformations(
-    transformation_matrixs_dict: dict[str, cv2.typing.MatLike], output_tif: str
+def mosaic_images_streaming(
+    transformation_matrixs_dict: dict[str, cv2.typing.MatLike],
+    output_tif: str,
+    clipping: int = 30,
+    max_workers: int = 5,
+    verbose: bool = True,
 ) -> None:
-    """
-    Stitch multiple images into a single output raster using provided transformation matrices.
-
-    This function:
-    - Determines the output raster size based on the last image and its transformation.
-    - Creates an empty output GeoTIFF with appropriate metadata.
-    - Warps each input image onto the output raster using its corresponding transformation matrix.
-    - Writes the warped data blockwise to efficiently handle large images.
-
-    Args:
-        transformation_matrixs_dict (dict[str, cv2.typing.MatLike]):
-            Dictionary mapping image file paths to their 3x3 transformation matrices.
-            These matrices transform each image into the output coordinate system.
-        output_tif (str): File path where the stitched GeoTIFF will be saved.
-
-    Returns:
-        None. The result is saved directly to the output_tif file.
-    """
     # Get the last image path to determine the output size and metadata
     last_image_path = next(reversed(transformation_matrixs_dict))
+
+    root, ext = os.path.splitext(output_tif)
+    tmp_tif_file = f"{root}.tmp{ext}"
 
     # Open the last image to base the output profile on
     with rasterio.open(last_image_path) as src:
@@ -111,26 +102,209 @@ def stitch_images_with_transformations(
         width = src.width + int(np.round(transformation_matrixs_dict[last_image_path][0, 2]))
         height = src.height
 
-        # Copy source profile and update parameters for output raster
-        profile = src.profile.copy()
-        profile.update(
-            {
-                "width": width,
-                "height": height,
-                "transform": rasterio.Affine.identity(),
-                "compress": "lzw",
-                "driver": "GTiff",
-                "BIGTIFF": "YES",
-                "count": 1,
-            }
-        )
-    # Create and open the output raster for writing warped images
-    with rasterio.open(output_tif, "w+", **profile) as dst:
-        # Iterate through each image and its transformation matrix
-        for image_path, transformation_matrix in transformation_matrixs_dict.items():
-            pbar_desc = f"Warping {os.path.basename(image_path)}"
-            # Warp the image blockwise and write into the output dataset
-            warp_tif_blockwise_to_dst(image_path, dst, transformation_matrix, pbar_desc=pbar_desc)
+    profile = {
+        "width": width,
+        "height": height,
+        "transform": rasterio.Affine.identity(),
+        "compress": "lzw",
+        "driver": "GTiff",
+        "BIGTIFF": "YES",
+        "count": 1,
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+        "nodata": 0,
+        "dtype": "uint8",
+    }
+    # Create the first tmp raster
+    nodata = 0
+    if verbose:
+        print("Start the mosaicing...")
+
+    with rasterio.open(output_tif, "w", **profile) as dst:
+        profile.update({"compress": None, "tiled": False})
+        with rasterio.open(tmp_tif_file, "w+", **profile) as tmp_raster:
+            for i, (image_path, matrix) in enumerate(transformation_matrixs_dict.items()):
+                with rasterio.open(image_path) as src:
+                    dst_transform = rasterio.Affine(*matrix.flatten()[:6])
+
+                    if verbose:
+                        print(f"Warping {image_path} with : \n{dst_transform}")
+
+                    rasterio.warp.reproject(
+                        source=src.read(1),
+                        destination=rasterio.band(tmp_raster, 1),
+                        src_transform=dst_transform,
+                        src_crs=rasterio.CRS.from_epsg(3857),
+                        dst_crs=rasterio.CRS.from_epsg(3857),
+                        resampling=rasterio.warp.Resampling.cubic,
+                        src_nodata=nodata,
+                        dst_nodata=nodata,
+                        num_threads=max_workers,
+                    )
+                    x_start = matrix[0, 2]
+                    if i == 0:
+                        window = Window(x_start, 0, src.width, dst.height)
+                    else:
+                        window_width = min(src.width - clipping, dst.width - (x_start + clipping))
+                        window = Window(x_start + clipping, 0, window_width, dst.height)
+                    dst.write(tmp_raster.read(1, window=window), 1, window=window)
+    os.remove(tmp_tif_file)
+
+
+def mosaic_images_buffered(
+    transformation_matrixs_dict: dict[str, cv2.typing.MatLike],
+    output_tif: str,
+    clipping: int = 30,
+    max_workers: int = 5,
+    qc_output: str | None = None,
+    verbose: bool = True,
+) -> None:
+    """
+    Create a mosaic image by warping and stitching multiple input images using provided transformation matrices.
+
+    The function reads images from `transformation_matrixs_dict`, applies geometric transformations (affine warps)
+    defined by corresponding matrices, and writes the combined result to a single output GeoTIFF file.
+    Optionally, it generates quality control (QC) difference images between overlapping mosaicked parts.
+
+    Parameters
+    ----------
+    transformation_matrixs_dict : dict[str, cv2.typing.MatLike]
+        A dictionary mapping input image file paths (strings) to their associated 2x3 affine transformation matrices
+        (numpy arrays or OpenCV Mat-like) that describe how each image should be warped into the mosaic coordinate space.
+        The matrices are assumed to be affine transforms in pixel space.
+
+    output_tif : str
+        File path for the output mosaic GeoTIFF file.
+
+    clipping : int, optional
+        Number of pixels to clip on the left edge of images after the first one, to avoid visual artifacts due to warping.
+        Default is 30 pixels.
+
+    max_workers : int, optional
+        Number of parallel threads to use for rasterio.warp.reproject calls. Defaults to 5.
+
+    qc_output : str or None, optional
+        Directory path where quality control (QC) difference images will be saved.
+        If None (default), no QC images are generated.
+
+    verbose : bool, optional
+        If True (default), print progress messages during processing.
+
+    Returns
+    -------
+    None
+        The function writes the mosaic directly to `output_tif` and optionally QC images to `qc_output`.
+
+    Notes
+    -----
+    - The output mosaic raster has a size determined by the last image's dimensions plus the horizontal translation
+      offset of the last transformation matrix.
+    - The rasterio profile for the output uses LZW compression, tiling, and a block size of 256x256 pixels.
+    - Images are warped using rasterio.warp.reproject with cubic resampling.
+    - The coordinate reference systems (CRS) are not used here because warping is done in pixel space only.
+    - QC difference images highlight absolute pixel differences in overlapping regions of consecutive warped images.
+    - The function manages memory by writing only windows corresponding to each warped image fragment.
+    """
+    # Get the last image path to determine the output size and metadata
+    last_image_path = next(reversed(transformation_matrixs_dict))
+
+    # Open the last image to base the output profile on
+    with rasterio.open(last_image_path) as src:
+        # Calculate output width by adding translation component from transformation matrix
+        width = src.width + int(transformation_matrixs_dict[last_image_path][0, 2])
+        height = src.height
+
+    # define the output image profile based on the previously computed width and height
+    # and add some tif optimization
+    profile = {
+        "width": width,
+        "height": height,
+        "transform": rasterio.Affine.identity(),
+        "compress": "lzw",
+        "driver": "GTiff",
+        "BIGTIFF": "YES",
+        "count": 1,
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+        "nodata": 0,
+        "dtype": "uint8",
+    }
+
+    if verbose:
+        print("Start the mosaicing...")
+
+    # define the writing mode depend of the quality control
+    # cause without qc we don't need to read the output image
+    mode = "w+" if qc_output else "w"
+
+    os.makedirs(os.path.dirname(output_tif), exist_ok=True)
+    # open with the good mode and the good profile the output raster
+    with rasterio.open(output_tif, mode, **profile) as dst:
+        # create an empty numpy array of the final size where all warped part will be write
+        dst_array = np.zeros((height, width), dtype=np.uint8)
+
+        # the cursor is used only for the qc part to get the end position in the final image
+        # of the previous warped fragment
+        cursor = 0
+
+        # loop in transformation matrixs
+        for i, (image_path, matrix) in enumerate(transformation_matrixs_dict.items()):
+            # open the corresponding image
+            with rasterio.open(image_path) as src:
+                if verbose:
+                    print(f"Warping {image_path} with : \n{matrix}")
+
+                # warp the image fragment with it's corresponding matrix in the dst_array
+                rasterio.warp.reproject(
+                    source=src.read(1),
+                    destination=dst_array,
+                    src_transform=rasterio.Affine(*matrix.flatten()),
+                    dst_transform=rasterio.Affine.identity(),
+                    src_crs=rasterio.CRS.from_epsg(3857),
+                    dst_crs=rasterio.CRS.from_epsg(3857),
+                    resampling=rasterio.warp.Resampling.cubic,
+                    src_nodata=profile["nodata"],
+                    dst_nodata=profile["nodata"],
+                    num_threads=max_workers,
+                )
+
+                # calculate the x_start and window_width based on the x translation and apply clipping to the left
+                # to avoid warping artefacts
+                if i == 0:
+                    x_start = 0
+                    window_width = src.width
+                else:
+                    x_start = int(matrix[0, 2]) + clipping
+                    window_width = min(src.width - clipping, dst.width - x_start)
+
+                # code block for generate all qc images
+                if i != 0 and qc_output:
+                    overlap_width = cursor - x_start
+                    ref_left_part = dst.read(1, window=Window(x_start, 0, overlap_width, dst.height))
+                    right_part = dst_array[:, x_start : x_start + overlap_width]
+
+                    valid_mask = ref_left_part != profile["nodata"]
+
+                    abs_diff = np.zeros_like(ref_left_part, dtype=np.uint8)
+                    abs_diff[valid_mask] = np.abs(
+                        ref_left_part[valid_mask].astype(np.int16) - right_part[valid_mask].astype(np.int16)
+                    ).astype(np.uint8)
+
+                    abs_diff_file = os.path.join(
+                        qc_output, f"diff_{chr(ord('a') + i - 1)}_{chr(ord('a') + i)}_{os.path.basename(output_tif)}"
+                    )
+                    os.makedirs(qc_output, exist_ok=True)
+                    cv2.imwrite(abs_diff_file, abs_diff)
+
+                # write the concern window of dst_array into the final output raster
+                dst.write(
+                    dst_array[:, x_start : x_start + window_width],
+                    1,
+                    window=Window(x_start, 0, window_width, dst.height),
+                )
+                cursor = x_start + window_width
 
 
 ####################################################################################################################################
@@ -144,7 +318,7 @@ def warp_tif_blockwise_to_dst(
     transformation_matrix: cv2.typing.MatLike,
     block_size: int = 256,
     interpolation: int = cv2.INTER_CUBIC,
-    overlap: int = 16,
+    overlap: int = 8,
     pbar: bool = True,
     pbar_desc: str = "Warping blocks",
 ) -> None:
@@ -281,7 +455,7 @@ def extract_global_matches_from_overlap(
     image_a_path: str,
     image_b_path: str,
     overlap_width: int = 3000,
-    bloc_height: int = 256,
+    bloc_height: int = 1024,
     nfeature_per_block: int = 500,
 ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
     """

@@ -12,7 +12,7 @@ import pandas as pd
 # from hipp.image import warp_tif_blockwise_to_dst
 from hipp.image import warp_tif_blockwise
 from hipp.kh9pc.core import compute_cropping_matrix, image_mosaic, pick_points_in_corners
-from hipp.kh9pc.image_mosaic import compute_sequential_alignment, stitch_images_with_transformations
+from hipp.kh9pc.image_mosaic import compute_sequential_alignment, mosaic_images_buffered
 
 
 def join_images_asp(
@@ -61,7 +61,14 @@ def join_images_asp(
         image_mosaic(image_paths, output_image_path, overwrite, threads, cleanup, verbose, dryrun)
 
 
-def join_images(images_directory: str, output_directory: str, overwrite: bool = False, verbose: bool = True) -> None:
+def join_images(
+    images_directory: str,
+    output_directory: str,
+    overwrite: bool = False,
+    verbose: bool = True,
+    max_workers: int = 5,
+    qc_output: str | None = None,
+) -> None:
     """
     Groups and mosaics TIF image tiles from a directory by scene ID.
 
@@ -86,7 +93,9 @@ def join_images(images_directory: str, output_directory: str, overwrite: bool = 
             print(f"Skipping {output_image_path}: output already exists")
         else:
             matrix = compute_sequential_alignment(image_paths, verbose=verbose)
-            stitch_images_with_transformations(matrix, output_image_path)
+            mosaic_images_buffered(
+                matrix, output_image_path, max_workers=max_workers, verbose=verbose, qc_output=qc_output
+            )
 
 
 def select_all_cropping_points(

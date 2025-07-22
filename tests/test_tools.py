@@ -12,7 +12,14 @@ def test_optimize_geotif_file() -> None:
         tif_path = os.path.join(tmpdir, "test.tif")
 
         data = np.random.randint(0, 255, size=(100, 100), dtype=np.uint8)
-        with rasterio.open(tif_path, "w") as dst:
+        profile = {
+            "driver": "GTiff",
+            "height": data.shape[0],
+            "width": data.shape[1],
+            "count": 1,
+            "dtype": "uint8",
+        }
+        with rasterio.open(tif_path, "w", **profile) as dst:
             dst.write(data, 1)
 
         # test the tif file is not compressed yet
