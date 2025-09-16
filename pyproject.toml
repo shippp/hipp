@@ -32,6 +32,7 @@ dependencies = [
   "tqdm",
   "rasterio",
   "scikit-image",
+  "scikit-learn",
   "requests"
 ]
 

@@ -155,7 +155,7 @@ def mosaic_images_streaming(
 def mosaic_images_buffered(
     transformation_matrixs_dict: dict[str, cv2.typing.MatLike],
     output_tif: str,
-    clipping: int = 30,
+    clipping: int = 50,
     max_workers: int = 5,
     qc_output: str | None = None,
     verbose: bool = True,
@@ -239,7 +239,8 @@ def mosaic_images_buffered(
     # cause without qc we don't need to read the output image
     mode = "w+" if qc_output else "w"
 
-    os.makedirs(os.path.dirname(output_tif), exist_ok=True)
+    if os.path.dirname(output_tif):
+        os.makedirs(os.path.dirname(output_tif), exist_ok=True)
     # open with the good mode and the good profile the output raster
     with rasterio.open(output_tif, mode, **profile) as dst:
         # create an empty numpy array of the final size where all warped part will be write
