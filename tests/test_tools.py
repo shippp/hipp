@@ -30,7 +30,7 @@ def test_optimize_geotif_file() -> None:
 
         with rasterio.open(tif_path) as src:
             profile = src.profile
-            assert profile.get("compress", "").lower() == "lzw"
+            assert profile.get("compress", "") == "lzw"
             assert profile.get("tiled") is True
             assert profile.get("blockxsize") == 256
             assert profile.get("blockysize") == 256
