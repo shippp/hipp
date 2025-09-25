@@ -4,6 +4,7 @@ Description: some function for the image processing
 """
 
 import warnings
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -71,6 +72,33 @@ def resize_img(
 
     # Return the resized image
     return resized
+
+
+def generate_quickview(
+    raster_filepath: str,
+    output_path: str,
+    scale_factor: float = 0.2,
+    interpolation: int = Resampling.average,
+) -> None:
+    with rasterio.open(raster_filepath) as src:
+        width = int(src.width * scale_factor)
+        height = int(src.height * scale_factor)
+        count = src.count  # number of bands
+
+        # Read all bands and resize in one call
+        qv_img = src.read(out_shape=(1, height, width), resampling=interpolation)
+
+    # rasterio reads arrays as (bands, height, width), OpenCV expects (height, width, channels)
+    if count == 1:
+        img_cv2 = qv_img[0]  # 2D array for single band
+    else:
+        img_cv2 = np.transpose(qv_img, (1, 2, 0))  # (H, W, C)
+
+    # If single band, make sure dtype is uint8
+    if img_cv2.dtype != np.uint8:
+        img_cv2 = img_cv2.astype(np.uint8)
+
+    cv2.imwrite(output_path, img_cv2)
 
 
 def resize_raster_blockwise(
@@ -331,53 +359,58 @@ def warp_raster_pixels(
     band_idx: int = 1,
 ) -> None:
     """
-    Warp the pixel values of a single band from a raster using a given transformation matrix.
+    Apply a pixel-wise affine warp to a raster band and save the result to a new file.
 
-    This function only modifies the pixel positions according to the transformation matrix.
-    The original raster's CRS and transform are temporarily modified for the operation but
-    restored afterwards. The output raster does not inherit any CRS by default to avoid
-    assigning a false spatial reference.
+    The function reprojects the selected raster band using a custom affine transformation
+    (e.g., translation, rotation, scaling) provided as a 2D transformation matrix.
+    The pixel grid of the output raster is updated to reflect the transformation, while
+    preserving the original spatial reference system.
 
     Parameters
     ----------
     raster_filepath : str
         Path to the input raster file.
     output_raster_filepath : str
-        Path where the warped output raster will be saved.
-    transformation_matrix : array-like
-        3x3 or 2x3 affine-like matrix defining the pixel transformation.
-    output_size : tuple[int, int], optional
-        Width and height of the output raster. If None, the input raster's size is used.
+        Path where the warped raster will be written.
+    transformation_matrix : cv2.typing.MatLike
+        A 2×3 affine-like transformation matrix (as used in OpenCV) defining the warp
+        to apply in pixel space.
+    output_size : tuple[int, int] or None, optional
+        Dimensions (width, height) of the output raster. If None (default), the input
+        raster dimensions are used.
     max_workers : int, default 5
-        Number of threads to use during the reproject/resampling operation.
+        Number of threads to use during reprojection.
     resampling : int, default rasterio.warp.Resampling.cubic
-        Resampling method to use for pixel interpolation.
+        Resampling method applied during the warp (e.g., nearest, bilinear, cubic).
     band_idx : int, default 1
-        Index of the raster band to warp (1-based).
+        Index of the raster band (1-based) to process.
 
     Returns
     -------
     None
-        The warped raster is saved to `output_raster_filepath`.
+        The warped raster is written to `output_raster_filepath`.
 
     Notes
     -----
-    - This function only warps pixel positions; it does not perform a true CRS transformation.
-    - The output raster will have the crs EPSG:3857.
-    - Only a single band is processed by default. To warp multiple bands, call the function
-      separately for each band or modify the function accordingly.
+    - Only one band is processed at a time. For multi-band rasters, call the function
+      once per band or extend it accordingly.
+    - The output transform is temporarily updated to apply the warp, then reset to the
+      original transform to keep the spatial reference consistent.
+    - No CRS transformation is performed; warping is done strictly in pixel space.
     """
-    with rasterio.open(raster_filepath, "r+") as src:
-        src.crs = "EPSG:3857"
-        src.transform = rasterio.Affine(*transformation_matrix[:2].flatten())
+    affine_transform = rasterio.Affine(*transformation_matrix[:2].flatten())
 
+    # create the parent output directory if necessary
+    Path(output_raster_filepath).parent.mkdir(exist_ok=True, parents=True)
+
+    with rasterio.open(raster_filepath) as src:
         output_size = output_size if output_size else (src.width, src.height)
         profile = src.profile.copy()
         profile.update(
             {
                 "width": output_size[0],
                 "height": output_size[1],
-                "transform": rasterio.Affine.identity(),
+                "transform": src.transform * ~affine_transform,
                 "compress": "lzw",
                 "BIGTIFF": "YES",
             }
@@ -389,6 +422,7 @@ def warp_raster_pixels(
                 resampling=resampling,
                 num_threads=max_workers,
             )
+            dst.transform = src.transform
 
 
 def apply_clahe_to_tif_blockwise(

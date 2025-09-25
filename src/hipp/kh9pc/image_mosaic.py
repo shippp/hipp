@@ -83,6 +83,102 @@ def compute_sequential_alignment(
     return transformation_matrixs  # type: ignore[return-value]
 
 
+def mosaic_images(
+    transformation_matrixs_dict: dict[str, cv2.typing.MatLike],
+    output_tif: str,
+    max_worker: int = 5,
+    verbose: bool = True,
+    resampling: int = rasterio.warp.Resampling.cubic,
+) -> None:
+    """
+    Mosaic multiple images into a single output GeoTIFF using given pixel transformation matrices.
+
+    This function warps and mosaics a collection of images into one large raster. The pixel
+    transformation matrices are applied as inverse affine transforms to align each image
+    into the output raster. The mosaicing process is block-based and supports multithreading.
+
+    Parameters
+    ----------
+    transformation_matrixs_dict : dict[str, cv2.typing.MatLike]
+        Dictionary mapping image file paths to their corresponding 2D transformation matrices
+        (affine-like, 3x3 matrices).
+    output_tif : str
+        Path where the final mosaiced GeoTIFF will be saved.
+    max_worker : int, optional
+        Number of worker threads to use during block reprojecting (default is 5).
+    verbose : bool, optional
+        If True, prints progress information (default is True).
+    resampling : int, optional
+        Resampling algorithm from `rasterio.warp.Resampling` to use for reprojection
+        (default is `cubic`).
+
+    Returns
+    -------
+    None
+        The mosaiced raster is written to `output_tif`.
+
+    Notes
+    -----
+    - The transforms applied here are purely pixel-based and ignore CRS/georeferencing information.
+    - The output raster is compressed (LZW), tiled (256x256), and saved as BigTIFF if required.
+    - At the end of processing, the transform metadata is reset to identity to avoid
+      incorrect geospatial metadata.
+    """
+    # Get the last image path to determine the output size and metadata
+    last_image_path = next(reversed(transformation_matrixs_dict))
+
+    # Open the last image to base the output profile on
+    with rasterio.open(last_image_path) as src:
+        # Calculate output width by adding translation component from transformation matrix
+        output_width = src.width + int(transformation_matrixs_dict[last_image_path][0, 2])
+        output_height = src.height
+
+    # define the output image profile based on the previously computed width and height
+    # and add some tif optimization
+    profile = {
+        "width": output_width,
+        "height": output_height,
+        "compress": "lzw",
+        "driver": "GTiff",
+        "BIGTIFF": "YES",
+        "count": 1,
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+        "nodata": 0,
+        "dtype": "uint8",
+    }
+    if verbose:
+        print("Start the mosaicing...")
+
+    os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
+
+    with rasterio.open(output_tif, "w", **profile) as dst:
+        for i, (filepath, matrix) in enumerate(transformation_matrixs_dict.items()):
+            if verbose:
+                print(f"Warping {filepath} with : \n{matrix}")
+
+            # open the coresponding image
+            with rasterio.open(filepath) as src:
+                # here we set the dst transform to the inverse of the given matrix
+                # Note : the transform here is juste for pixels not for geographic stuffs
+                dst.transform = ~rasterio.Affine(*matrix.flatten())
+
+                # use the reproject of rasterio with NO_GEOTRANSFORM option to specify we don't care about CRS.
+                # here we use this method cause it support big images with block processing and work with multi-threads.
+                rasterio.warp.reproject(
+                    source=rasterio.band(src, 1),
+                    destination=rasterio.band(dst, 1),
+                    resampling=resampling,
+                    num_threads=max_worker,
+                    SRC_METHOD="NO_GEOTRANSFORM",  # important to avoid error of CRS
+                    init_dest_nodata=False,  # important to avoid rewriting all the images with no data
+                )
+
+        # we remove the transform metadata to avoid let a wrong transform
+        dst.transform = rasterio.Affine.identity()
+
+
 def mosaic_images_streaming(
     transformation_matrixs_dict: dict[str, cv2.typing.MatLike],
     output_tif: str,

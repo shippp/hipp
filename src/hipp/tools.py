@@ -13,7 +13,7 @@ import rasterio
 from rasterio.shutil import copy as rio_copy
 from tqdm import tqdm
 
-from hipp.image import apply_clahe, resize_raster_blockwise
+from hipp.image import apply_clahe, generate_quickview
 
 
 def points_picker(
@@ -251,6 +251,6 @@ def generate_quickviews(
 
     # Run with multithreading and progress bar
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(resize_raster_blockwise, inp, out, factor) for inp, out, factor in tasks]
+        futures = [executor.submit(generate_quickview, inp, out, factor) for inp, out, factor in tasks]
         for _ in tqdm(as_completed(futures), total=len(futures), desc="Generating quickviews", unit="image"):
             pass

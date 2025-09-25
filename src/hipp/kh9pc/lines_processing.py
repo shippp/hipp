@@ -24,7 +24,7 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 def detect_vertical_edges(
     raster_filepath: str,
     padding: tuple[int, int] = (0, 700),
-    band_width: int = 10000,
+    band_width: int = 15000,
     stride: int = 20,
     px_threshold: int = 20,
     ransac_residual_threshold: float = 100,
@@ -76,6 +76,7 @@ def detect_horizontal_collimation_lines(
     peaks_prominence: float = 50,
     peaks_height: float = 150,
     peaks_width: float = 50,
+    polynomial_degree: int = 2,
     ransac_residual_threshold: float = 50,
     ransac_min_samples: int = 3,
     ransac_max_trials: int = 1000,
@@ -95,7 +96,7 @@ def detect_horizontal_collimation_lines(
 
         # fit a 2 degree polynomial ransac on global coordinates
         ransac, stats = polynomial_ransac(
-            x_global, y_global, 2, ransac_residual_threshold, ransac_min_samples, ransac_max_trials
+            x_global, y_global, polynomial_degree, ransac_residual_threshold, ransac_min_samples, ransac_max_trials
         )
 
         res[side] = ransac
@@ -134,6 +135,8 @@ def compute_transformation(
     detected_horizontal_ransac: dict[str, RANSACRegressor],
     colimation_line_dist: int = 21771,
     stride: int = 256,
+    plot: bool = True,
+    output_plot_path: str | None = None,
 ) -> tuple[cv2.typing.MatLike, tuple[int, int], dict[str, float]]:
     cropped_img_width = detected_vertical_edges["right"] - detected_vertical_edges["left"]
     x_dst = np.arange(0, cropped_img_width, stride)
@@ -184,7 +187,15 @@ def compute_transformation(
     plt.title("Source vs Destination points with correspondences")
     plt.legend()
     plt.tight_layout()
-    plt.show()
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_plot_path)
+
+    if plot:
+        plt.show()
+    else:
+        plt.close()
 
     return transform.params, (cropped_img_width, colimation_line_dist), dists
 
