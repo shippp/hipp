@@ -19,6 +19,7 @@ from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.svm import SVR
 
 
 def detect_vertical_edges(
@@ -70,16 +71,15 @@ def detect_vertical_edges(
 def detect_horizontal_collimation_lines(
     raster_filepath: str,
     padding: tuple[int, int] = (0, 700),
-    band_height: int = 1500,
+    band_height: int = 1700,
     stride: int = 256,
     peaks_distance: float = 200,
     peaks_prominence: float = 50,
     peaks_height: float = 150,
     peaks_width: float = 50,
-    polynomial_degree: int = 2,
-    ransac_residual_threshold: float = 50,
-    ransac_min_samples: int = 3,
-    ransac_max_trials: int = 1000,
+    svr_kernel: str = "rbf",
+    svr_C: float = 100,
+    svr_epsilon: float = 0.1,
     plot: bool = True,
     output_plot_path: str | None = None,
 ) -> dict[str, RANSACRegressor]:
@@ -94,27 +94,23 @@ def detect_horizontal_collimation_lines(
         x_global = x_local * stride + offset[0]
         y_global = y_local + offset[1]
 
-        # fit a 2 degree polynomial ransac on global coordinates
-        ransac, stats = polynomial_ransac(
-            x_global, y_global, polynomial_degree, ransac_residual_threshold, ransac_min_samples, ransac_max_trials
-        )
+        svr_model = make_pipeline(StandardScaler(), SVR(kernel=svr_kernel, C=svr_C, epsilon=svr_epsilon))
+        svr_model.fit(x_global.reshape(-1, 1), y_global)
 
-        res[side] = ransac
+        res[side] = svr_model
 
         # manage the plot
         axes[i].imshow(band, cmap="gray")
 
         # add all of the peaks on the plot
-        inlier_mask = ransac.inlier_mask_
-        axes[i].scatter(x_local[inlier_mask], y_local[inlier_mask], s=5, color="green", label="inliers")
-        axes[i].scatter(x_local[~inlier_mask], y_local[~inlier_mask], s=5, color="red", label="outliers")
+        axes[i].scatter(x_local, y_local, s=5, color="blue", label="peaks")
 
-        y_global_fit = ransac.predict(x_global.reshape(-1, 1))
+        y_global_fit = svr_model.predict(x_global.reshape(-1, 1))
         y_local_fit = y_global_fit - offset[1]
-        axes[i].plot(x_local, y_local_fit, color="blue", label="RANSAC poly")
+        axes[i].plot(x_local, y_local_fit, color="red", label="SVR fit")
 
         # add the axes title
-        axes[i].set_title(f"{side} edge detection \n({_ransac_stats_to_str(stats)})")
+        axes[i].set_title(f"{side} edge estimation with SVR")
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=3)
@@ -134,6 +130,7 @@ def compute_transformation(
     detected_vertical_edges: dict[str, int],
     detected_horizontal_ransac: dict[str, RANSACRegressor],
     colimation_line_dist: int = 21771,
+    margin: tuple[int, int] = (0, 147),
     stride: int = 256,
     plot: bool = True,
     output_plot_path: str | None = None,
@@ -146,12 +143,19 @@ def compute_transformation(
     dst_bottom_points = np.column_stack((x_dst, y_bottom_dst))
     dst_points = np.vstack((dst_top_points, dst_bottom_points))
 
+    # Translate all dst_points with margin
+    dst_points = dst_points + np.array(margin)
+
     x_src = x_dst + detected_vertical_edges["left"]
     y_top_src = detected_horizontal_ransac["top"].predict(x_src.reshape(-1, 1))
     y_bottom_src = detected_horizontal_ransac["bottom"].predict(x_src.reshape(-1, 1))
     src_top_points = np.column_stack((x_src, y_top_src))
     src_bottom_points = np.column_stack((x_src, y_bottom_src))
     src_points = np.vstack((src_top_points, src_bottom_points))
+
+    # compute the output size
+    # the trick here is to minus 1 to the collimation dist to have a mutiple of 2
+    output_size = (cropped_img_width + 2 * margin[0], colimation_line_dist - 1 + 2 * margin[1])
 
     transform = AffineTransform()
     transform.estimate(src_points, dst_points)
@@ -177,8 +181,8 @@ def compute_transformation(
         plt.plot([xs, xd], [ys, yd], color="gray", linewidth=0.5, alpha=0.5)
 
     # Rectangle de l’output (dans l’espace dst)
-    rect_x = [0, cropped_img_width, cropped_img_width, 0, 0]
-    rect_y = [0, 0, colimation_line_dist, colimation_line_dist, 0]
+    rect_x = [0, output_size[0], output_size[0], 0, 0]
+    rect_y = [0, 0, output_size[1], output_size[1], 0]
     plt.plot(rect_x, rect_y, color="green", linewidth=1, label="Output rectangle", linestyle="--")
 
     plt.gca().invert_yaxis()  # cohérent avec les coordonnées image
@@ -197,11 +201,15 @@ def compute_transformation(
     else:
         plt.close()
 
-    return transform.params, (cropped_img_width, colimation_line_dist), dists
+    return transform.params, output_size, dists
 
 
 def plot_distance_between_collimation_lines(
-    detected_vertical_edges: dict[str, int], detected_horizontal_ransac: dict[str, RANSACRegressor], stride: int = 256
+    detected_vertical_edges: dict[str, int],
+    detected_horizontal_ransac: dict[str, RANSACRegressor],
+    stride: int = 256,
+    plot: bool = True,
+    output_plot_path: str | None = None,
 ) -> None:
     x = np.arange(detected_vertical_edges["left"], detected_vertical_edges["right"], stride)
     y_top = detected_horizontal_ransac["top"].predict(x.reshape(-1, 1))
@@ -214,7 +222,15 @@ def plot_distance_between_collimation_lines(
     plt.title("Vertical distance between top and bottom collimation lines")
     plt.xlabel("Image x-coordinate [pixels]")
     plt.ylabel("Distance between lines [pixels]")
-    plt.show()
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_plot_path)
+
+    if plot:
+        plt.show()
+    else:
+        plt.close()
 
 
 ####################################################################################################################################
