@@ -248,7 +248,7 @@ def iter_image_restitution(
     clahe_enhancement: bool = True,
     max_workers: int = 5,
     progress_bar: bool = True,
-    overwite: bool = False,
+    overwrite: bool = False,
 ) -> None:
     """
     Coordinates the parallel processing of image restitution tasks.
@@ -259,7 +259,7 @@ def iter_image_restitution(
         futures = []
         for image_id, transformation_matrix in transformations.items():
             output_image_path = os.path.join(output_directory, image_id)
-            if not os.path.exists(output_image_path) or overwite:
+            if not os.path.exists(output_image_path) or overwrite:
                 futures.append(
                     executor.submit(
                         restitute_image,
