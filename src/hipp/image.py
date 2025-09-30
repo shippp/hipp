@@ -86,7 +86,7 @@ def generate_quickview(
         count = src.count  # number of bands
 
         # Read all bands and resize in one call
-        qv_img = src.read(out_shape=(1, height, width), resampling=interpolation)
+        qv_img = src.read(out_shape=(count, height, width), resampling=interpolation)
 
     # rasterio reads arrays as (bands, height, width), OpenCV expects (height, width, channels)
     if count == 1:

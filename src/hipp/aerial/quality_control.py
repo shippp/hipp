@@ -4,6 +4,7 @@ Description: All function for quality control
 """
 
 import os
+from pathlib import Path
 
 import cv2
 import matplotlib.pyplot as plt
@@ -68,7 +69,12 @@ def generate_detection_qc_plots(
                 fig.savefig(os.path.join(output_directory, image_id.replace(".tif", ".png")))
 
 
-def plot_fiducials_filtering(detected_fiducials_df: pd.DataFrame, filtered_detected_fiducials_df: pd.DataFrame) -> None:
+def plot_fiducials_filtering(
+    detected_fiducials_df: pd.DataFrame,
+    filtered_detected_fiducials_df: pd.DataFrame,
+    show: bool = True,
+    output_plot_path: str | None = None,
+) -> None:
     """
     Displays a comparison plot showing the effect of filtering on fiducial marker deviations.
 
@@ -79,15 +85,24 @@ def plot_fiducials_filtering(detected_fiducials_df: pd.DataFrame, filtered_detec
     """
 
     fig, axs = plt.subplots(2, 1, figsize=(14, 6), sharex=True, sharey=True)
-    fig.suptitle("Comparison of Fiducial Deviations")
     fig.supylabel("Sum of absolute deviations to mean (px)")
+    fig.suptitle("Comparison of Fiducial Deviations")
     _plot_fiducial_deviation(detected_fiducials_df, axs[0], title="before filtering")
     _plot_fiducial_deviation(filtered_detected_fiducials_df, axs[1], title="after filtering")
     plt.tight_layout()
-    plt.show()
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(exist_ok=True, parents=True)
+        plt.savefig(output_plot_path)
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
-def plot_detection_score_boxplot(detected_fiducials_df: pd.DataFrame) -> None:
+def plot_detection_score_boxplot(
+    detected_fiducials_df: pd.DataFrame, show: bool = True, output_plot_path: str | None = None
+) -> None:
     """
     Generates a boxplot to visualize the distribution of fiducial matching scores across all detected markers.
 
@@ -101,12 +116,19 @@ def plot_detection_score_boxplot(detected_fiducials_df: pd.DataFrame) -> None:
     plt.boxplot(
         [detected_fiducials_df[col] for col in score_cols], tick_labels=score_cols, vert=True, patch_artist=True
     )
-    plt.title("Boxplot of Fiducial Matching Scores")
     plt.grid(True)
     plt.ylabel("Matching Score")
     plt.xticks(rotation=45)
-    plt.tight_layout()  # Pour éviter que les labels soient coupés
-    plt.show()
+    plt.title("Boxplot of Fiducial Matching Scores")
+    plt.tight_layout()
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(exist_ok=True, parents=True)
+        plt.savefig(output_plot_path)
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 def plot_fiducials_correction(
@@ -114,6 +136,8 @@ def plot_fiducials_correction(
     transformations: dict[str, cv2.typing.MatLike],
     true_fiducials_mm: pd.Series,
     scanning_resolution_mm: float = 0.02,
+    show: bool = True,
+    output_plot_path: str | None = None,
 ) -> None:
     """
     Visualizes the effect of applying geometric corrections on fiducial detections by plotting the Root Mean Square Error (RMSE) before and after correction.
@@ -167,10 +191,17 @@ def plot_fiducials_correction(
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.show()
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(exist_ok=True, parents=True)
+        plt.savefig(output_plot_path)
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
-def plot_true_fiducials(fiducials: pd.Series) -> None:
+def plot_true_fiducials(fiducials: pd.Series, show: bool = True, output_plot_path: str | None = None) -> None:
     """
     Displays the true fiducial markers on a plot by connecting their coordinates and highlighting key points.
 
@@ -196,10 +227,16 @@ def plot_true_fiducials(fiducials: pd.Series) -> None:
     assert principal_point is not None
     plt.scatter(*principal_point, color="red", s=100, marker="+", zorder=10)
 
-    plt.title("True fiducials")
     plt.axis("equal")
     plt.gca().set_aspect("equal", adjustable="box")
-    plt.show()
+    plt.title("True fiducials")
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(exist_ok=True, parents=True)
+        plt.savefig(output_plot_path)
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 def plot_fiducial_templates(fiducials_directory: str) -> None:

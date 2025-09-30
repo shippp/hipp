@@ -249,6 +249,8 @@ def generate_quickviews(
             if overwrite or not os.path.exists(output_path):
                 tasks.append((input_path, output_path, factor))
 
+    if not tasks:
+        return
     # Run with multithreading and progress bar
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(generate_quickview, inp, out, factor) for inp, out, factor in tasks]

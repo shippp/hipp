@@ -248,6 +248,7 @@ def iter_image_restitution(
     clahe_enhancement: bool = True,
     max_workers: int = 5,
     progress_bar: bool = True,
+    overwite: bool = False,
 ) -> None:
     """
     Coordinates the parallel processing of image restitution tasks.
@@ -257,17 +258,19 @@ def iter_image_restitution(
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         for image_id, transformation_matrix in transformations.items():
-            futures.append(
-                executor.submit(
-                    restitute_image,
-                    os.path.join(images_directory, image_id),
-                    os.path.join(output_directory, image_id),
-                    transformation_matrix,
-                    image_square_dim,
-                    interpolation_flag,
-                    clahe_enhancement,
+            output_image_path = os.path.join(output_directory, image_id)
+            if not os.path.exists(output_image_path) or overwite:
+                futures.append(
+                    executor.submit(
+                        restitute_image,
+                        os.path.join(images_directory, image_id),
+                        output_image_path,
+                        transformation_matrix,
+                        image_square_dim,
+                        interpolation_flag,
+                        clahe_enhancement,
+                    )
                 )
-            )
         iterable = tqdm(as_completed(futures), total=len(futures)) if progress_bar else as_completed(futures)
 
         for future in iterable:
