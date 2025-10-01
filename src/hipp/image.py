@@ -92,7 +92,8 @@ def generate_quickview(
     if count == 1:
         img_cv2 = qv_img[0]  # 2D array for single band
     else:
-        img_cv2 = np.transpose(qv_img, (1, 2, 0))  # (H, W, C)
+        # transpose (b, H, W) -> (H, W, b) and transforme rgb to bgr
+        img_cv2 = cv2.cvtColor(np.transpose(qv_img, (1, 2, 0)), cv2.COLOR_RGB2BGR)   
 
     # If single band, make sure dtype is uint8
     if img_cv2.dtype != np.uint8:
