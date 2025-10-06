@@ -12,12 +12,15 @@ import numpy as np
 import pandas as pd
 import rasterio
 from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 from rasterio.windows import Window
 
 from hipp.aerial.fiducials import (
     _get_fiducial_template_paths,
     _get_groups,
     compute_principal_point,
+    get_distance_to_med_df,
+    get_pseudo_fiducial_paths,
     warp_fiducial_coordinates,
 )
 
@@ -75,20 +78,29 @@ def plot_fiducials_filtering(
     show: bool = True,
     output_plot_path: str | None = None,
 ) -> None:
-    """
-    Displays a comparison plot showing the effect of filtering on fiducial marker deviations.
+    cols = filtered_detected_fiducials_df.columns.intersection(detected_fiducials_df.columns)
 
-    This function compares the deviation of fiducial marker positions before and after filtering. It takes
-    `detected_fiducials_df` as the raw detections and `filtered_detected_fiducials_df` as the filtered version.
-    Each subplot shows the sum of absolute deviations from the mean position for each fiducial, helping to visualize
-    how the filtering impacts detection consistency.
-    """
+    med_df = get_distance_to_med_df(detected_fiducials_df[cols])
 
-    fig, axs = plt.subplots(2, 1, figsize=(14, 6), sharex=True, sharey=True)
-    fig.supylabel("Sum of absolute deviations to mean (px)")
-    fig.suptitle("Comparison of Fiducial Deviations")
-    _plot_fiducial_deviation(detected_fiducials_df, axs[0], title="before filtering")
-    _plot_fiducial_deviation(filtered_detected_fiducials_df, axs[1], title="after filtering")
+    n = len(med_df.columns)
+    fig, axs = plt.subplots(n, 1, figsize=(20, 2 * n), sharex=True, sharey=True)
+
+    for i, colname in enumerate(med_df.columns):
+        x_colname = colname.replace("_dist", "") + "_x"
+        colors = filtered_detected_fiducials_df[x_colname].isna().map({True: "red", False: "green"})
+        axs[i].scatter(med_df.index, med_df[colname], c=colors)
+        axs[i].set_ylabel(colname)
+
+    # Ajout de la légende personnalisée
+    legend_elements = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="green", markersize=8, label="Inliers"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="red", markersize=8, label="Outliers"),
+    ]
+
+    fig.legend(handles=legend_elements, loc="upper right")
+
+    fig.suptitle("Distance between fiducials and median coordinate for each position")
+    plt.tick_params(axis="x", rotation=90)
     plt.tight_layout()
 
     if output_plot_path:
@@ -217,6 +229,17 @@ def plot_true_fiducials(fiducials: pd.Series, show: bool = True, output_plot_pat
             coord2 = fiducials[[group[(i + 1) % 4] + "_x", group[(i + 1) % 4] + "_y"]]
             coord3 = fiducials[[group[(i + 2) % 4] + "_x", group[(i + 2) % 4] + "_y"]]
             plt.scatter(*coord1, color="black", zorder=10)
+            # Label near the point (slightly offset to avoid overlap)
+            plt.text(
+                coord1.iloc[0] + 2,  # Décalage en x
+                coord1.iloc[1] + 2,  # Décalage en y
+                group[i],
+                fontsize=8,
+                color="blue",
+                ha="left",
+                va="bottom",
+                zorder=15,
+            )
             if "corner" in group[0]:
                 plt.plot(
                     [coord1.iloc[0], coord2.iloc[0]], [coord1.iloc[1], coord2.iloc[1]], linestyle="-", color="gray"
@@ -260,6 +283,28 @@ def plot_fiducial_templates(fiducials_directory: str) -> None:
         axes[i].axis("off")
 
     plt.tight_layout()
+    plt.show()
+
+
+def plot_pseudo_fiducial_templates(fiducials_directory: str | Path, max_cols: int = 4) -> None:
+    paths = get_pseudo_fiducial_paths(fiducials_directory)
+
+    n = len(paths)
+    ncols = min(max_cols, n)
+    nrows = (n + max_cols - 1) // max_cols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), constrained_layout=True)
+    axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
+
+    for i, (code, (p, template_anchor)) in enumerate(paths.items()):
+        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        axes[i].imshow(img, cmap="gray")
+        axes[i].scatter(*template_anchor, color="red")
+        axes[i].axis("off")
+        axes[i].set_title(code)
+
+    # hidden empty plot
+    for j in range(i + 1, len(axes)):
+        axes[j].axis("off")
     plt.show()
 
 

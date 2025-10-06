@@ -22,10 +22,14 @@ from hipp.aerial.fiducials import (
     SUBPIXEL_CORNER_FIDUCIAL_NAME,
     SUBPIXEL_MIDSIDE_FIDUCIAL_NAME,
     _get_fiducial_template_paths,
+    _get_groups,
     compute_fiducial_transformation,
     compute_principal_point,
     filter_by_angle,
     filter_scores_by_local_median,
+    get_angle_row,
+    get_pseudo_fiducial_paths,
+    group_row_xy,
     warp_fiducial_coordinates,
 )
 from hipp.image import apply_clahe, read_image_block_grayscale, resize_img
@@ -63,6 +67,9 @@ def create_fiducial_templates(
     # Create and save the regular-resolution fiducial template if needed
     full_image = cv2.imread(input_image_path, cv2.IMREAD_GRAYSCALE)
 
+    if full_image is None:
+        raise FileNotFoundError(f"Error while opening the file {input_image_path}")
+
     if fiducial_coordinate is None:
         fiducial_coordinate = pick_point_from_image(full_image, window_name, destroy_window=True)
         assert fiducial_coordinate is not None
@@ -85,6 +92,43 @@ def create_fiducial_templates(
     cv2.imwrite(os.path.join(output_directory, subpixel_fiducial_name), subpixel_fiducial_image)
 
     return {"fiducial_coordinate": fiducial_coordinate, "subpixel_center_coordinate": subpixel_center_coordinate}
+
+
+def create_pseudo_fiducial_templates(
+    input_image_path: str,
+    output_directory: str,
+    side: str = "midside_left",
+    distance_around_fiducial: int = 100,
+    coordinate: tuple[int, int] | None = None,
+    center_coordinate: tuple[int, int] | None = None,
+) -> dict[str, tuple[int, int]]:
+    if side not in CORNER_KEYS + MIDSIDE_KEYS:
+        raise ValueError(f"Side need to be in {CORNER_KEYS + MIDSIDE_KEYS}")
+
+    window_name = "Pseudo Fiducial Template"
+
+    full_image = cv2.imread(input_image_path, cv2.IMREAD_GRAYSCALE)
+    assert full_image is not None
+
+    if coordinate is None:
+        window_title = f"Pick the {side} pseudo fiducial markers"
+        coordinate = pick_point_from_image(full_image, window_name, window_title, True)
+        assert coordinate is not None
+    fiducial_image = _crop_around_point(full_image, coordinate, distance_around_fiducial)
+
+    # save the pseudo fiducial image
+    cv2.imwrite(os.path.join(output_directory, f"pseudo_fiducial_{side}.png"), fiducial_image)
+
+    if center_coordinate is None:
+        window_title = "Pick the center of the pseudo fiducial markers"
+        center_coordinate = pick_point_from_image(fiducial_image, window_name, window_title, True)
+        assert center_coordinate is not None
+
+    # save the center of the pseudo fiducial in a csv
+    center_csv_path = os.path.join(output_directory, f"pseudo_fiducial_{side}.csv")
+    pd.DataFrame([center_coordinate]).to_csv(center_csv_path, index=False, header=False)
+
+    return {"coordinate": coordinate, "center_coordinate": center_coordinate}
 
 
 def iter_detect_fiducials(
@@ -110,6 +154,89 @@ def iter_detect_fiducials(
             futures.append(
                 executor.submit(detect_fiducials, image_path, fiducials_directory, subpixel_factor, grid_size)
             )
+        iterable = (
+            tqdm(as_completed(futures), total=len(futures), desc="Fiducial detections", unit="Image")
+            if progress_bar
+            else as_completed(futures)
+        )
+
+        for future in iterable:
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                print(f"[!] Error: {e}")
+
+    df = pd.DataFrame(results)
+    df = df.set_index("image_id").sort_index()
+
+    return df
+
+
+def iter_detect_pseudo_fiducials(
+    images_directory: str,
+    fiducials_directory: str,
+    grid_size: int = 3,
+    progress_bar: bool = True,
+    max_workers: int = 5,
+) -> pd.DataFrame:
+    """
+    Perform pseudo-fiducial detection on multiple images in parallel.
+
+    This function iterates over all `.tif` images within a specified directory and applies
+    `detect_pseudo_fiducials()` to each one in parallel using a process pool. It aggregates
+    all individual detection results into a single pandas DataFrame for further analysis
+    or quality assessment.
+
+    Parameters
+    ----------
+    images_directory : str
+        Path to the directory containing the input `.tif` images to process.
+    fiducials_directory : str
+        Path to the directory containing fiducial templates and metadata, as required by
+        `detect_pseudo_fiducials()`.
+    grid_size : int, optional
+        The grid subdivision size used to locate fiducials within each image.
+        Must be an odd number. Default is 3 (for the standard 8-fiducial layout).
+    progress_bar : bool, optional
+        Whether to display a progress bar during processing. Default is True.
+    max_workers : int, optional
+        Maximum number of parallel worker processes. Default is 5.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame indexed by image ID, containing for each image:
+        - Fiducial coordinates (`{key}_x`, `{key}_y`) for all detected points.
+        - Corresponding template matching scores (`{key}_score`).
+        The resulting DataFrame is sorted alphabetically by image ID.
+
+    Raises
+    ------
+    Exception
+        Any unhandled exception during detection is caught and printed, but the process continues
+        for the remaining images. Images that fail detection are skipped in the output DataFrame.
+
+    Notes
+    -----
+    - The function uses `concurrent.futures.ProcessPoolExecutor` for parallel execution,
+      which can significantly speed up processing on multi-core systems.
+    - A progress bar (via `tqdm`) provides feedback on detection progress when enabled.
+    - Each detection task calls `detect_pseudo_fiducials()` independently and safely.
+
+    See Also
+    --------
+    detect_pseudo_fiducials : Detects all pseudo-fiducials within a single image.
+    detect_pseudo_fiducial : Detects one fiducial mark using template matching.
+    get_pseudo_fiducial_paths : Loads fiducial templates and their anchor metadata.
+    """
+    image_paths = sorted(glob.glob(os.path.join(images_directory, "*.tif")))
+
+    results = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for image_path in image_paths:
+            futures.append(executor.submit(detect_pseudo_fiducials, image_path, fiducials_directory, grid_size))
         iterable = (
             tqdm(as_completed(futures), total=len(futures), desc="Fiducial detections", unit="Image")
             if progress_bar
@@ -166,6 +293,54 @@ def filter_detected_fiducials(
     return combined
 
 
+def filter_detected_fiducials_v2(detected_fiducials_df: pd.DataFrame, score_threshold: float = 0.1) -> pd.DataFrame:
+    # we first create a dataset with only good score detection
+    score_cols = [c for c in detected_fiducials_df.columns if "_score" in c]
+    coord_cols = [c for c in detected_fiducials_df.columns if "_score" not in c]
+
+    score_df = detected_fiducials_df[score_cols]
+    coord_df = detected_fiducials_df[coord_cols].apply(group_row_xy, axis=1)
+
+    score_medians = score_df.median()
+    score_mask = score_df > (score_medians - score_threshold)
+    score_mask.columns = score_mask.columns.str.replace("_score", "")
+
+    # apply score mask to the coord df
+    masked_coords = coord_df.where(score_mask, (np.nan, np.nan))
+
+    filtered_angle_df = masked_coords.apply(get_angle_row, axis=1)
+
+    # we compute the inliers angles threshold
+    lower_angle = filtered_angle_df.mean() - 2 * filtered_angle_df.std()
+    upper_angle = filtered_angle_df.mean() + 2 * filtered_angle_df.std()
+
+    # we compute a df angle with all detection
+    angle_df = coord_df.apply(get_angle_row, axis=1)
+
+    angle_mask = (angle_df >= lower_angle) & (angle_df <= upper_angle)
+
+    groups = _get_groups(detected_fiducials_df)
+    propagate_angle_mask = angle_mask.copy()
+    # when an angle is valid it meens that the 3 points are valid
+    for image_id, row in angle_mask.iterrows():
+        for group in groups:
+            for i in range(4):
+                if row[group[i]]:
+                    propagate_angle_mask.loc[image_id, group[(i - 1) % 4]] = True
+                    propagate_angle_mask.loc[image_id, group[(i + 1) % 4]] = True
+
+    final_mask = propagate_angle_mask | score_mask
+    results = detected_fiducials_df[coord_cols].copy()
+
+    for image_id, row in final_mask.iterrows():
+        for key, value in row.items():
+            if not value:
+                results.loc[image_id, f"{key}_x"] = np.nan
+                results.loc[image_id, f"{key}_y"] = np.nan
+
+    return results
+
+
 def open_camera_model_intrinsics(csv_file: str) -> tuple[float, pd.Series]:
     """
     Load scanning resolution and true fiducial positions from a camera model CSV file.
@@ -205,6 +380,13 @@ def compute_transformations(
     for image_name, detected_fiducials in detected_fiducials_df.iterrows():
         matrix = np.eye(3)
         principal_point = (detected_fiducials["principal_point_x"], detected_fiducials["principal_point_y"])
+
+        if any(np.isnan(x) for x in principal_point):
+            warnings.warn(
+                f"Skip {image_name} : no principal point found.",
+                UserWarning,
+            )
+            continue
 
         # if true_fiducials_mm is set we compute an affine transformation between
         # detected fiducials and true fiducials
@@ -331,6 +513,7 @@ def detect_fiducials(
             if k1 in paths and k2 in paths:
                 fiducial = cv2.imread(paths[k1], cv2.IMREAD_GRAYSCALE)
                 subpixel_fiducial = cv2.imread(paths[k2], cv2.IMREAD_GRAYSCALE)
+                assert fiducial is not None and subpixel_fiducial is not None
 
                 for bloc_name, (bloc_row, block_col) in blocs.items():
                     block, (offset_x, offset_y) = read_image_block_grayscale(
@@ -406,6 +589,162 @@ def detect_fiducial(
     return refined_center, max_val
 
 
+def detect_pseudo_fiducials(
+    image_path: str,
+    fiducials_directory: str,
+    grid_size: int = 3,
+) -> pd.Series:
+    """
+    Detect pseudo-fiducial marks in a grid layout within a given image.
+
+    This function locates all fiducial marks (corners and midsides) in an aerial or
+    calibration image by performing template matching for each expected fiducial position.
+    Each fiducial template is matched against a corresponding sub-block of the image,
+    determined by a grid-based spatial layout.
+
+    The function returns a pandas Series containing the detected fiducial coordinates
+    (x, y) and their associated correlation scores for quality assessment.
+
+    Parameters
+    ----------
+    image_path : str
+        Path to the input grayscale image in which fiducial marks are to be detected.
+    fiducials_directory : str
+        Path to the directory containing fiducial templates and metadata. The directory
+        must be structured as expected by `get_pseudo_fiducial_paths()`, which provides
+        template file paths and their anchor points.
+    grid_size : int, optional
+        The number of divisions in both horizontal and vertical directions for splitting
+        the image into regions where fiducials are expected. Must be an odd number.
+        Default is 3 (corresponding to corners and midsides).
+
+    Returns
+    -------
+    pandas.Series
+        A Series containing:
+        - `"image_id"` : the basename of the processed image file.
+        - For each fiducial key (e.g. `"corner_top_left"`, `"midside_top"`, ...):
+            - `"{key}_x"` : detected x-coordinate (in pixels).
+            - `"{key}_y"` : detected y-coordinate (in pixels).
+            - `"{key}_score"` : normalized cross-correlation score from template matching.
+
+    Raises
+    ------
+    ValueError
+        If `grid_size` is not an odd number.
+
+    Notes
+    -----
+    - The image is divided into `grid_size × grid_size` blocks, and each fiducial
+      is searched only within its corresponding block.
+    - The helper function `detect_pseudo_fiducial()` is used internally to find the
+      best match and compute its confidence score.
+    - The function assumes the fiducial layout follows a symmetric grid pattern
+      (e.g. 3×3 for 8 fiducials: 4 corners + 4 midsides).
+
+    See Also
+    --------
+    detect_pseudo_fiducial : Detect a single fiducial mark using template matching.
+    get_pseudo_fiducial_paths : Retrieve template paths and anchor positions for fiducial marks.
+    """
+    if grid_size % 2 == 0:
+        raise ValueError("grid_size must be an odd number.")
+
+    paths = get_pseudo_fiducial_paths(fiducials_directory)
+
+    mapping = {
+        "corner_top_left": (0, 0),
+        "corner_top_right": (0, grid_size - 1),
+        "corner_bottom_left": (grid_size - 1, 0),
+        "corner_bottom_right": (grid_size - 1, grid_size - 1),
+        "midside_top": (0, grid_size // 2),
+        "midside_bottom": (grid_size - 1, grid_size // 2),
+        "midside_left": (grid_size // 2, 0),
+        "midside_right": (grid_size // 2, grid_size - 1),
+    }
+
+    result = {"image_id": os.path.basename(image_path)}
+
+    with rasterio.open(image_path) as src:
+        for key, (f_path, template_anchor) in paths.items():
+            fiducial = cv2.imread(str(f_path), cv2.IMREAD_GRAYSCALE)
+            assert fiducial is not None
+
+            bloc_row, block_col = mapping[key]
+            block, (offset_x, offset_y) = read_image_block_grayscale(src, bloc_row, block_col, (grid_size, grid_size))
+
+            center, score = detect_pseudo_fiducial(block, fiducial, template_anchor)
+
+            result[f"{key}_x"] = center[0] + offset_x  # type: ignore[assignment]
+            result[f"{key}_y"] = center[1] + offset_y  # type: ignore[assignment]
+            result[f"{key}_score"] = score  # type: ignore[assignment]
+
+    return pd.Series(result)
+
+
+def detect_pseudo_fiducial(
+    image: cv2.typing.MatLike, template: cv2.typing.MatLike, template_anchor: tuple[int, int]
+) -> tuple[tuple[float, float], float]:
+    """
+    Detect a pseudo-fiducial mark in an image using multi-filter template matching.
+
+    This function performs template matching between a grayscale image and a fiducial
+    template, applying multiple image filters to improve robustness. It averages the
+    normalized cross-correlation results obtained from each filter and selects the
+    location with the highest matching score.
+
+    The returned coordinates correspond to the fiducial center, computed by offsetting
+    the best match position with the template anchor point (i.e., the point of interest
+    within the template image).
+
+    Parameters
+    ----------
+    image : cv2.typing.MatLike
+        Input grayscale image in which to search for the fiducial mark.
+    template : cv2.typing.MatLike
+        Template image of the fiducial mark to be matched.
+    template_anchor : tuple[int, int]
+        Coordinates (x, y) of the reference point inside the template image,
+        typically the geometric center of the fiducial mark.
+
+    Returns
+    -------
+    tuple[tuple[float, float], float]
+        A tuple containing:
+        - The detected fiducial center coordinates (x, y) in pixel units.
+        - The maximum normalized correlation score (float) indicating match confidence.
+
+    Notes
+    -----
+    - Two filters are applied before matching: identity (raw image) and Laplacian
+      edge enhancement. The correlation maps from both are averaged to improve
+      detection robustness.
+    - The matching method used is `cv2.TM_CCOEFF_NORMED`.
+    """
+    # Define filters
+    filters = [
+        lambda img: img,
+        lambda img: cv2.convertScaleAbs(cv2.Laplacian(img, cv2.CV_64F)),
+    ]
+
+    # Compute template matching for each filter
+    tpl_results = [cv2.matchTemplate(f(image), f(template), cv2.TM_CCOEFF_NORMED) for f in filters]
+
+    # Average correlation maps
+    avg_result = np.mean(np.array(tpl_results), axis=0)
+
+    _, max_val, _, max_loc = cv2.minMaxLoc(avg_result)
+
+    # max_loc = top-left corner of the best match
+    # template_anchor   = point of interest inside the template (in template coordinates)
+    detected_center = (
+        max_loc[0] + template_anchor[0],
+        max_loc[1] + template_anchor[1],
+    )
+
+    return detected_center, max_val
+
+
 def restitute_image(
     image_path: str,
     output_image_path: str,
@@ -415,6 +754,7 @@ def restitute_image(
     clahe_enhancement: bool = True,
 ) -> None:
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    assert image is not None
     height, width = image.shape[:2]
 
     # if a crop need to be apply we update the width and the height

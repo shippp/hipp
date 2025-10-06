@@ -27,6 +27,7 @@ def test_detect_fiducial(dataset, fiducials) -> None:  # type: ignore[no-untyped
     image_path = os.path.join(dataset.raw_images, "NAGAP_94V3_196.tif")
     bloc, _ = read_image_block_grayscale(image_path, 0, 0, (5, 5))
 
+    assert corner_fiducial is not None and subpixel_corner_fiducial is not None
     center, score = core.detect_fiducial(bloc, corner_fiducial, subpixel_corner_fiducial)
 
     assert_distance_from_2_points(center, (1108, 385))

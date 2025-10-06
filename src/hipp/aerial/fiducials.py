@@ -16,6 +16,7 @@ This ordering is critical for angle-based geometric calculations and transformat
 """
 
 import os
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -294,3 +295,69 @@ def _get_fiducial_template_paths(fiducials_directory: str) -> dict[str, str]:
         "subpixel_midside_fiducial_path": os.path.join(fiducials_directory, SUBPIXEL_MIDSIDE_FIDUCIAL_NAME),
     }
     return {key: path for key, path in paths.items() if os.path.exists(path)}
+
+
+def get_angle_row(detection: pd.Series) -> pd.Series:
+    grouped_detection = group_row_xy(detection)
+    result = {}
+    groups = []
+    if all(key in grouped_detection.index for key in MIDSIDE_KEYS):
+        groups.append(MIDSIDE_KEYS)
+    if all(key in grouped_detection.index for key in CORNER_KEYS):
+        groups.append(CORNER_KEYS)
+
+    for group in groups:
+        for i in range(4):
+            point_names = [group[(i - 1) % 4], group[i], group[(i + 1) % 4]]
+            points = [grouped_detection[name] for name in point_names]
+            angle = angle_between_three_points(*points)  # type: ignore[arg-type]
+            result[group[i]] = angle
+    return pd.Series(result, name=detection.name)
+
+
+def get_distance_to_med_df(coords_df: pd.DataFrame) -> pd.DataFrame:
+    if not all(coords_df.columns.str.endswith(("_x", "_y"))):
+        raise ValueError("All keys of the df must end with '_x' or '_y'")
+
+    s_med_grouped = group_row_xy(coords_df.median())
+    grouped_df = coords_df.apply(group_row_xy, axis=1)
+
+    # compute the distance of each point to is median point
+    dist_df = grouped_df.apply(
+        lambda row: {
+            f"{k}_dist": np.linalg.norm(np.array(row[k]) - np.array(s_med_grouped[k])) for k in s_med_grouped.index
+        },
+        axis=1,
+        result_type="expand",
+    )
+
+    return dist_df
+
+
+def get_pseudo_fiducial_paths(fiducials_directory: str | Path) -> dict[str, tuple[Path, tuple[int, int]]]:
+    results: dict[str, tuple[Path, tuple[int, int]]] = {}
+    for p in Path(fiducials_directory).glob("pseudo_fiducial_*.png"):
+        key = p.stem.replace("pseudo_fiducial_", "")
+        df = pd.read_csv(p.with_suffix(".csv"), header=None)
+        template_anchor = (int(df.loc[0, 0]), int(df.loc[0, 1]))
+        results[key] = (p, template_anchor)
+    return results
+
+
+def group_row_xy(row: pd.Series) -> pd.Series:
+    result = {}
+    used_cols = set()
+    # Find all columns ending with _x and _y
+    x_cols = [c for c in row.index if c.endswith("_x")]
+    for x_col in x_cols:
+        base = x_col[:-2]  # remove "_x"
+        y_col = base + "_y"
+        result[base] = (row[x_col], row[y_col])
+        used_cols.update([x_col, y_col])
+
+    # Add remaining columns unchanged
+    for c in row.index:
+        if c not in used_cols:
+            result[c] = row[c]
+
+    return pd.Series(result, name=row.name)

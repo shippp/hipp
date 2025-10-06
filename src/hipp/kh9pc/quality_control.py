@@ -29,6 +29,7 @@ def process_image_mosaicing_qc(
         axes = axes.flatten()
         for i, path in enumerate(paths):
             img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            assert img is not None
             img_resized = cv2.resize(
                 img, (img.shape[1] // scale_factor, img.shape[0] // scale_factor), interpolation=cv2.INTER_CUBIC
             ).astype(np.uint8)
