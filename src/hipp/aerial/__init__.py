@@ -11,7 +11,6 @@ from .core import (
     open_camera_model_intrinsics,
     warp_fiducials_df,
 )
-from .intrinsics import Intrinsics
 
 __all__ = [
     "compute_transformations",
@@ -25,5 +24,4 @@ __all__ = [
     "warp_fiducials_df",
     "qc",
     "fiducials",
-    "Intrinsics",
 ]

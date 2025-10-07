@@ -44,7 +44,13 @@ class Intrinsics:
         "midside_bottom",
     ]
 
-    def __init__(self, focal_length: float, pixel_pitch: float, true_fiducials_mm: pd.Series | dict[str, float]):
+    def __init__(
+        self,
+        focal_length: float,
+        pixel_pitch: float,
+        true_fiducials_mm: pd.Series | dict[str, float] | None = None,
+        principal_point: tuple[float, float] | None = None,
+    ):
         """
         Initialize camera intrinsics.
 
@@ -67,12 +73,13 @@ class Intrinsics:
         self.pixel_pitch: float = pixel_pitch
 
         fiducials_keys = [key + suffix for key in Intrinsics.fiducials_keys for suffix in ["_x", "_y"]]
-        tmp_tfs = pd.Series(true_fiducials_mm)
+        tmp_tfs = pd.Series({} if true_fiducials_mm is None else true_fiducials_mm)
         for key in tmp_tfs.index:
             if key not in fiducials_keys:
                 raise KeyError(f"Unrecognized key `{key}` for true_fiducials_mm")
 
         self.true_fiducials_mm: pd.Series = tmp_tfs.reindex(fiducials_keys)
+        self.principal_point = (np.nan, np.nan) if principal_point is None else principal_point
 
     def to_csv(self, csv_file: str) -> None:
         """
@@ -85,6 +92,7 @@ class Intrinsics:
         """
         data = {"focal_length": self.focal_length, "pixel_pitch": self.pixel_pitch}
         data.update(self.true_fiducials_mm.to_dict())
+        data.update({"principal_point_x": self.principal_point[0], "principal_point_y": self.principal_point[1]})
         df = pd.DataFrame([data])
         df.to_csv(csv_file, index=False)
 
@@ -107,10 +115,11 @@ class Intrinsics:
         df_row.index = df_row.index.str.replace("_mm", "", regex=False)
         focal_length = float(df_row["focal_length"])
         pixel_pitch = float(df_row["pixel_pitch"])
+        principal_point = float(df_row["principal_point_x"]), float(df_row["principal_point_y"])
 
         fiducials_keys = [key + suffix for key in Intrinsics.fiducials_keys for suffix in ["_x", "_y"]]
         true_fiducials_mm = df_row[fiducials_keys]
-        return cls(focal_length, pixel_pitch, true_fiducials_mm)
+        return cls(focal_length, pixel_pitch, true_fiducials_mm, principal_point)
 
     @classmethod
     def from_list(
@@ -137,7 +146,13 @@ class Intrinsics:
         true_fiducials_mm = {
             k + suffix: fiducial_coords[v][i] for k, v in classif.items() for i, suffix in enumerate(["_x", "_y"])
         }
-        return cls(focal_length, pixel_pitch, true_fiducials_mm)
+        if "principal_point" in classif:
+            principal_point = true_fiducials_mm["principal_point_x"], true_fiducials_mm["principal_point_y"]
+            del true_fiducials_mm["principal_point_x"]
+            del true_fiducials_mm["principal_point_y"]
+        else:
+            principal_point = None
+        return cls(focal_length, pixel_pitch, true_fiducials_mm, principal_point)
 
     @staticmethod
     def classify_fiducials(fiducial_coords: list[tuple[float, float]]) -> dict[str, int]:
@@ -163,8 +178,6 @@ class Intrinsics:
         ValueError
             If the number of fiducial points is not 4 or 8.
         """
-        if len(fiducial_coords) not in (4, 8):
-            raise ValueError(f"Expected exactly 4 or 8 fiducial coordinates, got {len(fiducial_coords)}.")
 
         arr = np.array(fiducial_coords)
 
@@ -189,6 +202,7 @@ class Intrinsics:
             (1, 0): "midside_top",
             (2, 1): "midside_right",
             (1, 2): "midside_bottom",
+            (1, 1): "principal_point",
         }
 
         # classified points
