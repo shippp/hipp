@@ -189,7 +189,7 @@ def optimize_geotifs(
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit optimization tasks for each file
-        futures = [executor.submit(optimize_geotif_file, f) for f in files]
+        futures = [executor.submit(optimize_geotif_file, f, overwrite) for f in files]
 
         if show_progress:
             for _ in tqdm(as_completed(futures), total=len(futures), desc="Optimizing", unit="file"):
@@ -216,11 +216,10 @@ def optimize_geotif_file(geotif_file: str, overwrite: bool = False) -> None:
         already_optimized = all(str(profile.get(k, "")).lower() == str(v).lower() for k, v in desired_options.items())
         if already_optimized and not overwrite:
             return
-        profile.update(desired_options)
-        profile.update({"BIGTIFF": "IF_SAFER"})
+        desired_options.update({"BIGTIFF": "IF_SAFER"})
 
         # Write to temporary file
-        rio_copy(src, tmp_tif, **profile)
+        rio_copy(src, tmp_tif, **desired_options)
 
     # Replace or keep original
     os.remove(geotif_file)
