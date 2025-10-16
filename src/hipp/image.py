@@ -93,7 +93,7 @@ def generate_quickview(
         img_cv2 = qv_img[0]  # 2D array for single band
     else:
         # transpose (b, H, W) -> (H, W, b) and transforme rgb to bgr
-        img_cv2 = cv2.cvtColor(np.transpose(qv_img, (1, 2, 0)), cv2.COLOR_RGB2BGR)   
+        img_cv2 = cv2.cvtColor(np.transpose(qv_img, (1, 2, 0)), cv2.COLOR_RGB2BGR)
 
     # If single band, make sure dtype is uint8
     if img_cv2.dtype != np.uint8:
@@ -351,8 +351,8 @@ def warp_tif_blockwise(
 
 
 def warp_raster_pixels(
-    raster_filepath: str,
-    output_raster_filepath: str,
+    raster_filepath: str | Path,
+    output_raster_filepath: str | Path,
     transformation_matrix: cv2.typing.MatLike,
     output_size: None | tuple[int, int] = None,
     max_workers: int = 5,

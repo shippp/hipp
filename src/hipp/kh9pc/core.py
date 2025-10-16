@@ -4,18 +4,19 @@ Description: core functions for the preprocessing of KH-9 PC images
 """
 
 import glob
-import math
 import os
 import subprocess
-
-import cv2
-import numpy as np
-import rasterio
+from pathlib import Path
+from typing import Any
 
 # import pyvips
-from hipp.image import apply_clahe, read_image_block_grayscale
-from hipp.math import transform_coord
-from hipp.tools import pick_point_from_image
+from hipp.image import warp_raster_pixels
+from hipp.kh9pc.lines_processing import (
+    compute_transformation,
+    detect_horizontal_collimation_lines,
+    detect_vertical_edges,
+    plot_distance_between_collimation_lines,
+)
 
 ####################################################################################################################################
 #                                                   MAIN FUNCTIONS
@@ -91,98 +92,170 @@ def image_mosaic(
             os.remove(f)
 
 
-def pick_points_in_corners(
-    image_path: str, grid_shape: tuple[int, int] = (5, 20), clahe_enhancement: bool = True, destroy_window: bool = True
-) -> dict[str, tuple[int, int]] | None:
-    corners_indices = {
-        "top_left": (0, 0),
-        "top_right": (0, grid_shape[1] - 1),
-        "bottom_right": (grid_shape[0] - 1, grid_shape[1] - 1),
-        "bottom_left": (grid_shape[0] - 1, 0),
-    }
-    result = {}
-    window_name = "Corner Point Picker"
-
-    for key, indices in corners_indices.items():
-        image_bloc, (offset_x, offset_y) = read_image_block_grayscale(image_path, *indices, grid_shape)
-
-        if clahe_enhancement:
-            image_bloc = apply_clahe(image_bloc)
-
-        window_title = f"[{os.path.basename(image_path)}] Select {key} with Ctrl + Click"
-        point = pick_point_from_image(image_bloc, window_name, window_title)
-        if point is None:
-            return None
-        result[key] = (point[0] + offset_x, point[1] + offset_y)
-
-    if destroy_window:
-        cv2.destroyWindow(window_name)
-    return result
-
-
-def compute_cropping_matrix(
-    input_path: str, points: list[tuple[int, int]]
-) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
+def collimation_rectification(
+    input_raster_path: str | Path,
+    output_raster_path: str | Path,
+    qc_dir: str | Path,
+    collimation_lines_detection_kwargs: dict[str, Any] | None = None,
+    vertical_edges_detection_kwargs: dict[str, Any] | None = None,
+    transformation_kwargs: dict[str, Any] | None = None,
+    verbose: bool = True,
+    max_workers: int = 4,
+) -> None:
     """
-    Compute a transformation matrix to rotate and crop an image around two reference points.
+    Perform geometric rectification of a raster based on collimation line detection.
 
-    The function computes the affine transformation matrix that rotates the image so that the line
-    defined by the first two input points becomes horizontal. Then it computes the minimal bounding box
-    of the transformed points and applies a translation to crop the rotated image to this region.
+    This function detects horizontal and vertical collimation lines in a raster image,
+    computes the geometric transformation required to correct optical or alignment
+    distortions, and warps the image accordingly. It also generates quality control (QC)
+    plots showing detected features and line spacing before and after rectification.
 
-    Args:
-        input_path (str): Path to the input image.
-        points (list[tuple[float, float]]): List of at least two (x, y) points used to compute the rotation.
+    The process includes:
+      1. Detection of horizontal collimation lines.
+      2. Detection of vertical edges.
+      3. Estimation and application of the transformation matrix.
+      4. Post-rectification evaluation and visualization.
 
-    Returns:
-        tuple:
-            - final_matrix (np.ndarray): 3x3 affine transformation matrix (rotation + translation).
-            - (out_width, out_height): Size of the cropped output image.
+    Parameters
+    ----------
+    input_raster_path : str or Path
+        Path to the input raster to be rectified.
+    output_raster_path : str or Path
+        Path where the rectified raster will be saved.
+    qc_dir : str or Path
+        Directory where quality control (QC) plots and diagnostics will be saved.
+    collimation_lines_detection_kwargs : dict, optional
+        Additional keyword arguments passed to `detect_horizontal_collimation_lines()`.
+    vertical_edges_detection_kwargs : dict, optional
+        Additional keyword arguments passed to `detect_vertical_edges()`.
+    transformation_kwargs : dict, optional
+        Additional keyword arguments passed to `compute_transformation()`.
+    verbose : bool, optional
+        If True, prints progress messages to the console. Default is True.
+    max_workers : int, optional
+        Number of parallel workers to use during image warping. Default is 4.
+
+    Returns
+    -------
+    None
+        The function writes the rectified raster and several QC plots to disk.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input raster file does not exist.
+    ValueError
+        If the detected collimation lines or transformation parameters are invalid.
+    RuntimeError
+        If the rectification process fails during warping or transformation.
+
+    Notes
+    -----
+    - The function assumes that the input raster contains visible collimation lines
+      that can be automatically detected.
+    - QC plots are saved in structured subdirectories under `qc_dir` for traceability.
+    - Warping uses bicubic interpolation for smooth results.
+    - Padding is set to zero after rectification because the output image is cropped.
+
+    Example
+    -------
+    >>> collimation_rectification(
+    ...     input_raster_path="raw/camera_image.tif",
+    ...     output_raster_path="rectified/camera_image_rectified.tif",
+    ...     qc_dir="qc_results/",
+    ...     collimation_lines_detection_kwargs={"sigma": 2.0},
+    ...     transformation_kwargs={"method": "affine"},
+    ...     verbose=True,
+    ...     max_workers=8
+    ... )
+    Collimation rectification for camera_image.tif :
+        -[1/4] Estimation of collimation lines...
+        -[2/4] Detection of vertical lines...
+        -[3/4] Warping image (can take some times)...
+        -[4/4] Estimation of collimation lines after transformation...
     """
-    # Calculate angle in degrees between two points relative to horizontal axis
-    angle = angle_from_points(*points[0], *points[1])
+    # transform to Path every paths
+    input_raster_path = Path(input_raster_path)
+    output_raster_path = Path(output_raster_path)
+    qc_dir = Path(qc_dir)
 
-    # Open the input image to get its dimensions
-    with rasterio.open(input_path) as src:
-        img_width = src.width
-        img_height = src.height
+    # transform none kwargs to empty dict
+    collimation_lines_detection_kwargs = collimation_lines_detection_kwargs or {}
+    vertical_edges_detection_kwargs = vertical_edges_detection_kwargs or {}
+    transformation_kwargs = transformation_kwargs or {}
 
-    # Create a rotation matrix around the center of the image
-    rotation_matrix = np.vstack([cv2.getRotationMatrix2D((img_width // 2, img_height // 2), angle, 1), [0, 0, 1]])
+    if verbose:
+        print(f"Collimation rectification for {input_raster_path.name} : ")
 
-    # Rotate the input points using the rotation matrix
-    rotated_points = [transform_coord(coord, rotation_matrix) for coord in points]
+    # Detect collimation lines
+    if verbose:
+        print("\t-[1/4] Estimation of collimation lines...")
+    collimation_lines = detect_horizontal_collimation_lines(
+        input_raster_path,
+        plot=False,
+        output_plot_path=qc_dir / "collimation_lines" / f"{input_raster_path.stem}.png",
+        **collimation_lines_detection_kwargs,
+    )
 
-    # Compute the bounding box of the rotated points
-    left, top, out_width, out_height = bounding_rect(rotated_points)
+    # Detect vertical lines
+    if verbose:
+        print("\t-[2/4] Detection of vertical lines...")
+    vertical_edges = detect_vertical_edges(
+        input_raster_path,
+        plot=False,
+        output_plot_path=qc_dir / "vertical_edges" / f"{input_raster_path.stem}.png",
+        **vertical_edges_detection_kwargs,
+    )
 
-    # Create a translation matrix to crop the image to the bounding box
-    translation_matrix = np.array([[1, 0, -left], [0, 1, -top], [0, 0, 1]])
+    # Plot the distance between collimation lines for quality control
+    plot_distance_between_collimation_lines(
+        vertical_edges,
+        collimation_lines,
+        plot=False,
+        output_plot_path=qc_dir / "distance_between_collimation_lines" / f"{input_raster_path.stem}.png",
+    )
 
-    # Combine translation and rotation matrices
-    final_matrix = translation_matrix @ rotation_matrix
-    return final_matrix, (out_width, out_height)
+    # compute the transformation and plot the transformation plot
+    tf_matrix, output_img_size, _ = compute_transformation(
+        vertical_edges,
+        collimation_lines,
+        plot=False,
+        output_plot_path=qc_dir / "transformations" / f"{input_raster_path.stem}.png",
+        **transformation_kwargs,
+    )
+
+    # warp the image with the previously computed transformation (use bicubic interpolation)
+    if verbose:
+        print("\t-[3/4] Warping image (can take some times)...")
+    warp_raster_pixels(input_raster_path, output_raster_path, tf_matrix, output_img_size, max_workers)
+
+    # detect collimation lines after the transformation
+    if verbose:
+        print("\t-[4/4] Estimation of collimation lines after transformation...")
+
+    # set the padding to (0,0) because the output image is cropped
+    kwargs = collimation_lines_detection_kwargs.copy()
+    kwargs.update({"padding_dict": {"top": (0, 0), "bottom": (0, 0)}})
+
+    collimation_lines_after_transform = detect_horizontal_collimation_lines(
+        output_raster_path,
+        plot=False,
+        output_plot_path=qc_dir / "collimation_lines_after_transform" / f"{input_raster_path.stem}.png",
+        **kwargs,
+    )
+
+    # Plot the distance between collimation lines after transformation
+    new_vertical_edges = {"left": 0, "right": output_img_size[0]}
+    plot_distance_between_collimation_lines(
+        new_vertical_edges,
+        collimation_lines_after_transform,
+        plot=False,
+        output_plot_path=qc_dir
+        / "distance_between_collimation_lines_after_transform"
+        / f"{input_raster_path.stem}.png",
+    )
 
 
 ####################################################################################################################################
 #                                                   PRIVATE FUNCTIONS
 ####################################################################################################################################
-
-
-def angle_from_points(x1: float, y1: float, x2: float, y2: float) -> float:
-    """Calculate angle in degrees between two points relative to horizontal axis"""
-    dx = x2 - x1
-    dy = y2 - y1
-    angle_rad = math.atan2(dy, dx)
-    return math.degrees(angle_rad)
-
-
-def bounding_rect(points: list[tuple[float, float]]) -> tuple[int, int, int, int]:
-    """Get bounding rectangle (left, top, width, height) from list of (x,y) points"""
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    left = int(min(xs))
-    top = int(min(ys))
-    width = int(max(xs)) - left
-    height = int(max(ys)) - top
-    return left, top, width, height

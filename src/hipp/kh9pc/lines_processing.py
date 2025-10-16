@@ -16,33 +16,94 @@ from scipy.signal import find_peaks
 from skimage.transform import AffineTransform
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LinearRegression, RANSACRegressor
-from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from sklearn.svm import SVR
+
+####################################################################################################################################
+#                                                   PUBLIC FUNCTIONS
+####################################################################################################################################
 
 
 def detect_vertical_edges(
-    raster_filepath: str,
+    raster_filepath: str | Path,
     padding: tuple[int, int] = (0, 700),
     band_width: int = 15000,
     stride: int = 20,
     px_threshold: int = 20,
     ransac_residual_threshold: float = 100,
-    ransac_min_samples: int = 1,
     ransac_max_trials: int = 1000,
     plot: bool = True,
-    output_plot_path: str | None = None,
+    output_plot_path: str | Path | None = None,
 ) -> dict[str, int]:
+    """
+    Detect the left and right vertical edges of a raster image using RANSAC-based line fitting.
+
+    This function extracts narrow vertical bands from both sides of a raster image, detects
+    potential vertical edge points, and fits vertical lines to those points using RANSAC.
+    The resulting x-coordinates represent the estimated positions of the left and right
+    image boundaries (collimation edges).
+
+    Parameters
+    ----------
+    raster_filepath : str
+        Path to the input raster image file.
+    padding : tuple[int, int], optional
+        Tuple specifying horizontal and vertical padding (in pixels) applied when extracting
+        image bands. Default is (0, 700).
+    band_width : int, optional
+        Width (in pixels) of the vertical band extracted from each image side. Default is 15000.
+    stride : int, optional
+        Step size (in pixels) used when sampling image columns within each band. Default is 20.
+    px_threshold : int, optional
+        Intensity threshold (in pixel values) used to identify potential edge points. Default is 20.
+    ransac_residual_threshold : float, optional
+        Maximum residual error allowed for RANSAC inlier points. Default is 100.
+    ransac_max_trials : int, optional
+        Maximum number of iterations used during RANSAC fitting. Default is 1000.
+    plot : bool, optional
+        If True, displays plots showing detected inliers, outliers, and the fitted RANSAC line
+        for both image sides. Default is True.
+    output_plot_path : str | None, optional
+        Optional path to save the generated plot. If None, no file is saved.
+
+    Returns
+    -------
+    res : dict[str, int]
+        Dictionary containing the detected vertical edge positions (x-coordinates) in pixels.
+        Keys:
+            - "left": x-coordinate of the left vertical edge.
+            - "right": x-coordinate of the right vertical edge.
+
+    Notes
+    -----
+    - This function relies on helper methods:
+        * `extract_raster_band_slice()` – extracts image bands for analysis.
+        * `extract_vertical_edge_points()` – detects potential edge points.
+        * `vertical_ransac()` – performs robust line fitting.
+    - The output x-positions are adjusted by the extraction offset to align with global
+      image coordinates.
+    - Inliers are plotted in green, outliers in red, and the RANSAC fitted line in blue.
+
+    Example
+    -------
+    >>> edges = detect_vertical_edges(
+    ...     raster_filepath="input/image.tif",
+    ...     band_width=12000,
+    ...     stride=25,
+    ...     px_threshold=15,
+    ...     output_plot_path="results/vertical_edges.png"
+    ... )
+    >>> print(edges)
+    {'left': 153, 'right': 20482}
+    """
     res = {}
     fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
 
     for i, side in enumerate(["left", "right"]):
         band, offset = extract_raster_band_slice(raster_filepath, padding, band_width, stride, side)
-        x_local, y_local = detect_vertical_edge(band, px_threshold, side)
-        ransac_local, stats = vertical_ransac(
-            x_local, y_local, ransac_residual_threshold, ransac_min_samples, ransac_max_trials
-        )
+        x_local, y_local = extract_vertical_edge_points(band, px_threshold, side)
+        ransac_local, stats = vertical_ransac(x_local, y_local, ransac_residual_threshold, ransac_max_trials)
         res[side] = int(ransac_local.estimator_.constant_ + offset[0])
 
         axes[i].imshow(band, cmap="gray")
@@ -69,35 +130,104 @@ def detect_vertical_edges(
 
 
 def detect_horizontal_collimation_lines(
-    raster_filepath: str,
-    padding: tuple[int, int] = (0, 700),
+    raster_filepath: str | Path,
+    padding_dict: dict[str, tuple[int, int]] = {"top": (0, 700), "bottom": (0, 700)},
     band_height: int = 1700,
     stride: int = 256,
-    peaks_distance: float = 200,
-    peaks_prominence: float = 50,
-    peaks_height: float = 150,
-    peaks_width: float = 50,
-    svr_kernel: str = "rbf",
-    svr_C: float = 100,
-    svr_epsilon: float = 0.1,
+    polynomial_degree: int = 2,
+    ransac_residual_threshold: float = 50.0,
+    ransac_max_trial: int = 100,
     plot: bool = True,
-    output_plot_path: str | None = None,
+    output_plot_path: str | Path | None = None,
 ) -> dict[str, RANSACRegressor]:
+    """
+    Detect the top and bottom horizontal collimation lines from a raster image using RANSAC polynomial fitting.
+
+    This function extracts horizontal bands from the top and bottom regions of a raster image,
+    detects prominent peaks within each band, and fits a polynomial model to estimate the
+    horizontal collimation lines. RANSAC regression is used to improve robustness against noise
+    and outliers. The resulting models represent the geometric position of each collimation line.
+
+    Parameters
+    ----------
+    raster_filepath : str
+        Path to the input raster image file.
+    padding_dict : dict[str, tuple[int, int]], optional
+        Dictionary specifying the vertical padding applied when extracting the top and bottom
+        bands. Each key ("top" or "bottom") maps to a tuple (x_padding, y_padding).
+        Default is {"top": (0, 700), "bottom": (0, 700)}.
+    band_height : int, optional
+        Height (in pixels) of the horizontal band extracted from the raster image.
+        Default is 1700.
+    stride : int, optional
+        Step size in pixels used to sample vertical columns within the image.
+        Default is 256.
+    polynomial_degree : int, optional
+        Degree of the polynomial used for modeling the collimation line.
+        Default is 2.
+    ransac_residual_threshold : float, optional
+        Maximum residual allowed for inliers in the RANSAC algorithm.
+        Default is 50.0.
+    ransac_max_trial : int, optional
+        Maximum number of iterations for RANSAC fitting.
+        Default is 100.
+    plot : bool, optional
+        If True, displays the diagnostic plots showing detected peaks and polynomial fits.
+        If False, no figure is shown. Default is True.
+    output_plot_path : str | None, optional
+        Optional path where the generated plot will be saved. If None, no file is saved.
+
+    Returns
+    -------
+    res : dict[str, RANSACRegressor]
+        Dictionary containing fitted RANSAC models for each detected collimation line.
+        Keys:
+            - "top": RANSAC model for the top line.
+            - "bottom": RANSAC model for the bottom line.
+
+    Notes
+    -----
+    - The function assumes that the raster file can be read by `extract_raster_band_slice()`.
+    - Peak detection is performed column-wise using `detect_peaks_in_columns()`.
+    - The fitted models can be used later to compute distances or transformations between lines.
+    - Plots include detected peaks (in blue) and fitted polynomial curves (in red).
+
+    Example
+    -------
+    >>> ransac_models = detect_horizontal_collimation_lines(
+    ...     raster_filepath="input/image.tif",
+    ...     band_height=1800,
+    ...     stride=256,
+    ...     polynomial_degree=3,
+    ...     output_plot_path="results/collimation_detection.png"
+    ... )
+    >>> top_line_model = ransac_models["top"]
+    >>> bottom_line_model = ransac_models["bottom"]
+    """
     res = {}
     fig, axes = plt.subplots(1, 2, figsize=(10, 8), constrained_layout=True)
 
     for i, side in enumerate(["top", "bottom"]):
-        band, offset = extract_raster_band_slice(raster_filepath, padding, band_height, stride, side)
-        x_local, y_local = detect_peaks_in_columns(band, peaks_distance, peaks_prominence, peaks_height, peaks_width)
+        # extract the raster band profile
+        band, offset = extract_raster_band_slice(raster_filepath, padding_dict[side], band_height, stride, side)
+
+        # scaled by columns the band
+        band_scaled = (band - band.mean(axis=0)) / band.std(axis=0)
+
+        # detect peaks by the maximum of prominence
+        x_local, y_local = detect_peaks_in_columns(band_scaled)
 
         # convert local coordinates into global image coordinates
         x_global = x_local * stride + offset[0]
         y_global = y_local + offset[1]
 
-        svr_model = make_pipeline(StandardScaler(), SVR(kernel=svr_kernel, C=svr_C, epsilon=svr_epsilon))
-        svr_model.fit(x_global.reshape(-1, 1), y_global)
+        poly_model = make_pipeline(StandardScaler(), PolynomialFeatures(degree=polynomial_degree), LinearRegression())
+        ransac = RANSACRegressor(
+            poly_model, residual_threshold=ransac_residual_threshold, max_trials=ransac_max_trial, min_samples=3
+        )
+        ransac.fit(x_global.reshape(-1, 1), y_global)
 
-        res[side] = svr_model
+        res[side] = ransac
 
         # manage the plot
         axes[i].imshow(band, cmap="gray")
@@ -105,12 +235,12 @@ def detect_horizontal_collimation_lines(
         # add all of the peaks on the plot
         axes[i].scatter(x_local, y_local, s=5, color="blue", label="peaks")
 
-        y_global_fit = svr_model.predict(x_global.reshape(-1, 1))
+        y_global_fit = ransac.predict(x_global.reshape(-1, 1))
         y_local_fit = y_global_fit - offset[1]
-        axes[i].plot(x_local, y_local_fit, color="red", label="SVR fit")
+        axes[i].plot(x_local, y_local_fit, color="red", label="polynomial fit")
 
         # add the axes title
-        axes[i].set_title(f"{side} edge estimation with SVR")
+        axes[i].set_title(f"{side} edge estimation with polynom")
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=3)
@@ -133,8 +263,71 @@ def compute_transformation(
     margin: tuple[int, int] = (0, 147),
     stride: int = 256,
     plot: bool = True,
-    output_plot_path: str | None = None,
+    output_plot_path: str | Path | None = None,
 ) -> tuple[cv2.typing.MatLike, tuple[int, int], dict[str, float]]:
+    """
+    Compute the affine transformation that maps detected collimation lines to a target geometry.
+
+    This function estimates an affine transformation aligning two detected horizontal
+    collimation lines (top and bottom) to a predefined reference layout. The transformation
+    ensures that the collimation lines are parallel and separated by a fixed physical
+    distance in pixels. Optionally, it visualizes the correspondence between source and
+    destination points.
+
+    Parameters
+    ----------
+    detected_vertical_edges : dict[str, int]
+        Dictionary containing the x-coordinates of the detected vertical boundaries.
+        Expected keys: "left" and "right".
+    detected_horizontal_ransac : dict[str, RANSACRegressor]
+        Dictionary containing the RANSAC regression models for the top and bottom
+        collimation lines. Expected keys: "top" and "bottom".
+    colimation_line_dist : int, optional
+        Expected vertical distance (in pixels) between the top and bottom collimation lines
+        in the target geometry. Default is 21771.
+    margin : tuple[int, int], optional
+        Margin (in pixels) added to the destination coordinates as (x_margin, y_margin).
+        Default is (0, 147).
+    stride : int, optional
+        Step size in pixels used to sample points along the x-axis. Default is 256.
+    plot : bool, optional
+        If True, displays the scatter plot showing source and destination points.
+        If False, closes the figure after processing. Default is True.
+    output_plot_path : str | None, optional
+        Optional file path where the generated plot will be saved. If None, no file is saved.
+
+    Returns
+    -------
+    transform.params : cv2.typing.MatLike
+        3×3 affine transformation matrix mapping source points to destination points.
+    output_size : tuple[int, int]
+        Output image size (width, height) after transformation, including margins.
+    dists : dict[str, float]
+        Dictionary containing error metrics before and after transformation:
+            - "mean_dist_before": Mean distance between source and destination before transformation.
+            - "max_dist_before": Maximum distance before transformation.
+            - "mean_dist_after": Mean distance after applying transformation.
+            - "max_dsit_after": Maximum distance after applying transformation.
+
+    Notes
+    -----
+    - The affine transformation is estimated using the `skimage.transform.AffineTransform` class.
+    - The output height is adjusted to ensure an even multiple of 2 (by subtracting 1 pixel).
+    - This function inverts the y-axis to match standard image coordinate conventions.
+
+    Example
+    -------
+    >>> tf_matrix, output_size, errors = compute_transformation(
+    ...     detected_vertical_edges={"left": 0, "right": 2048},
+    ...     detected_horizontal_ransac={"top": top_ransac, "bottom": bottom_ransac},
+    ...     colimation_line_dist=21771,
+    ...     margin=(50, 150),
+    ...     stride=128,
+    ...     output_plot_path="results/transformation.png"
+    ... )
+    >>> print(errors["mean_dist_after"])
+    2.35
+    """
     cropped_img_width = detected_vertical_edges["right"] - detected_vertical_edges["left"]
     x_dst = np.arange(0, cropped_img_width, stride)
     y_top_dst = np.repeat(0, len(x_dst))
@@ -209,8 +402,53 @@ def plot_distance_between_collimation_lines(
     detected_horizontal_ransac: dict[str, RANSACRegressor],
     stride: int = 256,
     plot: bool = True,
-    output_plot_path: str | None = None,
+    output_plot_path: str | Path | None = None,
 ) -> None:
+    """
+    Plot and optionally save the vertical distance between two detected horizontal collimation lines.
+
+    This function computes the pixel-wise vertical distance between the top and bottom
+    collimation lines estimated using RANSAC regression models. The distances are
+    evaluated at regular intervals along the x-axis and visualized as a curve. The mean
+    distance is also displayed as a red dashed horizontal line.
+
+    Parameters
+    ----------
+    detected_vertical_edges : dict[str, int]
+        Dictionary containing the x-coordinates of the detected vertical edges.
+        Expected keys: "left" and "right".
+    detected_horizontal_ransac : dict[str, RANSACRegressor]
+        Dictionary containing the RANSAC regression models for the top and bottom
+        horizontal collimation lines. Expected keys: "top" and "bottom".
+    stride : int, optional
+        Step size in pixels used to sample x-coordinates along the image width.
+        Default is 256.
+    plot : bool, optional
+        If True, the plot will be displayed. If False, it will be closed after
+        saving or computation. Default is True.
+    output_plot_path : str | None, optional
+        Optional path where the generated plot will be saved. If None, no file is saved.
+
+    Returns
+    -------
+    None
+        This function does not return any value. It produces a plot or saves it to disk.
+
+    Notes
+    -----
+    - The function assumes that the RANSAC models have already been fitted.
+    - The vertical distance is computed as the absolute difference between
+      the predicted y-values of the top and bottom lines.
+
+    Example
+    -------
+    >>> plot_distance_between_collimation_lines(
+    ...     detected_vertical_edges={"left": 0, "right": 2048},
+    ...     detected_horizontal_ransac={"top": top_ransac, "bottom": bottom_ransac},
+    ...     stride=128,
+    ...     output_plot_path="results/distances.png"
+    ... )
+    """
     x = np.arange(detected_vertical_edges["left"], detected_vertical_edges["right"], stride)
     y_top = detected_horizontal_ransac["top"].predict(x.reshape(-1, 1))
     y_bottom = detected_horizontal_ransac["bottom"].predict(x.reshape(-1, 1))
@@ -239,8 +477,44 @@ def plot_distance_between_collimation_lines(
 
 
 def extract_raster_band_slice(
-    raster_filepath: str, padding: tuple[int, int] = (0, 0), band_size: int = 3000, stride: int = 10, side: str = "left"
+    raster_filepath: str | Path,
+    padding: tuple[int, int] = (0, 0),
+    band_size: int = 3000,
+    stride: int = 10,
+    side: str = "left",
 ) -> tuple[cv2.typing.MatLike, tuple[int, int]]:
+    """
+    Extract a thin slice (band) from one side of a raster image for edge analysis.
+
+    This function reads a narrow strip from one side (left, right, top, or bottom)
+    of a raster file using Rasterio, optionally applying padding and downsampling
+    along the axis of interest using averaged resampling.
+
+    Args:
+        raster_filepath (str): Path to the raster file to read.
+        padding (tuple[int, int], optional): Number of pixels to exclude from the
+            (left/right, top/bottom) edges of the raster. Default is (0, 0).
+        band_size (int, optional): Width (or height) of the extracted slice in pixels.
+            Default is 3000.
+        stride (int, optional): Downsampling factor along the axis orthogonal to the band.
+            A higher stride reduces the number of pixels via averaging. Default is 10.
+        side (str, optional): Which side of the raster to extract. Must be one of
+            "left", "right", "top", or "bottom". Default is "left".
+
+    Returns:
+        tuple[cv2.typing.MatLike, tuple[int, int]]:
+            - subset: The extracted raster slice (2D NumPy array).
+            - origin: A tuple (col_off, row_off) giving the upper-left offset (in pixels)
+              of the extracted region within the original raster.
+
+    Raises:
+        ValueError: If `side` is not one of "left", "right", "top", or "bottom".
+
+    Example:
+        >>> subset, origin = extract_raster_band_slice("dem.tif", band_size=2000, stride=5, side="right")
+        >>> plt.imshow(subset, cmap="gray")
+        >>> print("Top-left offset:", origin)
+    """
     with rasterio.open(raster_filepath) as src:
         if side == "left":
             row_off, height = padding[1], src.height - 2 * padding[1]
@@ -279,30 +553,79 @@ def extract_raster_band_slice(
 
 
 def detect_peaks_in_columns(
-    median_image: cv2.typing.MatLike,
-    distance: float = 200,
-    prominence: float = 50,
-    height: float = 150,
-    width: float = 50,
+    image: cv2.typing.MatLike, peak_per_col: int = 1
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """
+    Detect the most prominent peaks in each column of an image.
+
+    For every column in the input image, this function extracts the intensity profile,
+    finds all local maxima using `scipy.signal.find_peaks`, and keeps the specified
+    number of peaks with the highest prominence. This is typically used to detect
+    strong vertical structures or features across an image.
+
+    Args:
+        image (cv2.typing.MatLike): 2D grayscale image or intensity map.
+        peak_per_col (int, optional): Number of most prominent peaks to retain per column.
+            Default is 1.
+
+    Returns:
+        tuple[NDArray[np.float64], NDArray[np.float64]]:
+            - peaks_x: Array of x (column) coordinates for detected peaks.
+            - peaks_y: Array of y (row) coordinates for detected peaks.
+
+    Example:
+        >>> peaks_x, peaks_y = detect_peaks_in_columns_v2(image, peak_per_col=3)
+        >>> plt.imshow(image, cmap="gray")
+        >>> plt.scatter(peaks_x, peaks_y, color="red", s=5)
+    """
     peaks_x, peaks_y = [], []
-    n_cols = median_image.shape[1]
+    n_cols = image.shape[1]
 
     for col in range(n_cols):
-        signal = median_image[:, col]
+        signal = image[:, col]
 
-        pks, _ = find_peaks(signal, distance=distance, prominence=prominence, height=height, width=width)
+        peaks, properties = find_peaks(signal, prominence=0)
+        prominences = properties["prominences"]
 
-        for y in pks:
+        top_indices = peaks[np.argsort(prominences)[-peak_per_col:]]
+
+        for x in top_indices:
             peaks_x.append(col)
-            peaks_y.append(y)
+            peaks_y.append(x)
 
     return np.array(peaks_x), np.array(peaks_y)
 
 
-def detect_vertical_edge(
+def extract_vertical_edge_points(
     image: cv2.typing.MatLike, px_threshold: int = 20, direction: str = "left"
 ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """
+    Extract candidate points corresponding to a vertical edge (left or right) in an image.
+
+    For each image row, this function locates the first (or last) pixel
+    exceeding a given intensity threshold. These edge points can be used
+    later to fit a vertical boundary (e.g., using RANSAC).
+
+    Args:
+        image (cv2.typing.MatLike): Grayscale image array.
+        px_threshold (int, optional): Pixel intensity threshold used to detect edge pixels.
+            Default is 20.
+        direction (str, optional): Edge direction to detect.
+            Must be either "left" (first pixel above threshold in each row)
+            or "right" (last pixel above threshold in each row). Default is "left".
+
+    Returns:
+        tuple[NDArray[np.int64], NDArray[np.int64]]:
+            - x_coords: 1D array of detected x-coordinates (column indices).
+            - y_coords: 1D array of corresponding y-coordinates (row indices).
+
+    Raises:
+        ValueError: If `direction` is not "left" or "right".
+
+    Example:
+        >>> x, y = extract_vertical_edge_points(image, px_threshold=30, direction="right")
+        >>> plt.scatter(x, y, s=2, color='red')
+    """
     mask = image > px_threshold
 
     if direction == "left":
@@ -318,9 +641,36 @@ def vertical_ransac(
     x: NDArray[np.generic],
     y: NDArray[np.generic],
     residual_threshold: float = 100,
-    min_samples: int = 1,
     max_trials: int = 1000,
 ) -> tuple[RANSACRegressor, dict[str, float]]:
+    """
+    Fit a vertical edge model (constant x-value) using RANSAC regression.
+
+    This function estimates the most probable vertical boundary in an image
+    given a set of (x, y) points that approximately follow a vertical line.
+    The model fitted is a constant regressor (predicting a fixed x value)
+    robust to outliers via the RANSAC algorithm.
+
+    Args:
+        x (NDArray[np.generic]): Array of x-coordinates (column indices).
+        y (NDArray[np.generic]): Array of y-coordinates (row indices).
+        residual_threshold (float, optional): Maximum residual allowed for a point
+            to be classified as an inlier. Default is 100.
+        max_trials (int, optional): Maximum number of RANSAC iterations. Default is 1000.
+
+    Returns:
+        tuple[RANSACRegressor, dict[str, float]]:
+            - ransac: Fitted RANSACRegressor model.
+            - stats: Dictionary containing:
+                * "residuals_rmse": Root Mean Squared Error (RMSE) of inliers.
+                * "inlier_percent": Percentage of inlier points.
+
+    Example:
+        >>> x_edge, y_edge = extract_vertical_edge_points(image, px_threshold=30)
+        >>> model, stats = vertical_ransac(x_edge, y_edge, residual_threshold=50)
+        >>> print(stats)
+        {'residuals_rmse': 2.1, 'inlier_percent': 93.4}
+    """
     Y = y.reshape(-1, 1)
 
     class ConstantRegressor(BaseEstimator, RegressorMixin):  # type: ignore[misc]
@@ -337,48 +687,15 @@ def vertical_ransac(
         estimator=ConstantRegressor(),
         max_trials=max_trials,
         residual_threshold=residual_threshold,
-        min_samples=min_samples,
+        min_samples=1,
     )
     ransac.fit(Y, x)
     x_pred = ransac.predict(Y)
-    stats = _compute_residuals_stats(x[ransac.inlier_mask_], x_pred[ransac.inlier_mask_])
-    stats["inlier_percent"] = np.mean(ransac.inlier_mask_) * 100
-    return ransac, stats
-
-
-def polynomial_ransac(
-    x: NDArray[np.float64],
-    y: NDArray[np.float64],
-    degree: int = 2,
-    residual_threshold: float = 50.0,
-    min_samples: int = 3,
-    max_trials: int = 1000,
-) -> tuple[RANSACRegressor, dict[str, float]]:
-    X = x.reshape(-1, 1)
-
-    base_model = make_pipeline(
-        StandardScaler(), PolynomialFeatures(degree=degree, include_bias=False), LinearRegression()
-    )
-    ransac = RANSACRegressor(
-        base_model,
-        residual_threshold=residual_threshold,
-        min_samples=min_samples,
-        random_state=0,
-        max_trials=max_trials,
-    )
-    ransac.fit(X, y)
-    y_pred = ransac.predict(X)
-    stats = _compute_residuals_stats(y[ransac.inlier_mask_], y_pred[ransac.inlier_mask_])
-    stats["inlier_percent"] = np.mean(ransac.inlier_mask_) * 100
-    return ransac, stats
-
-
-def _compute_residuals_stats(y_true: NDArray[np.float64], y_pred: NDArray[np.float64]) -> dict[str, float]:
-    return {
-        "residuals_mae": mean_absolute_error(y_true, y_pred),
-        "residuals_rmse": root_mean_squared_error(y_true, y_pred),
-        "residuals_r2": r2_score(y_true, y_pred),
+    stats = {
+        "residuals_rmse": root_mean_squared_error(x[ransac.inlier_mask_], x_pred[ransac.inlier_mask_]),
+        "inlier_percent": np.mean(ransac.inlier_mask_) * 100,
     }
+    return ransac, stats
 
 
 def _ransac_stats_to_str(stats: dict[str, float]) -> str:

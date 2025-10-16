@@ -5,13 +5,11 @@ Description: Functions for applying core preprocessing functions to images batch
 
 import os
 from collections import defaultdict
-
-import cv2
-import pandas as pd
+from pathlib import Path
+from typing import Any
 
 # from hipp.image import warp_tif_blockwise_to_dst
-from hipp.image import warp_tif_blockwise
-from hipp.kh9pc.core import compute_cropping_matrix, image_mosaic, pick_points_in_corners
+from hipp.kh9pc.core import collimation_rectification, image_mosaic
 from hipp.kh9pc.image_mosaic import compute_sequential_alignment, mosaic_images
 
 
@@ -95,105 +93,105 @@ def join_images(
             mosaic_images(matrix, output_image_path, max_workers, verbose)
 
 
-def select_all_cropping_points(
-    images_directory: str, csv_file: str, grid_shape: tuple[int, int] = (5, 20), clahe_enhancement: bool = True
-) -> None:
-    if os.path.exists(csv_file):
-        df = pd.read_csv(csv_file)
-        done_images = set(df["image_id"])
-        records = df.to_dict("records")
-    else:
-        done_images = set()
-        records = []
-
-    for filename in sorted(os.listdir(images_directory)):
-        if not filename.endswith(".tif") or filename.replace(".tif", "") in done_images:
-            continue
-
-        image_path = os.path.join(images_directory, filename)
-        coords = {"image_id": filename.replace(".tif", "")}
-        points = pick_points_in_corners(image_path, grid_shape, clahe_enhancement, False)
-        if points is None:
-            return
-
-        for key, coord in points.items():
-            coords[f"{key}_x"], coords[f"{key}_y"] = coord  # type: ignore [assignment]
-
-        # Ajouter la nouvelle ligne
-        records.append(coords)
-
-        # Sauvegarde continue
-        df_out = pd.DataFrame(records)
-        df_out.to_csv(csv_file, index=False)
-
-    try:
-        cv2.destroyWindow("Corner Point Picker")
-    except cv2.error:
-        pass
-
-
-def crop_images(
-    images_directory: str,
-    csv_file: str,
-    output_directory: str,
+def iter_collimation_rectification(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    qc_dir: str | Path,
+    collimation_lines_detection_kwargs: dict[str, Any] | None = None,
+    vertical_edges_detection_kwargs: dict[str, Any] | None = None,
+    transformation_kwargs: dict[str, Any] | None = None,
+    max_workers: int = 4,
     overwrite: bool = False,
-    dry_run: bool = False,
+    verbose: bool = True,
 ) -> None:
     """
-    Crop and rotate .tif images based on coordinates provided in a CSV file.
+    Batch processing of raster rectification using collimation line detection.
 
-    For each image in the input directory, this function looks up its corresponding
-    cropping points in the CSV file, rotates the image to align the top edge,
-    crops it accordingly, and saves the result in the output directory.
+    This function iterates through all `.tif` rasters in a given directory and applies
+    the `collimation_rectification()` function to each file. The process corrects
+    optical or geometric distortions in camera images or scanned rasters by detecting
+    horizontal and vertical collimation lines, computing a geometric transformation,
+    and warping the image.
 
-    Args:
-        images_directory (str): Path to the directory containing input .tif images.
-        csv_file (str): Path to the CSV file containing image IDs and cropping coordinates.
-                        The CSV must have an 'image_id' index and columns for each corner point:
-                        top_left_x, top_left_y, top_right_x, top_right_y, etc.
-        output_directory (str): Directory to save the cropped and rotated images.
-        overwrite (bool, optional): If False, skip images whose output already exists. Defaults to False.
+    Parameters
+    ----------
+    input_dir : str or Path
+        Directory containing input raster files (`.tif`) to be rectified.
+    output_dir : str or Path
+        Directory where rectified rasters will be written. It must exist or be creatable.
+    qc_dir : str or Path
+        Directory where quality control (QC) plots and diagnostics will be saved.
+    collimation_lines_detection_kwargs : dict, optional
+        Additional keyword arguments passed to `detect_horizontal_collimation_lines()`.
+    vertical_edges_detection_kwargs : dict, optional
+        Additional keyword arguments passed to `detect_vertical_edges()`.
+    transformation_kwargs : dict, optional
+        Additional keyword arguments passed to `compute_transformation()`.
+    max_workers : int, optional
+        Number of parallel workers to use for image warping. Default is 4.
+    overwrite : bool, optional
+        If True, existing output rasters will be overwritten. If False (default),
+        files that already exist will be skipped.
+    verbose : bool, optional
+        If True, prints progress messages to the console. Default is True.
+
+    Returns
+    -------
+    None
+        The function writes rectified rasters and QC plots to disk.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input directory does not exist or is empty.
+    RuntimeError
+        If any raster rectification fails unexpectedly.
+    ValueError
+        If no valid raster files are found in the input directory.
+
+    Notes
+    -----
+    - Only `.tif` files in the input directory are processed.
+    - QC plots are saved in structured subdirectories under `qc_dir`.
+    - If `overwrite=False`, already processed rasters will be skipped silently.
+    - The function calls `collimation_rectification()` internally for each raster.
+
+    Example
+    -------
+    >>> iter_collimation_rectification(
+    ...     input_dir="raw_images/",
+    ...     output_dir="rectified_images/",
+    ...     qc_dir="qc_results/",
+    ...     collimation_lines_detection_kwargs={"sigma": 2.0},
+    ...     transformation_kwargs={"method": "affine"},
+    ...     max_workers=8,
+    ...     overwrite=False,
+    ...     verbose=True
+    ... )
+    Skipping IMG_0001.tif : output already exists
+    Collimation rectification for IMG_0002.tif :
+        -[1/4] Estimation of collimation lines...
+        -[2/4] Detection of vertical lines...
+        -[3/4] Warping image (can take some times)...
+        -[4/4] Estimation of collimation lines after transformation...
     """
-    # Load the CSV into a DataFrame indexed by image_id
-    df = pd.read_csv(csv_file, index_col="image_id")
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
 
-    os.makedirs(output_directory, exist_ok=True)
+    for input_raster_path in sorted(input_dir.glob("*.tif")):
+        output_raster_path = output_dir / input_raster_path.name
 
-    for filename in os.listdir(images_directory):
-        if filename.endswith(".tif"):
-            image_id = filename.replace(".tif", "")
-            input_path = os.path.join(images_directory, filename)
-            output_path = os.path.join(output_directory, filename)
-
-            # Skip if output already exists and overwrite is disabled
-            if os.path.exists(output_path) and not overwrite:
-                print(f"[{image_id}] Skipped: output already exists at '{output_path}'")
-                continue
-
-            # Skip if image_id is not in the CSV
-            if image_id not in df.index:
-                print(f"[{image_id}] No cropping points found in CSV. Please update '{csv_file}'")
-                continue
-
-            # Retrieve the four corner points from the CSV and convert to int
-            row = df.loc[image_id]
-            points = [
-                (int(row["top_left_x"]), int(row["top_left_y"])),
-                (int(row["top_right_x"]), int(row["top_right_y"])),
-                (int(row["bottom_right_x"]), int(row["bottom_right_y"])),
-                (int(row["bottom_left_x"]), int(row["bottom_left_y"])),
-            ]
-
-            cropping_matrix, output_size = compute_cropping_matrix(input_path, points)
-            # Print cropping info and perform cropping + rotation
-            print(f"Image '{image_id}' :")
-            print(f"\t- Cropping points : {points}")
-
-            print(f"\t- Output size : {output_size}")
-            print(f"\t- Transformation matrix : \n{cropping_matrix}")
-
-            if not dry_run:
-                warp_tif_blockwise(
-                    input_path, output_path, cropping_matrix, output_size, pbar=True, pbar_desc=f"[{image_id}] warping"
-                )
-            print(f"\t- Image saved at '{output_path}'\n")
+        if output_raster_path.exists() and not overwrite:
+            if verbose:
+                print(f"Skipping {input_raster_path.name} : output already exists")
+        else:
+            collimation_rectification(
+                input_raster_path,
+                output_raster_path,
+                qc_dir,
+                collimation_lines_detection_kwargs,
+                vertical_edges_detection_kwargs,
+                transformation_kwargs,
+                verbose,
+                max_workers,
+            )
