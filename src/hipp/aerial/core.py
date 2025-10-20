@@ -21,19 +21,14 @@ from hipp.aerial.fiducials import (
     MIDSIDE_KEYS,
     SUBPIXEL_CORNER_FIDUCIAL_NAME,
     SUBPIXEL_MIDSIDE_FIDUCIAL_NAME,
-    _get_fiducial_template_paths,
-    _get_groups,
     compute_fiducial_transformation,
     compute_principal_point,
-    filter_by_angle,
-    filter_scores_by_local_median,
-    get_angle_row,
+    get_fiducial_template_paths,
     get_pseudo_fiducial_paths,
-    group_row_xy,
     warp_fiducial_coordinates,
 )
 from hipp.image import apply_clahe, read_image_block_grayscale, resize_img
-from hipp.math import transform_coord
+from hipp.math import nmad, transform_coord
 from hipp.tools import pick_point_from_image
 
 
@@ -257,111 +252,94 @@ def iter_detect_pseudo_fiducials(
 
 
 def filter_detected_fiducials(
-    detected_fiducials_df: pd.DataFrame,
-    score_threshold: float = 0.1,
-    angle_threshold: float = 0.005,
+    detected_fiducials_df: pd.DataFrame, score_threshold: float = 0.1, sigma: float = 3
 ) -> pd.DataFrame:
     """
-    Filters detected fiducials based on matching score and angle thresholds to improve data quality.
+    Filters detected fiducials based on correlation scores and spatial consistency,
+    and computes the principal point for each image.
 
-    This function applies local median filtering on scores and filters by angle deviation, then combines the filtered results. It also recalculates the principal points for each detection, warning if any principal points could not be computed. The output is a cleaned DataFrame with filtered fiducials.
+    The function performs the following steps:
+    1. Extracts `_score` columns from the input DataFrame and constructs a mask
+       for fiducials with scores above the median minus `score_threshold`.
+    2. Extracts `_x` and `_y` columns representing fiducial coordinates, and
+       creates a mask for points that lie within `sigma` Normalized Median Absolute
+       Deviations (NMAD) from the median coordinate of each fiducial.
+    3. Combines the score mask and spatial mask to generate a final mask of valid
+       fiducials. Invalid points are replaced with `NaN`.
+    4. Computes the principal point `(principal_point_x, principal_point_y)` for
+       each image based on the filtered fiducials.
+    5. Issues a warning if the principal point could not be computed for any image.
+
+    Parameters
+    ----------
+    detected_fiducials_df : pd.DataFrame
+        DataFrame containing detected fiducials for each image. Expected to have:
+            - Columns ending with `_score` for the detection scores.
+            - Columns ending with `_x` or `_y` for fiducial coordinates.
+            - Index representing image identifiers.
+    score_threshold : float, optional
+        Margin below the median score used to accept fiducials (default: 0.1).
+    sigma : float, optional
+        Number of NMADs used to define acceptable coordinate deviation
+        from the median (default: 3).
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame of fiducial coordinates with the following properties:
+            - Coordinates not passing the masks are set to `NaN`.
+            - Adds columns `principal_point_x` and `principal_point_y`.
+            - Maintains the same index as `detected_fiducials_df`.
+
+    Warnings
+    --------
+    A `UserWarning` is raised if the principal point cannot be computed for
+    any images, listing the affected image identifiers.
+
+    Notes
+    -----
+    - The NMAD (Normalized Median Absolute Deviation) is used instead of standard
+      deviation to robustly handle outliers in fiducial coordinates.
+    - The function assumes the presence of a `compute_principal_point(row)` function
+      that returns the principal point as a tuple or list `(x, y)` for a row of coordinates.
     """
+    # construct the score df with only _score columns
+    df_score = detected_fiducials_df.filter(regex=r"(_score)$")
+    df_score.columns = df_score.columns.str.replace(r"_score$", "", regex=True)
 
-    # filtering with local median and remove score columns
-    filtered_scores = filter_scores_by_local_median(detected_fiducials_df, score_threshold)
+    # construct the x y df with only columns finishing by _x or _y
+    df_xy = detected_fiducials_df.filter(regex=r"(_x|_y)$")
 
-    filtered_angles = filter_by_angle(detected_fiducials_df, angle_threshold)
+    # create the first score mask where we accept all score above the median - score_threshold
+    mask_score = df_score >= df_score.median() - score_threshold
 
-    # combine both filtering
-    combined = filtered_scores.copy()
-    for col in filtered_scores.columns:
-        if col in filtered_angles.columns:
-            combined[col] = combined[col].fillna(filtered_angles[col])
+    # create the second mask where we accept all point if their are not too far from median point
+    upper_threshold = df_xy.apply(lambda col: np.median(col) + sigma * nmad(col), axis=0)
+    lower_threshold = df_xy.apply(lambda col: np.median(col) - sigma * nmad(col), axis=0)
+
+    mask_coord_xy = (df_xy < upper_threshold) & (df_xy > lower_threshold)
+
+    mask_coord = mask_coord_xy.T.groupby(mask_coord_xy.columns.str.rsplit("_", n=1).str[0]).agg(all).T
+
+    final_mask = (mask_score | mask_coord) & (df_score > 0.5)
+
+    final_mask_xy = pd.concat([final_mask.add_suffix("_x"), final_mask.add_suffix("_y")], axis=1).sort_index(axis=1)
+
+    filtered_xy = df_xy.where(final_mask_xy, np.nan)
 
     # compute principal points and store them in principal_point_x, principal_point_y
-    combined[["principal_point_x", "principal_point_y"]] = combined.apply(
+    filtered_xy[["principal_point_x", "principal_point_y"]] = filtered_xy.apply(
         lambda row: pd.Series(compute_principal_point(row)), axis=1
     )
     # Check for missing principal points
-    missing_mask = combined[["principal_point_x", "principal_point_y"]].isna().any(axis=1)
+    missing_mask = filtered_xy[["principal_point_x", "principal_point_y"]].isna().any(axis=1)
     if missing_mask.any():
-        missing_ids = combined.index[missing_mask].tolist()
+        missing_ids = filtered_xy.index[missing_mask].tolist()
         warnings.warn(
             f"Principal point could not be computed for {len(missing_ids)} detection(s): {missing_ids}",
             UserWarning,
         )
-    return combined
-
-
-def filter_detected_fiducials_v2(detected_fiducials_df: pd.DataFrame, score_threshold: float = 0.1) -> pd.DataFrame:
-    # we first create a dataset with only good score detection
-    score_cols = [c for c in detected_fiducials_df.columns if "_score" in c]
-    coord_cols = [c for c in detected_fiducials_df.columns if "_score" not in c]
-
-    score_df = detected_fiducials_df[score_cols]
-    coord_df = detected_fiducials_df[coord_cols].apply(group_row_xy, axis=1)
-
-    score_medians = score_df.median()
-    score_mask = score_df > (score_medians - score_threshold)
-    score_mask.columns = score_mask.columns.str.replace("_score", "")
-
-    # apply score mask to the coord df
-    masked_coords = coord_df.where(score_mask, (np.nan, np.nan))
-
-    filtered_angle_df = masked_coords.apply(get_angle_row, axis=1)
-
-    # we compute the inliers angles threshold
-    lower_angle = filtered_angle_df.mean() - 2 * filtered_angle_df.std()
-    upper_angle = filtered_angle_df.mean() + 2 * filtered_angle_df.std()
-
-    # we compute a df angle with all detection
-    angle_df = coord_df.apply(get_angle_row, axis=1)
-
-    angle_mask = (angle_df >= lower_angle) & (angle_df <= upper_angle)
-
-    groups = _get_groups(detected_fiducials_df)
-    propagate_angle_mask = angle_mask.copy()
-    # when an angle is valid it meens that the 3 points are valid
-    for image_id, row in angle_mask.iterrows():
-        for group in groups:
-            for i in range(4):
-                if row[group[i]]:
-                    propagate_angle_mask.loc[image_id, group[(i - 1) % 4]] = True
-                    propagate_angle_mask.loc[image_id, group[(i + 1) % 4]] = True
-
-    final_mask = propagate_angle_mask | score_mask
-    results = detected_fiducials_df[coord_cols].copy()
-
-    for image_id, row in final_mask.iterrows():
-        for key, value in row.items():
-            if not value:
-                results.loc[image_id, f"{key}_x"] = np.nan
-                results.loc[image_id, f"{key}_y"] = np.nan
-
-    return results
-
-
-def open_camera_model_intrinsics(csv_file: str) -> tuple[float, pd.Series]:
-    """
-    Load scanning resolution and true fiducial positions from a camera model CSV file.
-
-    :param csv_file: Path to the CSV file containing camera intrinsics.
-    :return: A tuple containing the scanning resolution (in mm) and a Series of fiducial positions.
-    :raises ValueError: If the file format is invalid or required keys are missing.
-    """
-    try:
-        df_row = pd.read_csv(csv_file).iloc[0]
-        df_row.index = df_row.index.str.replace("_mm", "", regex=False)
-        scanning_resolution_mm = float(df_row["pixel_pitch"])
-
-        fiducials_keys = [key + suffix for key in CORNER_KEYS + MIDSIDE_KEYS for suffix in ["_x", "_y"]]
-        true_fiducials_mm = df_row[fiducials_keys]
-        return scanning_resolution_mm, true_fiducials_mm
-    except Exception as e:
-        raise ValueError(
-            "Invalid CSV format. Expected structure similar to:\n"
-            "https://github.com/shippp/hipp/blob/main/notebooks/data/aerial/camera_model_intrinsics.csv"
-        ) from e
+    return filtered_xy
 
 
 def compute_transformations(
@@ -483,7 +461,7 @@ def detect_fiducials(
     if grid_size % 2 == 0:
         raise ValueError("grid_size must be an odd number.")
 
-    paths = _get_fiducial_template_paths(fiducials_directory)
+    paths = get_fiducial_template_paths(fiducials_directory)
 
     corner_config = (
         {

@@ -16,10 +16,9 @@ from matplotlib.lines import Line2D
 from rasterio.windows import Window
 
 from hipp.aerial.fiducials import (
-    _get_fiducial_template_paths,
     _get_groups,
     compute_principal_point,
-    get_distance_to_med_df,
+    get_fiducial_template_paths,
     get_pseudo_fiducial_paths,
     warp_fiducial_coordinates,
 )
@@ -79,8 +78,13 @@ def plot_fiducials_filtering(
     output_plot_path: str | None = None,
 ) -> None:
     cols = filtered_detected_fiducials_df.columns.intersection(detected_fiducials_df.columns)
-
-    med_df = get_distance_to_med_df(detected_fiducials_df[cols])
+    df_xy = detected_fiducials_df[cols]
+    median_series = df_xy.median()
+    med_df = (
+        df_xy.T.groupby(df_xy.columns.str.rsplit("_", n=1).str[0])
+        .agg(lambda row: np.linalg.norm(np.array(row) - np.array(median_series[row.index])))
+        .T
+    )
 
     n = len(med_df.columns)
     fig, axs = plt.subplots(n, 1, figsize=(20, 2 * n), sharex=True, sharey=True)
@@ -270,7 +274,7 @@ def plot_fiducial_templates(fiducials_directory: str) -> None:
     Each subplot shows a grayscale fiducial template, with titles indicating the type of template for easy identification.
     """
 
-    template_paths = _get_fiducial_template_paths(fiducials_directory)
+    template_paths = get_fiducial_template_paths(fiducials_directory)
 
     fig, axes = plt.subplots(2, 2, figsize=(8, 8))
     axes = axes.flatten()

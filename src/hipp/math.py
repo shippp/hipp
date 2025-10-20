@@ -3,7 +3,7 @@ Copyright (c) 2025 HIPP developers
 """
 
 import math
-from typing import cast
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -124,3 +124,9 @@ def affine_matrix(
     matrix = np.array([[a, c, translate_x], [b, d, translate_y], [0, 0, 1]], dtype=np.float32)
 
     return matrix
+
+
+def nmad(x: Any) -> float:
+    """Compute the Normalized Median Absolute Deviation (NMAD)."""
+    x = np.asarray(x)
+    return float(1.4826 * np.median(np.abs(x - np.median(x))))

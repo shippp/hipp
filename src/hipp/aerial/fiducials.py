@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from hipp.math import angle_between_three_points, estimate_transformation_matrix, transform_coord
+from hipp.math import estimate_transformation_matrix, transform_coord
 
 CORNER_KEYS = ["corner_top_left", "corner_top_right", "corner_bottom_right", "corner_bottom_left"]
 MIDSIDE_KEYS = ["midside_left", "midside_top", "midside_right", "midside_bottom"]
@@ -175,30 +175,6 @@ def filter_scores_by_local_median(df: pd.DataFrame, score_threshold: float = 0.1
     return df
 
 
-def filter_by_angle(df: pd.DataFrame, angle_threshold: float = 0.005) -> pd.DataFrame:
-    """
-    Filters all detections in a DataFrame based on the angle validity of their keypoints.
-
-    Each row in the DataFrame is processed by `filter_detection_by_angle`, which sets invalid keypoints
-    (those forming nearly right angles) to NaN based on the provided angle threshold.
-
-    Parameters:
-        df (pd.DataFrame): Input DataFrame containing detections with keypoint coordinates.
-        angle_threshold (float): Maximum deviation from 90 degrees (in degrees) to consider a point valid.
-                                 Defaults to 0.005.
-
-    Returns:
-        pd.DataFrame: A DataFrame with invalid keypoints set to NaN and '_score' columns removed.
-    """
-    df = df.copy()
-    df = df.apply(lambda row: _filter_detection_by_angle(row, angle_threshold=angle_threshold), axis=1)
-
-    # Drop all columns that end with '_score'
-    score_cols = [col for col in df.columns if col.endswith("_score")]
-    df.drop(columns=score_cols, inplace=True)
-    return df
-
-
 ####################################################################################################################################
 #                                                   PRIVATE FUNCTIONS
 ####################################################################################################################################
@@ -218,45 +194,6 @@ def _get_groups(detection: pd.Series | pd.DataFrame) -> list[list[str]]:
     if all(f"{key}_x" in keys and f"{key}_y" in keys for key in CORNER_KEYS):
         result.append(CORNER_KEYS)
     return result
-
-
-def _filter_detection_by_angle(
-    detection: pd.Series,
-    angle_threshold: float = 0.005,
-) -> pd.Series:
-    """
-    Filters keypoints in a single detection based on their geometric angle consistency.
-
-    For each triplet of neighboring keypoints, calculates the angle formed. If the angle
-    deviates from 90 degrees by less than the threshold, the keypoints are marked as valid.
-    Otherwise, their coordinates are set to NaN.
-
-    Parameters:
-        detection (pd.Series): A row from the DataFrame representing a single detection, with keypoint coordinates.
-        angle_threshold (float): Maximum deviation from 90 degrees (in degrees) to consider a point valid.
-                                 Defaults to 0.005.
-
-    Returns:
-        pd.Series: The modified detection with invalid keypoints set to NaN.
-    """
-    detection = detection.copy()
-    result = {}
-    for group in _get_groups(detection):
-        for i in range(4):
-            point_names = [group[(i - 1) % 4], group[i], group[(i + 1) % 4]]
-            points = [(detection[f"{name}_x"], detection[f"{name}_y"]) for name in point_names]
-            angle = angle_between_three_points(*points)  # type: ignore[arg-type]
-            for name in point_names:
-                if abs(90 - angle) < angle_threshold:
-                    result[name] = True
-                elif name not in result:
-                    result[name] = False
-
-    for key, valid in result.items():
-        if not valid:
-            detection[f"{key}_x"] = np.nan
-            detection[f"{key}_y"] = np.nan
-    return detection
 
 
 def _compute_center_square(points: cv2.typing.MatLike) -> tuple[float, float] | None:
@@ -287,7 +224,7 @@ def _compute_center_square(points: cv2.typing.MatLike) -> tuple[float, float] | 
     return tuple(np.mean(centers, axis=0))
 
 
-def _get_fiducial_template_paths(fiducials_directory: str) -> dict[str, str]:
+def get_fiducial_template_paths(fiducials_directory: str) -> dict[str, str]:
     paths = {
         "corner_fiducial_path": os.path.join(fiducials_directory, CORNER_FIDUCIAL_NAME),
         "midside_fiducial_path": os.path.join(fiducials_directory, MIDSIDE_FIDUCIAL_NAME),
@@ -295,43 +232,6 @@ def _get_fiducial_template_paths(fiducials_directory: str) -> dict[str, str]:
         "subpixel_midside_fiducial_path": os.path.join(fiducials_directory, SUBPIXEL_MIDSIDE_FIDUCIAL_NAME),
     }
     return {key: path for key, path in paths.items() if os.path.exists(path)}
-
-
-def get_angle_row(detection: pd.Series) -> pd.Series:
-    grouped_detection = group_row_xy(detection)
-    result = {}
-    groups = []
-    if all(key in grouped_detection.index for key in MIDSIDE_KEYS):
-        groups.append(MIDSIDE_KEYS)
-    if all(key in grouped_detection.index for key in CORNER_KEYS):
-        groups.append(CORNER_KEYS)
-
-    for group in groups:
-        for i in range(4):
-            point_names = [group[(i - 1) % 4], group[i], group[(i + 1) % 4]]
-            points = [grouped_detection[name] for name in point_names]
-            angle = angle_between_three_points(*points)  # type: ignore[arg-type]
-            result[group[i]] = angle
-    return pd.Series(result, name=detection.name)
-
-
-def get_distance_to_med_df(coords_df: pd.DataFrame) -> pd.DataFrame:
-    if not all(coords_df.columns.str.endswith(("_x", "_y"))):
-        raise ValueError("All keys of the df must end with '_x' or '_y'")
-
-    s_med_grouped = group_row_xy(coords_df.median())
-    grouped_df = coords_df.apply(group_row_xy, axis=1)
-
-    # compute the distance of each point to is median point
-    dist_df = grouped_df.apply(
-        lambda row: {
-            f"{k}_dist": np.linalg.norm(np.array(row[k]) - np.array(s_med_grouped[k])) for k in s_med_grouped.index
-        },
-        axis=1,
-        result_type="expand",
-    )
-
-    return dist_df
 
 
 def get_pseudo_fiducial_paths(fiducials_directory: str | Path) -> dict[str, tuple[Path, tuple[int, int]]]:
@@ -342,22 +242,3 @@ def get_pseudo_fiducial_paths(fiducials_directory: str | Path) -> dict[str, tupl
         template_anchor = (int(df.loc[0, 0]), int(df.loc[0, 1]))
         results[key] = (p, template_anchor)
     return results
-
-
-def group_row_xy(row: pd.Series) -> pd.Series:
-    result = {}
-    used_cols = set()
-    # Find all columns ending with _x and _y
-    x_cols = [c for c in row.index if c.endswith("_x")]
-    for x_col in x_cols:
-        base = x_col[:-2]  # remove "_x"
-        y_col = base + "_y"
-        result[base] = (row[x_col], row[y_col])
-        used_cols.update([x_col, y_col])
-
-    # Add remaining columns unchanged
-    for c in row.index:
-        if c not in used_cols:
-            result[c] = row[c]
-
-    return pd.Series(result, name=row.name)

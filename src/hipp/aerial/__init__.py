@@ -8,7 +8,6 @@ from .core import (
     iter_detect_fiducials,
     iter_detect_pseudo_fiducials,
     iter_image_restitution,
-    open_camera_model_intrinsics,
     warp_fiducials_df,
 )
 
@@ -20,7 +19,6 @@ __all__ = [
     "iter_detect_fiducials",
     "iter_detect_pseudo_fiducials",
     "iter_image_restitution",
-    "open_camera_model_intrinsics",
     "warp_fiducials_df",
     "qc",
     "fiducials",

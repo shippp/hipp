@@ -93,7 +93,11 @@ class Intrinsics:
         data = {"focal_length": self.focal_length, "pixel_pitch": self.pixel_pitch}
         data.update(self.true_fiducials_mm.to_dict())
         data.update({"principal_point_x": self.principal_point[0], "principal_point_y": self.principal_point[1]})
-        df = pd.DataFrame([data])
+        renamed_data = {
+            (f"{k}_mm" if k.endswith(("_x", "_y")) else k): v
+            for k, v in data.items()
+        }
+        df = pd.DataFrame([renamed_data])
         df.to_csv(csv_file, index=False)
 
     @classmethod
