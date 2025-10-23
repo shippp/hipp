@@ -7,15 +7,19 @@ import glob
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
 
 # import pyvips
-from hipp.image import warp_raster_pixels
-from hipp.kh9pc.lines_processing import (
-    compute_transformation,
-    detect_horizontal_collimation_lines,
+from hipp.image import remap_tif_blockwise
+from hipp.kh9pc.collimation_lines import (
+    detect_collimation_lines,
     detect_vertical_edges,
+    make_inverse_tps_function,
+    make_tps_points,
+)
+from hipp.kh9pc.quality_control import (
+    plot_collimation_gradient,
     plot_distance_between_collimation_lines,
+    plot_tps_points,
 )
 
 ####################################################################################################################################
@@ -96,93 +100,66 @@ def collimation_rectification(
     input_raster_path: str | Path,
     output_raster_path: str | Path,
     qc_dir: str | Path,
-    collimation_lines_detection_kwargs: dict[str, Any] | None = None,
-    vertical_edges_detection_kwargs: dict[str, Any] | None = None,
-    transformation_kwargs: dict[str, Any] | None = None,
+    bg_px_threshold: int = 20,
+    collimation_line_dist: int = 21770,
     verbose: bool = True,
-    max_workers: int = 4,
 ) -> None:
     """
-    Perform geometric rectification of a raster based on collimation line detection.
+    Perform collimation rectification on a raster image using Thin Plate Spline (TPS) warping.
 
-    This function detects horizontal and vertical collimation lines in a raster image,
-    computes the geometric transformation required to correct optical or alignment
-    distortions, and warps the image accordingly. It also generates quality control (QC)
-    plots showing detected features and line spacing before and after rectification.
+    This function detects the horizontal and vertical collimation features in a raster image,
+    estimates the geometric deformation, and rectifies the image by applying an inverse
+    Thin Plate Spline (TPS) transformation. It also produces several quality control (QC) plots
+    illustrating each processing step, including line detection, distance consistency,
+    and transformation effects.
 
-    The process includes:
-      1. Detection of horizontal collimation lines.
-      2. Detection of vertical edges.
-      3. Estimation and application of the transformation matrix.
-      4. Post-rectification evaluation and visualization.
+    Args:
+        input_raster_path (str | Path):
+            Path to the input raster image to be rectified.
+        output_raster_path (str | Path):
+            Path where the geometrically rectified image will be saved.
+        qc_dir (str | Path):
+            Directory where quality control plots will be stored.
+        bg_px_threshold (int, optional):
+            Minimum pixel intensity difference used to detect vertical edges. Defaults to 20.
+        collimation_line_dist (int, optional):
+            Expected distance (in pixels) between the top and bottom collimation lines
+            in the rectified image. Defaults to 21770.
+        verbose (bool, optional):
+            If True, prints progress updates during processing. Defaults to True.
 
-    Parameters
-    ----------
-    input_raster_path : str or Path
-        Path to the input raster to be rectified.
-    output_raster_path : str or Path
-        Path where the rectified raster will be saved.
-    qc_dir : str or Path
-        Directory where quality control (QC) plots and diagnostics will be saved.
-    collimation_lines_detection_kwargs : dict, optional
-        Additional keyword arguments passed to `detect_horizontal_collimation_lines()`.
-    vertical_edges_detection_kwargs : dict, optional
-        Additional keyword arguments passed to `detect_vertical_edges()`.
-    transformation_kwargs : dict, optional
-        Additional keyword arguments passed to `compute_transformation()`.
-    verbose : bool, optional
-        If True, prints progress messages to the console. Default is True.
-    max_workers : int, optional
-        Number of parallel workers to use during image warping. Default is 4.
+    Returns:
+        None
 
-    Returns
-    -------
-    None
-        The function writes the rectified raster and several QC plots to disk.
+    Workflow:
+        1. Detect top and bottom collimation lines using RANSAC polynomial fitting.
+        2. Detect left and right vertical edges using robust RANSAC regression.
+        3. Estimate and plot the distance between the detected collimation lines.
+        4. Compute source and destination TPS control points from detected features.
+        5. Apply an inverse TPS transformation to rectify the image geometry.
+        6. Re-detect collimation lines after transformation for validation.
+        7. Generate and save all QC plots (line detection, distances, gradients).
 
-    Raises
-    ------
-    FileNotFoundError
-        If the input raster file does not exist.
-    ValueError
-        If the detected collimation lines or transformation parameters are invalid.
-    RuntimeError
-        If the rectification process fails during warping or transformation.
+    Notes:
+        - The function assumes that the raster image contains clear collimation marks.
+        - All intermediate QC results are saved to `qc_dir` for traceability.
+        - The transformation preserves image size consistency using computed `output_size`.
+        - The Thin Plate Spline model provides a smooth, non-linear geometric correction.
 
-    Notes
-    -----
-    - The function assumes that the input raster contains visible collimation lines
-      that can be automatically detected.
-    - QC plots are saved in structured subdirectories under `qc_dir` for traceability.
-    - Warping uses bicubic interpolation for smooth results.
-    - Padding is set to zero after rectification because the output image is cropped.
-
-    Example
-    -------
-    >>> collimation_rectification(
-    ...     input_raster_path="raw/camera_image.tif",
-    ...     output_raster_path="rectified/camera_image_rectified.tif",
-    ...     qc_dir="qc_results/",
-    ...     collimation_lines_detection_kwargs={"sigma": 2.0},
-    ...     transformation_kwargs={"method": "affine"},
-    ...     verbose=True,
-    ...     max_workers=8
-    ... )
-    Collimation rectification for camera_image.tif :
-        -[1/4] Estimation of collimation lines...
-        -[2/4] Detection of vertical lines...
-        -[3/4] Warping image (can take some times)...
-        -[4/4] Estimation of collimation lines after transformation...
+    Example:
+        >>> collimation_rectification(
+        ...     input_raster_path="raw_scene.tif",
+        ...     output_raster_path="rectified_scene.tif",
+        ...     qc_dir="quality_control/",
+        ...     bg_px_threshold=25,
+        ...     collimation_line_dist=21800,
+        ...     verbose=True
+        ... )
     """
     # transform to Path every paths
     input_raster_path = Path(input_raster_path)
     output_raster_path = Path(output_raster_path)
     qc_dir = Path(qc_dir)
-
-    # transform none kwargs to empty dict
-    collimation_lines_detection_kwargs = collimation_lines_detection_kwargs or {}
-    vertical_edges_detection_kwargs = vertical_edges_detection_kwargs or {}
-    transformation_kwargs = transformation_kwargs or {}
 
     if verbose:
         print(f"Collimation rectification for {input_raster_path.name} : ")
@@ -190,11 +167,10 @@ def collimation_rectification(
     # Detect collimation lines
     if verbose:
         print("\t-[1/4] Estimation of collimation lines...")
-    collimation_lines = detect_horizontal_collimation_lines(
+    collimation_lines = detect_collimation_lines(
         input_raster_path,
         plot=False,
         output_plot_path=qc_dir / "collimation_lines" / f"{input_raster_path.stem}.png",
-        **collimation_lines_detection_kwargs,
     )
 
     # Detect vertical lines
@@ -202,57 +178,67 @@ def collimation_rectification(
         print("\t-[2/4] Detection of vertical lines...")
     vertical_edges = detect_vertical_edges(
         input_raster_path,
+        bg_px_threshold,
         plot=False,
         output_plot_path=qc_dir / "vertical_edges" / f"{input_raster_path.stem}.png",
-        **vertical_edges_detection_kwargs,
     )
 
-    # Plot the distance between collimation lines for quality control
-    plot_distance_between_collimation_lines(
-        vertical_edges,
-        collimation_lines,
-        plot=False,
-        output_plot_path=qc_dir / "distance_between_collimation_lines" / f"{input_raster_path.stem}.png",
-    )
+    # make the source and destination points
+    src_points, dst_points, output_size = make_tps_points(vertical_edges, collimation_lines, collimation_line_dist)
 
-    # compute the transformation and plot the transformation plot
-    tf_matrix, output_img_size, _ = compute_transformation(
-        vertical_edges,
-        collimation_lines,
+    # plot them for quality control
+    plot_tps_points(
+        src_points,
+        dst_points,
+        output_size,
         plot=False,
         output_plot_path=qc_dir / "transformations" / f"{input_raster_path.stem}.png",
-        **transformation_kwargs,
     )
 
-    # warp the image with the previously computed transformation (use bicubic interpolation)
+    # create the inverse Thin plate Spline interpolation (dst -> src) using a low-reolution resampling
+    inverse_remap_function = make_inverse_tps_function(src_points, dst_points)
+
+    # remap the image with the previously computed function inverse_remap_function
     if verbose:
         print("\t-[3/4] Warping image (can take some times)...")
-    warp_raster_pixels(input_raster_path, output_raster_path, tf_matrix, output_img_size, max_workers)
+    remap_tif_blockwise(
+        input_raster_path,
+        output_raster_path,
+        inverse_remap_function,
+        output_size,
+        block_size=2**13,
+        pbar_desc=f"{input_raster_path.name} remapping",
+    )
 
     # detect collimation lines after the transformation
     if verbose:
         print("\t-[4/4] Estimation of collimation lines after transformation...")
 
-    # set the padding to (0,0) because the output image is cropped
-    kwargs = collimation_lines_detection_kwargs.copy()
-    kwargs.update({"padding_dict": {"top": (0, 0), "bottom": (0, 0)}})
-
-    collimation_lines_after_transform = detect_horizontal_collimation_lines(
+    collimation_lines_after_transform = detect_collimation_lines(
         output_raster_path,
+        0.02,
         plot=False,
         output_plot_path=qc_dir / "collimation_lines_after_transform" / f"{input_raster_path.stem}.png",
-        **kwargs,
+        peaks_strategy="prominence",
     )
 
-    # Plot the distance between collimation lines after transformation
-    new_vertical_edges = {"left": 0, "right": output_img_size[0]}
+    # Plot the distance between collimation lines for quality control
     plot_distance_between_collimation_lines(
-        new_vertical_edges,
+        collimation_lines,
         collimation_lines_after_transform,
+        output_size[0],
+        collimation_line_dist,
         plot=False,
-        output_plot_path=qc_dir
-        / "distance_between_collimation_lines_after_transform"
-        / f"{input_raster_path.stem}.png",
+        output_plot_path=qc_dir / "distance_between_collimation_lines" / f"{input_raster_path.stem}.png",
+    )
+
+    # plot both collimation gradient before and after transform
+    plot_collimation_gradient(
+        collimation_lines,
+        collimation_lines_after_transform,
+        output_size[0],
+        plot=False,
+        output_plot_path=qc_dir / "collimation_gradients" / f"{input_raster_path.stem}.png",
     )
 
 

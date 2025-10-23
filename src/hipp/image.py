@@ -5,10 +5,12 @@ Description: some function for the image processing
 
 import warnings
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
 import rasterio
+from numpy.typing import NDArray
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import Resampling, reproject
 from rasterio.windows import Window
@@ -233,121 +235,126 @@ def _read_block(
     return block, (x_offset, y_offset)
 
 
-def warp_tif_blockwise(
-    input_path: str,
-    output_path: str,
-    transformation_matrix: cv2.typing.MatLike,
-    output_size: tuple[int, int],
+def remap_tif_blockwise(
+    input_path: str | Path,
+    output_path: str | Path,
+    inverse_remap_function: Callable[
+        [NDArray[np.uint], NDArray[np.uint]], tuple[NDArray[np.float32], NDArray[np.float32]]
+    ],
+    output_size: tuple[int, int] | None = None,
     block_size: int = 256,
     interpolation: int = cv2.INTER_CUBIC,
     pbar: bool = True,
-    pbar_desc: str = "Warping blocks",
+    pbar_desc: str = "Remaping tif",
+    padding: int = 2,
 ) -> None:
     """
-    Applies a geometric transformation (warping) to a raster image in block-wise fashion
-    using a provided transformation matrix, and writes the result to a new file.
+    Remap a GeoTIFF image block by block using a user-defined inverse mapping function.
 
-    Args:
-        input_path (str): Path to the input raster image (GeoTIFF).
-        output_path (str): Path where the warped image will be saved.
-        transformation_matrix (cv2.typing.MatLike): 3x3 homogeneous transformation matrix to apply.
-        output_size (tuple[int, int]): Dimensions (width, height) of the output image.
-        block_size (int, optional): Size of the processing blocks (in pixels). Defaults to 256.
-        interpolation (int, optional): Interpolation method for remapping (e.g., cv2.INTER_LINEAR or cv2.INTER_CUBIC).
-        pbar (bool, optional): Whether to display a progress bar with tqdm. Defaults to True.
-        pbar_desc (str, optional): Description label for the progress bar. Defaults to "Warping blocks".
+    This function processes large rasters efficiently by splitting them into smaller
+    overlapping blocks, applying a spatial transformation (e.g., inverse Thin Plate Spline)
+    to each block, and writing the results incrementally to disk.
+
+    The `inverse_remap_function` must take two 2D coordinate grids (x, y) in output space
+    and return the corresponding source coordinates (x_src, y_src) in input space.
+    This design allows flexibility to use any warping model (TPS, polynomial, etc.).
+
+    Parameters
+    ----------
+    input_path : str | Path
+        Path to the input GeoTIFF file to be remapped.
+    output_path : str | Path
+        Path to save the remapped GeoTIFF.
+    inverse_remap_function : Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
+        Function that maps output pixel coordinates (x, y) to source coordinates (x_src, y_src).
+        Must return two float32 arrays of the same shape.
+    output_size : tuple[int, int], optional
+        Size (width, height) of the output raster. If None, the input size is used.
+    block_size : int, optional
+        Size (in pixels) of the processing blocks. Default is 256.
+    interpolation : int, optional
+        OpenCV interpolation flag (e.g., cv2.INTER_LINEAR, cv2.INTER_CUBIC). Default is cv2.INTER_CUBIC.
+    pbar : bool, optional
+        If True, display a tqdm progress bar during processing. Default is True.
+    pbar_desc : str, optional
+        Description text for the progress bar. Default is "Remapping tif".
+    padding : int, optional
+        Extra padding (in pixels) around each block when reading from the source image
+        to avoid edge artifacts during interpolation. Default is 2.
+
+    Notes
+    -----
+    - The function assumes single-band rasters.
+    - Coordinate order follows the raster convention: (x = columns, y = rows).
+    - Padding helps prevent visible seams between blocks when using bicubic interpolation.
+    - The output raster is written incrementally, so memory usage stays low.
+
+    Example
+    -------
+    >>> def translation(x, y):
+    ...     # Example: simple translation of 10 pixels right, 5 pixels down
+    ...     return x - 10, y - 5
+    >>> remap_tif_blockwise("input.tif", "output.tif", inverse_tps, block_size=512)
+
     """
-    out_width, out_height = output_size
-
-    # Compute the inverse of the transformation matrix for mapping output to input coordinates
-    M_inv = np.linalg.inv(transformation_matrix)[0:2, :]  # type: ignore[arg-type]
 
     with rasterio.open(input_path) as src:
-        # Copy the input image profile and update it for the output image
+        input_size = (src.width, src.height)
+        output_size = output_size if output_size else input_size
         profile = src.profile.copy()
         profile.update(
             {
-                "width": out_width,
-                "height": out_height,
-                "transform": rasterio.Affine.identity(),  # reset spatial transform, since we're applying a custom one
                 "compress": "lzw",
-                "driver": "GTiff",
-                "BIGTIFF": "YES",  # allow large output files
+                "BIGTIFF": "YES",
+                "width": output_size[0],
+                "height": output_size[1],
             }
         )
 
-        # Open output image for writing
         with rasterio.open(output_path, "w", **profile) as dst:
-            # Create a list of output block coordinates (top-left corners)
             blocks = [
-                (x_out, y_out)
-                for y_out in range(0, out_height, block_size)
-                for x_out in range(0, out_width, block_size)
+                (dst_x0, dst_y0)
+                for dst_x0 in range(0, output_size[0], block_size)
+                for dst_y0 in range(0, output_size[1], block_size)
             ]
             # Wrap block iterator with a tqdm progress bar if enabled
             iterator = tqdm(blocks, desc=pbar_desc, unit="block") if pbar else blocks
 
-            for x_out, y_out in iterator:
-                # Determine the actual block dimensions (handle border cases)
-                w = min(block_size, out_width - x_out)
-                h = min(block_size, out_height - y_out)
+            for dst_x0, dst_y0 in iterator:
+                dst_x1 = min(dst_x0 + block_size, output_size[0])
+                dst_y1 = min(dst_y0 + block_size, output_size[1])
 
-                # Generate grid of destination (output) coordinates
-                dst_grid_x, dst_grid_y = np.meshgrid(np.arange(x_out, x_out + w), np.arange(y_out, y_out + h))
+                # Full-res grid for this block
+                ygrid, xgrid = np.mgrid[dst_y0:dst_y1, dst_x0:dst_x1]
 
-                # Stack destination points in homogeneous coordinates (3xN)
-                dst_pts = np.stack([dst_grid_x.ravel(), dst_grid_y.ravel(), np.ones(dst_grid_x.size)], axis=0)
+                tf_xgrid, tf_ygrid = inverse_remap_function(xgrid, ygrid)
 
-                # Apply inverse transformation to get corresponding input coordinates
-                src_pts = (M_inv @ dst_pts).T
-                x_src = src_pts[:, 0].reshape(h, w).astype(np.float32)
-                y_src = src_pts[:, 1].reshape(h, w).astype(np.float32)
+                # Compute source window bounds with a padding to avoid artefact on edge caused of bicubic interpolation
+                src_x0 = int(np.floor(tf_xgrid.min())) - padding
+                src_y0 = int(np.floor(tf_ygrid.min())) - padding
+                src_x1 = int(np.ceil(tf_xgrid.max())) + padding
+                src_y1 = int(np.ceil(tf_ygrid.max())) + padding
 
-                # Compute bounding box of source region to read
-                x_min = int(np.floor(x_src.min()))
-                y_min = int(np.floor(y_src.min()))
-                x_max = int(np.ceil(x_src.max()))
-                y_max = int(np.ceil(y_src.max()))
+                # Rasterio window (row_off, col_off)
+                src_window = Window(col_off=src_x0, row_off=src_y0, width=src_x1 - src_x0, height=src_y1 - src_y0)
+                src_block = src.read(1, window=src_window)
 
-                read_width = x_max - x_min + 1
-                read_height = y_max - y_min + 1
+                # Convert global coordinates to local block
+                grid_x_local = tf_xgrid - src_x0
+                grid_y_local = tf_ygrid - src_y0
 
-                # Skip block if invalid region (completely outside bounds)
-                if read_width <= 0 or read_height <= 0:
-                    continue
-
-                # Apply padding for better interpolation at block edges
-                padding = 2  # safe margin for INTER_CUBIC
-                x_pad_min = max(x_min - padding, 0)
-                y_pad_min = max(y_min - padding, 0)
-                x_pad_max = x_max + padding
-                y_pad_max = y_max + padding
-
-                pad_width = x_pad_max - x_pad_min + 1
-                pad_height = y_pad_max - y_pad_min + 1
-
-                # Define padded read window in source image
-                read_window = Window(x_pad_min, y_pad_min, pad_width, pad_height)
-
-                # Read source data block with boundless mode and padding
-                src_block = src.read(1, window=read_window, boundless=True, fill_value=0)
-
-                # Shift coordinates relative to padded window origin
-                x_src_shifted = x_src - x_pad_min
-                y_src_shifted = y_src - y_pad_min
-
-                # Remap the source block to the warped output using OpenCV
-                warped = cv2.remap(  # type: ignore[call-overload]
+                # Remap
+                remapped_block = cv2.remap(
                     src_block,
-                    x_src_shifted,
-                    y_src_shifted,
+                    grid_x_local,
+                    grid_y_local,
                     interpolation=interpolation,
                     borderMode=cv2.BORDER_CONSTANT,
                     borderValue=0,
                 )
-
-                # Write the warped block to the corresponding location in the output image
-                dst.write(warped.astype(src.dtypes[0]), 1, window=Window(x_out, y_out, w, h))
+                # Write destination block
+                dst_window = Window(col_off=dst_x0, row_off=dst_y0, width=dst_x1 - dst_x0, height=dst_y1 - dst_y0)
+                dst.write(remapped_block, 1, window=dst_window)
 
 
 def warp_raster_pixels(

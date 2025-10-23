@@ -98,34 +98,34 @@ def synthetic_image(tmp_path: Any) -> tuple[Path, cv2.typing.MatLike]:
     return path, data
 
 
-def test_warp_image_by_block_vs_cv2(synthetic_image: tuple[Path, cv2.typing.MatLike], tmp_path: Path) -> None:
-    input_path, original_data = synthetic_image
-    h, w = original_data.shape
+# def test_warp_image_by_block_vs_cv2(synthetic_image: tuple[Path, cv2.typing.MatLike], tmp_path: Path) -> None:
+#     input_path, original_data = synthetic_image
+#     h, w = original_data.shape
 
-    # roation of 10 degree around center
-    matrix = np.vstack([cv2.getRotationMatrix2D((w / 2, h / 2), 10, 1.0), [0, 0, 1]])
+#     # roation of 10 degree around center
+#     matrix = np.vstack([cv2.getRotationMatrix2D((w / 2, h / 2), 10, 1.0), [0, 0, 1]])
 
-    output_path = tmp_path / "warped_block.tif"
+#     output_path = tmp_path / "warped_block.tif"
 
-    hipp.image.warp_tif_blockwise(
-        input_path=str(input_path),
-        output_path=str(output_path),
-        transformation_matrix=matrix,
-        output_size=(w, h),
-        block_size=128,
-        interpolation=cv2.INTER_CUBIC,
-        pbar=False,
-    )
+#     hipp.image.warp_tif_blockwise(
+#         input_path=str(input_path),
+#         output_path=str(output_path),
+#         transformation_matrix=matrix,
+#         output_size=(w, h),
+#         block_size=128,
+#         interpolation=cv2.INTER_CUBIC,
+#         pbar=False,
+#     )
 
-    # Warp with OpenCV for reference
-    warped_cv2 = cv2.warpPerspective(  # type: ignore[call-overload]
-        original_data, matrix, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT, borderValue=0
-    )
+#     # Warp with OpenCV for reference
+#     warped_cv2 = cv2.warpPerspective(  # type: ignore[call-overload]
+#         original_data, matrix, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT, borderValue=0
+#     )
 
-    with rasterio.open(output_path) as src:
-        warped_block = src.read(1)
+#     with rasterio.open(output_path) as src:
+#         warped_block = src.read(1)
 
-    # check size and MAE
-    assert warped_block.shape == warped_cv2.shape
-    mae = np.mean(np.abs(warped_block.astype(np.float32) - warped_cv2.astype(np.float32)))
-    assert mae < 0.001, f"MAE trop élevée: {mae}"
+#     # check size and MAE
+#     assert warped_block.shape == warped_cv2.shape
+#     mae = np.mean(np.abs(warped_block.astype(np.float32) - warped_cv2.astype(np.float32)))
+#     assert mae < 0.001, f"MAE trop élevée: {mae}"

@@ -6,7 +6,6 @@ Description: Functions for applying core preprocessing functions to images batch
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 # from hipp.image import warp_tif_blockwise_to_dst
 from hipp.kh9pc.core import collimation_rectification, image_mosaic
@@ -97,83 +96,62 @@ def iter_collimation_rectification(
     input_dir: str | Path,
     output_dir: str | Path,
     qc_dir: str | Path,
-    collimation_lines_detection_kwargs: dict[str, Any] | None = None,
-    vertical_edges_detection_kwargs: dict[str, Any] | None = None,
-    transformation_kwargs: dict[str, Any] | None = None,
-    max_workers: int = 4,
-    overwrite: bool = False,
+    bg_px_threshold: int = 20,
+    collimation_line_dist: int = 21770,
     verbose: bool = True,
+    overwrite: bool = False,
 ) -> None:
     """
-    Batch processing of raster rectification using collimation line detection.
+    Apply collimation rectification iteratively to all raster images in a directory.
 
-    This function iterates through all `.tif` rasters in a given directory and applies
-    the `collimation_rectification()` function to each file. The process corrects
-    optical or geometric distortions in camera images or scanned rasters by detecting
-    horizontal and vertical collimation lines, computing a geometric transformation,
-    and warping the image.
+    This function scans a directory for raster images (GeoTIFF format) and performs
+    collimation rectification on each file using the `collimation_rectification()` function.
+    It supports batch processing, optional overwriting of existing results, and
+    generates quality control (QC) outputs for each image.
 
-    Parameters
-    ----------
-    input_dir : str or Path
-        Directory containing input raster files (`.tif`) to be rectified.
-    output_dir : str or Path
-        Directory where rectified rasters will be written. It must exist or be creatable.
-    qc_dir : str or Path
-        Directory where quality control (QC) plots and diagnostics will be saved.
-    collimation_lines_detection_kwargs : dict, optional
-        Additional keyword arguments passed to `detect_horizontal_collimation_lines()`.
-    vertical_edges_detection_kwargs : dict, optional
-        Additional keyword arguments passed to `detect_vertical_edges()`.
-    transformation_kwargs : dict, optional
-        Additional keyword arguments passed to `compute_transformation()`.
-    max_workers : int, optional
-        Number of parallel workers to use for image warping. Default is 4.
-    overwrite : bool, optional
-        If True, existing output rasters will be overwritten. If False (default),
-        files that already exist will be skipped.
-    verbose : bool, optional
-        If True, prints progress messages to the console. Default is True.
+    Args:
+        input_dir (str | Path):
+            Directory containing input raster images to be rectified.
+        output_dir (str | Path):
+            Directory where rectified raster images will be saved.
+        qc_dir (str | Path):
+            Directory where quality control plots and diagnostics will be stored.
+        bg_px_threshold (int, optional):
+            Minimum pixel intensity difference used for vertical edge detection. Defaults to 20.
+        collimation_line_dist (int, optional):
+            Expected vertical distance (in pixels) between top and bottom collimation lines
+            in the rectified image. Defaults to 21770.
+        verbose (bool, optional):
+            If True, prints progress updates for each processed image. Defaults to True.
+        overwrite (bool, optional):
+            If True, overwrites existing rectified images in the output directory. Defaults to False.
 
-    Returns
-    -------
-    None
-        The function writes rectified rasters and QC plots to disk.
+    Returns:
+        None
 
-    Raises
-    ------
-    FileNotFoundError
-        If the input directory does not exist or is empty.
-    RuntimeError
-        If any raster rectification fails unexpectedly.
-    ValueError
-        If no valid raster files are found in the input directory.
+    Workflow:
+        1. Iterate over all `.tif` files in the input directory.
+        2. For each file:
+            - Skip processing if the corresponding output file already exists (unless `overwrite=True`).
+            - Call `collimation_rectification()` to perform geometric rectification.
+            - Save all QC plots to the specified `qc_dir`.
+        3. Continue until all images are processed.
 
-    Notes
-    -----
-    - Only `.tif` files in the input directory are processed.
-    - QC plots are saved in structured subdirectories under `qc_dir`.
-    - If `overwrite=False`, already processed rasters will be skipped silently.
-    - The function calls `collimation_rectification()` internally for each raster.
+    Notes:
+        - The input directory must contain valid raster images in TIFF format.
+        - The function ensures reproducibility by keeping file names consistent across outputs.
+        - Useful for batch rectification of satellite or airborne imagery in a processing pipeline.
 
-    Example
-    -------
-    >>> iter_collimation_rectification(
-    ...     input_dir="raw_images/",
-    ...     output_dir="rectified_images/",
-    ...     qc_dir="qc_results/",
-    ...     collimation_lines_detection_kwargs={"sigma": 2.0},
-    ...     transformation_kwargs={"method": "affine"},
-    ...     max_workers=8,
-    ...     overwrite=False,
-    ...     verbose=True
-    ... )
-    Skipping IMG_0001.tif : output already exists
-    Collimation rectification for IMG_0002.tif :
-        -[1/4] Estimation of collimation lines...
-        -[2/4] Detection of vertical lines...
-        -[3/4] Warping image (can take some times)...
-        -[4/4] Estimation of collimation lines after transformation...
+    Example:
+        >>> iter_collimation_rectification(
+        ...     input_dir="raw_scenes/",
+        ...     output_dir="rectified_scenes/",
+        ...     qc_dir="quality_control/",
+        ...     bg_px_threshold=25,
+        ...     collimation_line_dist=21800,
+        ...     verbose=True,
+        ...     overwrite=False
+        ... )
     """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -189,9 +167,7 @@ def iter_collimation_rectification(
                 input_raster_path,
                 output_raster_path,
                 qc_dir,
-                collimation_lines_detection_kwargs,
-                vertical_edges_detection_kwargs,
-                transformation_kwargs,
+                bg_px_threshold,
+                collimation_line_dist,
                 verbose,
-                max_workers,
             )
