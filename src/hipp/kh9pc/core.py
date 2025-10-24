@@ -21,7 +21,7 @@ from hipp.kh9pc.collimation_lines import (
 from hipp.kh9pc.quality_control import (
     plot_collimation_gradient,
     plot_distance_between_collimation_lines,
-    plot_tps_points,
+    plot_src_and_dst_points,
 )
 
 ####################################################################################################################################
@@ -211,7 +211,7 @@ def collimation_rectification(
     dst_points = dst_grid.reshape(-1, 2)
 
     # plot them for quality control
-    plot_tps_points(
+    plot_src_and_dst_points(
         src_points,
         dst_points,
         output_size,

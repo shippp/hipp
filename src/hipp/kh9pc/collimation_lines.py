@@ -153,11 +153,11 @@ def detect_collimation_lines(
     Returns:
         dict[str, RANSACRegressor]:
             A dictionary containing the fitted RANSAC models for the "top" and "bottom" collimation lines.
+    Note:
+        - This collimation line should be approximatly on the center of the extracting window.
 
-    Notes:
-        - The function assumes the raster file has at least one valid band.
-        - The RANSAC regression is robust to outliers in the detected peaks.
-        - The detected models can later be used to evaluate geometric distortions or collimation misalignment.
+    See Also:
+        detect_peaks_in_collimation_line : Function used internally for peak detection.
     """
     res = {}
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
@@ -227,7 +227,7 @@ def compute_source_and_target_grid(
     grid_shape: tuple[int, int] = (100, 50),
 ) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
     """
-    Generate source and destination control points for Thin Plate Spline (TPS) rectification
+    Generate source and destination control points for rectification
     as structured 2D grids.
 
     This function creates two corresponding 2D grids of control points:
@@ -320,13 +320,17 @@ def detect_peaks_in_collimation_line(
     strategy: str = "distribution",  # "distribution" ou "prominence"
 ) -> tuple[NDArray[np.uint], NDArray[np.uint]]:
     """
-    Detect one peak per image column, corresponding to the collimation line.
+    Detect one peak per image column corresponding to the collimation line.
 
-    Two strategies are available:
-      - "distribution": select the peak that maximizes the difference between
-        the left and right intensity distributions around it.
-      - "prominence": select the single most prominent peak in each column.
-
+    Two detection strategies are available:
+      - **"distribution"**: selects the peak that maximizes the intensity difference
+        between the left and right sides of the column around the candidate peak.
+        This approach leverages the fact that the collimation line separates the
+        Region of Interest (ROI) from the background. By maximizing the contrast
+        between both sides, it avoids detecting bright lines located within the background.
+      - **"prominence"**: selects the most prominent peak in each column based on
+        local prominence criteria. This method is mainly used after rectification
+        and cropping, where the distribution-based approach may fail.
     Args:
         image (cv2.typing.MatLike):
             2D grayscale or intensity image.

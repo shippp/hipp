@@ -51,7 +51,7 @@ def process_image_mosaicing_qc(
         plt.show()
 
 
-def plot_tps_points(
+def plot_src_and_dst_points(
     src_points: NDArray[np.generic],
     dst_points: NDArray[np.generic],
     output_size: tuple[int, int],
