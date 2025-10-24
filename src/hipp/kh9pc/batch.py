@@ -98,49 +98,58 @@ def iter_collimation_rectification(
     qc_dir: str | Path,
     bg_px_threshold: int = 20,
     collimation_line_dist: int = 21770,
+    transformation: str = "tps",
     verbose: bool = True,
     overwrite: bool = False,
 ) -> None:
     """
     Apply collimation rectification iteratively to all raster images in a directory.
 
-    This function scans a directory for raster images (GeoTIFF format) and performs
-    collimation rectification on each file using the `collimation_rectification()` function.
-    It supports batch processing, optional overwriting of existing results, and
-    generates quality control (QC) outputs for each image.
+    This function loops over all `.tif` images in the input directory and applies
+    the `collimation_rectification()` function to each. The user can choose between
+    Thin Plate Spline (TPS) or Affine transformations for geometric correction.
+    Quality control (QC) outputs for each image are stored in the specified QC directory.
 
     Args:
         input_dir (str | Path):
-            Directory containing input raster images to be rectified.
+            Directory containing the input raster images to rectify.
         output_dir (str | Path):
             Directory where rectified raster images will be saved.
         qc_dir (str | Path):
-            Directory where quality control plots and diagnostics will be stored.
+            Directory where quality control plots and intermediate data will be stored.
         bg_px_threshold (int, optional):
-            Minimum pixel intensity difference used for vertical edge detection. Defaults to 20.
+            Minimum pixel intensity difference used to detect vertical edges. Defaults to 20.
         collimation_line_dist (int, optional):
-            Expected vertical distance (in pixels) between top and bottom collimation lines
+            Expected distance (in pixels) between the top and bottom collimation lines
             in the rectified image. Defaults to 21770.
+        transformation (str, optional):
+            Type of geometric transformation to apply.
+            - "tps": Thin Plate Spline (non-linear, smooth correction)
+            - "affine": Affine (linear correction)
+            Defaults to "tps".
         verbose (bool, optional):
-            If True, prints progress updates for each processed image. Defaults to True.
+            If True, prints progress updates during processing. Defaults to True.
         overwrite (bool, optional):
-            If True, overwrites existing rectified images in the output directory. Defaults to False.
+            If False, skips processing for images that already have a rectified output.
+            If True, overwrites existing rectified images. Defaults to False.
 
     Returns:
         None
 
     Workflow:
-        1. Iterate over all `.tif` files in the input directory.
-        2. For each file:
-            - Skip processing if the corresponding output file already exists (unless `overwrite=True`).
-            - Call `collimation_rectification()` to perform geometric rectification.
-            - Save all QC plots to the specified `qc_dir`.
-        3. Continue until all images are processed.
+        1. Scan the `input_dir` for all `.tif` files.
+        2. For each image:
+            a. Check if the output file already exists.
+            b. If not (or if `overwrite=True`), perform collimation rectification using
+               `collimation_rectification()`.
+        3. Store rectified images in `output_dir` and QC data in `qc_dir`.
 
     Notes:
-        - The input directory must contain valid raster images in TIFF format.
-        - The function ensures reproducibility by keeping file names consistent across outputs.
-        - Useful for batch rectification of satellite or airborne imagery in a processing pipeline.
+        - This function is designed for batch rectification of multiple raster scenes.
+        - Each image’s intermediate data (collimation lines, grids, QC plots)
+          will be organized under its corresponding subdirectories in `qc_dir`.
+        - The same transformation type (`transformation`) is applied to all images
+          in the batch for consistency.
 
     Example:
         >>> iter_collimation_rectification(
@@ -149,6 +158,7 @@ def iter_collimation_rectification(
         ...     qc_dir="quality_control/",
         ...     bg_px_threshold=25,
         ...     collimation_line_dist=21800,
+        ...     transformation="tps",
         ...     verbose=True,
         ...     overwrite=False
         ... )
@@ -169,5 +179,6 @@ def iter_collimation_rectification(
                 qc_dir,
                 bg_px_threshold,
                 collimation_line_dist,
+                transformation,
                 verbose,
             )

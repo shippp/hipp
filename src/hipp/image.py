@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import Resampling, reproject
 from rasterio.windows import Window
+from scipy.interpolate import RectBivariateSpline
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
@@ -238,66 +239,80 @@ def _read_block(
 def remap_tif_blockwise(
     input_path: str | Path,
     output_path: str | Path,
-    inverse_remap_function: Callable[
-        [NDArray[np.uint], NDArray[np.uint]], tuple[NDArray[np.float32], NDArray[np.float32]]
-    ],
+    inverse_remap_function: Callable[[NDArray[np.float32]], NDArray[np.float32]],
     output_size: tuple[int, int] | None = None,
     block_size: int = 256,
     interpolation: int = cv2.INTER_CUBIC,
     pbar: bool = True,
     pbar_desc: str = "Remaping tif",
     padding: int = 2,
+    lowres_step: int | None = None,
 ) -> None:
     """
-    Remap a GeoTIFF image block by block using a user-defined inverse mapping function.
+    Apply a geometric remapping on a GeoTIFF file in a memory-efficient, blockwise manner.
 
-    This function processes large rasters efficiently by splitting them into smaller
-    overlapping blocks, applying a spatial transformation (e.g., inverse Thin Plate Spline)
-    to each block, and writing the results incrementally to disk.
-
-    The `inverse_remap_function` must take two 2D coordinate grids (x, y) in output space
-    and return the corresponding source coordinates (x_src, y_src) in input space.
-    This design allows flexibility to use any warping model (TPS, polynomial, etc.).
+    This function divides the output image into small blocks, computes a local inverse
+    remapping function for each block, reads only the required input data from the source
+    raster, applies a geometric transformation (via OpenCV `cv2.remap`), and writes the
+    result to the output GeoTIFF. This approach is optimized for large raster files that
+    cannot fit into memory entirely.
 
     Parameters
     ----------
-    input_path : str | Path
+    input_path : str or Path
         Path to the input GeoTIFF file to be remapped.
-    output_path : str | Path
-        Path to save the remapped GeoTIFF.
-    inverse_remap_function : Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
-        Function that maps output pixel coordinates (x, y) to source coordinates (x_src, y_src).
-        Must return two float32 arrays of the same shape.
+    output_path : str or Path
+        Destination path for the output GeoTIFF file.
+    inverse_remap_function : Callable[[NDArray[np.float32]], NDArray[np.float32]]
+        A user-defined function that takes an array of (x, y) coordinates (in float32)
+        and returns the corresponding inverse-transformed coordinates of the same shape.
+        The mapping is applied in image coordinate space (column, row).
     output_size : tuple[int, int], optional
-        Size (width, height) of the output raster. If None, the input size is used.
-    block_size : int, optional
-        Size (in pixels) of the processing blocks. Default is 256.
-    interpolation : int, optional
-        OpenCV interpolation flag (e.g., cv2.INTER_LINEAR, cv2.INTER_CUBIC). Default is cv2.INTER_CUBIC.
-    pbar : bool, optional
-        If True, display a tqdm progress bar during processing. Default is True.
-    pbar_desc : str, optional
-        Description text for the progress bar. Default is "Remapping tif".
-    padding : int, optional
-        Extra padding (in pixels) around each block when reading from the source image
-        to avoid edge artifacts during interpolation. Default is 2.
+        Output raster dimensions as (width, height). If None, the input raster dimensions
+        are used by default.
+    block_size : int, default=256
+        Size (in pixels) of each processing block. Increasing this value can improve
+        performance but also memory usage.
+    interpolation : int, default=cv2.INTER_CUBIC
+        OpenCV interpolation flag (e.g., `cv2.INTER_LINEAR`, `cv2.INTER_CUBIC`, `cv2.INTER_NEAREST`).
+        Defines how pixel values are interpolated during remapping.
+    pbar : bool, default=True
+        Whether to display a tqdm progress bar during processing.
+    pbar_desc : str, default="Remaping tif"
+        Description text displayed in the tqdm progress bar.
+    padding : int, default=2
+        Number of extra pixels to read around the computed source window, to reduce
+        border artifacts caused by bicubic interpolation.
+    lowres_step : int or None, default=None
+        Optional subsampling factor for the coordinate grid used during remapping.
+        If greater than 1, the remapping grid is computed on a lower resolution
+        and interpolated back using `RectBivariateSpline`. This can significantly
+        speed up processing but slightly reduce geometric accuracy.
 
     Notes
     -----
-    - The function assumes single-band rasters.
-    - Coordinate order follows the raster convention: (x = columns, y = rows).
-    - Padding helps prevent visible seams between blocks when using bicubic interpolation.
-    - The output raster is written incrementally, so memory usage stays low.
+    - The function uses blockwise processing to minimize memory footprint.
+    - Source windows that fall entirely outside the input raster are skipped.
+    - The output file uses LZW compression and supports large (>4 GB) GeoTIFFs (BIGTIFF=YES).
+    - If `lowres_step` > 1, make sure that `block_size` is sufficiently large
+      compared to the sampling step to ensure interpolation stability.
 
     Example
     -------
-    >>> def translation(x, y):
-    ...     # Example: simple translation of 10 pixels right, 5 pixels down
-    ...     return x - 10, y - 5
-    >>> remap_tif_blockwise("input.tif", "output.tif", inverse_tps, block_size=512)
-
+    >>> import numpy as np
+    >>> def inverse_mapping(coords: np.ndarray) -> np.ndarray:
+    ...     # Example: simple translation by (dx, dy)
+    ...     dx, dy = 10.0, -5.0
+    ...     return np.column_stack((coords[:, 0] - dx, coords[:, 1] - dy)).astype(np.float32)
+    >>>
+    >>> remap_tif_blockwise(
+    ...     input_path="input.tif",
+    ...     output_path="output_remapped.tif",
+    ...     inverse_remap_function=inverse_mapping,
+    ...     block_size=512,
+    ...     lowres_step=4
+    ... )
     """
-
     with rasterio.open(input_path) as src:
         input_size = (src.width, src.height)
         output_size = output_size if output_size else input_size
@@ -310,6 +325,7 @@ def remap_tif_blockwise(
                 "height": output_size[1],
             }
         )
+        Path(output_path).parent.mkdir(exist_ok=True, parents=True)
 
         with rasterio.open(output_path, "w", **profile) as dst:
             blocks = [
@@ -327,7 +343,34 @@ def remap_tif_blockwise(
                 # Full-res grid for this block
                 ygrid, xgrid = np.mgrid[dst_y0:dst_y1, dst_x0:dst_x1]
 
-                tf_xgrid, tf_ygrid = inverse_remap_function(xgrid, ygrid)
+                if lowres_step is not None and lowres_step > 1:
+                    # subsample
+                    y_idx = list(range(0, ygrid.shape[0], lowres_step))
+                    x_idx = list(range(0, xgrid.shape[1], lowres_step))
+                    if y_idx[-1] != ygrid.shape[0] - 1:
+                        y_idx.append(ygrid.shape[0] - 1)
+                    if x_idx[-1] != xgrid.shape[1] - 1:
+                        x_idx.append(xgrid.shape[1] - 1)
+
+                    ygrid_lr = ygrid[y_idx][:, x_idx]
+                    xgrid_lr = xgrid[y_idx][:, x_idx]
+
+                    points_lr = np.column_stack((xgrid_lr.ravel(), ygrid_lr.ravel()))
+                    points_transformed_lr = inverse_remap_function(points_lr.astype(np.float32))
+
+                    # reshape for interpolation
+                    tf_x_lr = points_transformed_lr[:, 0].reshape(len(y_idx), len(x_idx))
+                    tf_y_lr = points_transformed_lr[:, 1].reshape(len(y_idx), len(x_idx))
+
+                    rbsx = RectBivariateSpline(ygrid_lr[:, 0], xgrid_lr[0, :], tf_x_lr)
+                    rbsy = RectBivariateSpline(ygrid_lr[:, 0], xgrid_lr[0, :], tf_y_lr)
+                    tf_xgrid = rbsx(ygrid[:, 0], xgrid[0, :]).astype(np.float32)
+                    tf_ygrid = rbsy(ygrid[:, 0], xgrid[0, :]).astype(np.float32)
+                else:
+                    points = np.column_stack((xgrid.ravel(), ygrid.ravel()))
+                    points_transformed = inverse_remap_function(points.astype(np.float32))
+                    tf_xgrid = points_transformed[:, 0].reshape(xgrid.shape).astype(np.float32)
+                    tf_ygrid = points_transformed[:, 1].reshape(ygrid.shape).astype(np.float32)
 
                 # Compute source window bounds with a padding to avoid artefact on edge caused of bicubic interpolation
                 src_x0 = int(np.floor(tf_xgrid.min())) - padding
@@ -339,6 +382,8 @@ def remap_tif_blockwise(
                 src_window = Window(col_off=src_x0, row_off=src_y0, width=src_x1 - src_x0, height=src_y1 - src_y0)
                 src_block = src.read(1, window=src_window)
 
+                if src_block.size == 0:
+                    continue
                 # Convert global coordinates to local block
                 grid_x_local = tf_xgrid - src_x0
                 grid_y_local = tf_ygrid - src_y0

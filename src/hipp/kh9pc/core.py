@@ -8,13 +8,15 @@ import os
 import subprocess
 from pathlib import Path
 
+import joblib
+from skimage.transform import AffineTransform, ThinPlateSplineTransform
+
 # import pyvips
 from hipp.image import remap_tif_blockwise
 from hipp.kh9pc.collimation_lines import (
+    compute_source_and_target_grid,
     detect_collimation_lines,
     detect_vertical_edges,
-    make_inverse_tps_function,
-    make_tps_points,
 )
 from hipp.kh9pc.quality_control import (
     plot_collimation_gradient,
@@ -102,14 +104,17 @@ def collimation_rectification(
     qc_dir: str | Path,
     bg_px_threshold: int = 20,
     collimation_line_dist: int = 21770,
+    transformation: str = "tps",
     verbose: bool = True,
 ) -> None:
     """
-    Perform collimation rectification on a raster image using Thin Plate Spline (TPS) warping.
+    Perform collimation rectification on a raster image using a geometric transformation
+    (Thin Plate Spline or Affine warping).
 
     This function detects the horizontal and vertical collimation features in a raster image,
     estimates the geometric deformation, and rectifies the image by applying an inverse
-    Thin Plate Spline (TPS) transformation. It also produces several quality control (QC) plots
+    geometric transformation. The user can choose between a Thin Plate Spline (TPS) or
+    Affine transformation model. It also produces several quality control (QC) plots
     illustrating each processing step, including line detection, distance consistency,
     and transformation effects.
 
@@ -119,12 +124,17 @@ def collimation_rectification(
         output_raster_path (str | Path):
             Path where the geometrically rectified image will be saved.
         qc_dir (str | Path):
-            Directory where quality control plots will be stored.
+            Directory where quality control plots and intermediate data will be stored.
         bg_px_threshold (int, optional):
             Minimum pixel intensity difference used to detect vertical edges. Defaults to 20.
         collimation_line_dist (int, optional):
             Expected distance (in pixels) between the top and bottom collimation lines
             in the rectified image. Defaults to 21770.
+        transformation (str, optional):
+            Type of geometric transformation to apply.
+            - "tps": Thin Plate Spline (non-linear, smooth correction)
+            - "affine": Affine (linear correction)
+            Defaults to "tps".
         verbose (bool, optional):
             If True, prints progress updates during processing. Defaults to True.
 
@@ -135,16 +145,18 @@ def collimation_rectification(
         1. Detect top and bottom collimation lines using RANSAC polynomial fitting.
         2. Detect left and right vertical edges using robust RANSAC regression.
         3. Estimate and plot the distance between the detected collimation lines.
-        4. Compute source and destination TPS control points from detected features.
-        5. Apply an inverse TPS transformation to rectify the image geometry.
-        6. Re-detect collimation lines after transformation for validation.
-        7. Generate and save all QC plots (line detection, distances, gradients).
+        4. Compute source and destination grids from detected features.
+        5. Estimate the chosen transformation model (TPS or Affine).
+        6. Apply the inverse transformation to rectify the image geometry.
+        7. Re-detect collimation lines after transformation for validation.
+        8. Generate and save all QC plots (line detection, distances, gradients).
 
     Notes:
         - The function assumes that the raster image contains clear collimation marks.
         - All intermediate QC results are saved to `qc_dir` for traceability.
-        - The transformation preserves image size consistency using computed `output_size`.
-        - The Thin Plate Spline model provides a smooth, non-linear geometric correction.
+        - The transformation preserves image size consistency using the computed `output_size`.
+        - The Thin Plate Spline model provides a smooth, non-linear geometric correction,
+          while the Affine model applies a simpler linear correction.
 
     Example:
         >>> collimation_rectification(
@@ -153,6 +165,7 @@ def collimation_rectification(
         ...     qc_dir="quality_control/",
         ...     bg_px_threshold=25,
         ...     collimation_line_dist=21800,
+        ...     transformation="affine",
         ...     verbose=True
         ... )
     """
@@ -160,6 +173,8 @@ def collimation_rectification(
     input_raster_path = Path(input_raster_path)
     output_raster_path = Path(output_raster_path)
     qc_dir = Path(qc_dir)
+    data_dir = qc_dir / "data" / input_raster_path.stem
+    data_dir.mkdir(exist_ok=True, parents=True)
 
     if verbose:
         print(f"Collimation rectification for {input_raster_path.name} : ")
@@ -172,6 +187,7 @@ def collimation_rectification(
         plot=False,
         output_plot_path=qc_dir / "collimation_lines" / f"{input_raster_path.stem}.png",
     )
+    joblib.dump(collimation_lines, data_dir / "collimation_lines.pkl")
 
     # Detect vertical lines
     if verbose:
@@ -182,9 +198,17 @@ def collimation_rectification(
         plot=False,
         output_plot_path=qc_dir / "vertical_edges" / f"{input_raster_path.stem}.png",
     )
+    joblib.dump(vertical_edges, data_dir / "vertical_edges.pkl")
 
     # make the source and destination points
-    src_points, dst_points, output_size = make_tps_points(vertical_edges, collimation_lines, collimation_line_dist)
+    src_grid, dst_grid, output_size = compute_source_and_target_grid(
+        vertical_edges, collimation_lines, collimation_line_dist
+    )
+    joblib.dump(src_grid, data_dir / "src_grid.pkl")
+    joblib.dump(src_grid, data_dir / "dst_grid.pkl")
+
+    src_points = src_grid.reshape(-1, 2)
+    dst_points = dst_grid.reshape(-1, 2)
 
     # plot them for quality control
     plot_tps_points(
@@ -195,8 +219,21 @@ def collimation_rectification(
         output_plot_path=qc_dir / "transformations" / f"{input_raster_path.stem}.png",
     )
 
-    # create the inverse Thin plate Spline interpolation (dst -> src) using a low-reolution resampling
-    inverse_remap_function = make_inverse_tps_function(src_points, dst_points)
+    # choose the goood tranformation and set some hyperparamters
+    if transformation == "tps":
+        inverse_remap = ThinPlateSplineTransform()
+        lowres_step = 100
+        block_size = 2**13
+    elif transformation == "affine":
+        inverse_remap = AffineTransform()
+        lowres_step = None
+        block_size = 256
+    else:
+        raise ValueError(f"{transformation} not supported, support only 'tps' and 'affine'")
+
+    # for remapping the hipp.image.remap_tif_blockwise use the inverse transformation function
+    # so we estimate our transformation with dst -> src
+    inverse_remap.estimate(dst_points, src_points)
 
     # remap the image with the previously computed function inverse_remap_function
     if verbose:
@@ -204,10 +241,11 @@ def collimation_rectification(
     remap_tif_blockwise(
         input_raster_path,
         output_raster_path,
-        inverse_remap_function,
+        inverse_remap,
         output_size,
-        block_size=2**13,
+        block_size=block_size,
         pbar_desc=f"{input_raster_path.name} remapping",
+        lowres_step=lowres_step,
     )
 
     # detect collimation lines after the transformation
@@ -221,6 +259,7 @@ def collimation_rectification(
         output_plot_path=qc_dir / "collimation_lines_after_transform" / f"{input_raster_path.stem}.png",
         peaks_strategy="prominence",
     )
+    joblib.dump(collimation_lines_after_transform, data_dir / "collimation_lines_after_transform.pkl")
 
     # Plot the distance between collimation lines for quality control
     plot_distance_between_collimation_lines(

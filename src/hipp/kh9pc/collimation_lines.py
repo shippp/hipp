@@ -4,7 +4,6 @@ Description: Functions to process lines for KH-9 Panoramic camera images
 """
 
 from pathlib import Path
-from typing import Callable
 
 import cv2
 import matplotlib.pyplot as plt
@@ -13,7 +12,6 @@ import rasterio
 from numpy.typing import NDArray
 from rasterio.warp import Resampling
 from rasterio.windows import Window
-from scipy.interpolate import Rbf, RectBivariateSpline
 from scipy.signal import find_peaks
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LinearRegression, RANSACRegressor
@@ -221,7 +219,7 @@ def detect_collimation_lines(
         return res
 
 
-def make_tps_points(
+def compute_source_and_target_grid(
     detected_vertical_edges: dict[str, int],
     detected_horizontal_ransac: dict[str, RANSACRegressor],
     colimation_line_dist: int = 21770,
@@ -229,125 +227,85 @@ def make_tps_points(
     grid_shape: tuple[int, int] = (100, 50),
 ) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
     """
-    Generate source and destination control points for Thin Plate Spline (TPS) rectification.
+    Generate source and destination control points for Thin Plate Spline (TPS) rectification
+    as structured 2D grids.
 
-    This function builds two corresponding grids of control points:
-    - `src_points`: coordinates in the original (distorted) image, derived from detected edges
-      and fitted RANSAC lines (top and bottom).
-    - `dst_points`: regular target grid coordinates defining the rectified geometry.
+    This function creates two corresponding 2D grids of control points:
+    - `src_points`: distorted coordinates from the detected vertical edges and horizontal
+      RANSAC lines (top and bottom). Shape `(grid_shape[0], grid_shape[1], 2)`.
+    - `dst_points`: regular target coordinates forming a rectified rectangular grid.
+      Shape `(grid_shape[0], grid_shape[1], 2)`.
+
+    The grids are generated column-wise: each column of points spans from top to bottom
+    between the detected/fitted top and bottom edges.
 
     Parameters
     ----------
     detected_vertical_edges : dict[str, int]
         Dictionary containing pixel positions of left and right vertical edges.
     detected_horizontal_ransac : dict[str, RANSACRegressor]
-        Dictionary containing RANSAC models for the top and bottom horizontal lines.
+        Dictionary containing RANSAC models for the top and bottom horizontal edges.
     colimation_line_dist : int, optional
-        Distance in pixels between the top and bottom collimation lines in the rectified frame.
+        Target distance (in pixels) between the top and bottom collimation lines in the
+        rectified frame. Default is 21770.
     margin : tuple[int, int], optional
-        Horizontal and vertical margins (in pixels) to extend the output grid.
+        (horizontal, vertical) pixel margins added to all points. Default is (0, 147).
     grid_shape : tuple[int, int], optional
-        Number of control points along (width, height) axes.
+        Number of control points along (width, height) axes of the grid. Default is (100, 50).
 
     Returns
     -------
     src_points : np.ndarray
-        Array of shape (N, 2) containing distorted source coordinates.
+        Array of distorted source coordinates with shape `(grid_shape[0], grid_shape[1], 2)`.
+        Each entry contains `[x, y]` coordinates in the original image.
     dst_points : np.ndarray
-        Array of shape (N, 2) containing regular target coordinates.
+        Array of regular destination coordinates with shape `(grid_shape[0], grid_shape[1], 2)`.
+        Each entry contains `[x, y]` coordinates in the rectified frame.
     output_size : tuple[int, int]
-        Expected raster output size (width, height).
+        Expected size `(width, height)` of the rectified raster including margins.
+
+    Notes
+    -----
+    - The source points are computed by evaluating the RANSAC fits for the top and bottom
+      horizontal edges and interpolating linearly between them for each column.
+    - The destination points form a uniform rectangular grid spanning from (0,0) to
+      (cropped_img_width, colimation_line_dist), shifted by the specified margin.
     """
     cropped_img_width = detected_vertical_edges["right"] - detected_vertical_edges["left"]
-    x_dst = np.linspace(0, cropped_img_width, grid_shape[0])
-    y_top_dst = np.repeat(0, len(x_dst))
-    y_bottom_dst = np.repeat(colimation_line_dist, len(x_dst))
 
-    points = []
-    for xi, yt, yb in zip(x_dst, y_top_dst, y_bottom_dst):
+    # --- Destination points ---
+    x_dst = np.linspace(0, cropped_img_width, grid_shape[0])
+    y_top_dst = np.zeros_like(x_dst)
+    y_bottom_dst = np.full_like(x_dst, colimation_line_dist)
+
+    dst_points = np.zeros((grid_shape[0], grid_shape[1], 2), dtype=float)
+
+    for i, (xi, yt, yb) in enumerate(zip(x_dst, y_top_dst, y_bottom_dst)):
         ys = np.linspace(yt, yb, grid_shape[1])
         xs = np.full_like(ys, xi)
-        points.append(np.column_stack((xs, ys)))
+        dst_points[i, :, 0] = xs  # x coordinates
+        dst_points[i, :, 1] = ys  # y coordinates
 
-    # Concatenate all columns into one array of shape (N, 2)
-    dst_points = np.vstack(points)
+    # Apply margin
+    dst_points += np.array(margin)
 
-    # Translate all dst_points with margin
-    dst_points = dst_points + np.array(margin)
-
+    # --- Source points ---
     x_src = x_dst + detected_vertical_edges["left"]
     y_top_src = detected_horizontal_ransac["top"].predict(x_src.reshape(-1, 1))
     y_bottom_src = detected_horizontal_ransac["bottom"].predict(x_src.reshape(-1, 1))
 
-    points = []
-    for xi, yt, yb in zip(x_src, y_top_src, y_bottom_src):
+    src_points = np.zeros((grid_shape[0], grid_shape[1], 2), dtype=float)
+
+    for i, (xi, yt, yb) in enumerate(zip(x_src, y_top_src, y_bottom_src)):
         ys = np.linspace(yt, yb, grid_shape[1])
         xs = np.full_like(ys, xi)
-        points.append(np.column_stack((xs, ys)))
+        src_points[i, :, 0] = xs  # x coordinates
+        src_points[i, :, 1] = ys  # y coordinates
 
-    # Concatenate all columns into one array of shape (N, 2)
-    src_points = np.vstack(points)
-
-    # compute the output size
+    # --- Output size ---
     output_size = (cropped_img_width + 2 * margin[0], colimation_line_dist + 2 * margin[1])
 
     return src_points, dst_points, output_size
-
-
-def make_inverse_tps_function(
-    src_points: NDArray[np.generic],
-    dst_points: NDArray[np.generic],
-    lowres_step: int = 100,
-) -> Callable[[NDArray[np.uint], NDArray[np.uint]], tuple[NDArray[np.float32], NDArray[np.float32]]]:
-    """
-    Create an inverse Thin Plate Spline (TPS) function that maps destination
-    coordinates to source coordinates using low-resolution subsampling.
-
-    Parameters
-    ----------
-    src_points : np.ndarray of shape (N, 2)
-        Source control points [x, y].
-    dst_points : np.ndarray of shape (N, 2)
-        Corresponding destination control points [x, y].
-    lowres_step : int, optional
-        Subsampling step for TPS evaluation. Larger values improve speed but reduce precision.
-
-    Returns
-    -------
-    inverse_tps_fn : Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
-        A function that takes two meshgrids (x, y) and returns (x_src, y_src)
-        coordinates for remapping.
-    """
-    rbf_x_inv = Rbf(dst_points[:, 0], dst_points[:, 1], src_points[:, 0], function="thin_plate")
-    rbf_y_inv = Rbf(dst_points[:, 0], dst_points[:, 1], src_points[:, 1], function="thin_plate")
-
-    def inverse_tps_fn(
-        xgrid: NDArray[np.uint], ygrid: NDArray[np.uint]
-    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-        # low-res subsampling with border inclusion
-        y_idx = list(range(0, ygrid.shape[0], lowres_step))
-        x_idx = list(range(0, xgrid.shape[1], lowres_step))
-        if y_idx[-1] != ygrid.shape[0] - 1:
-            y_idx.append(ygrid.shape[0] - 1)
-        if x_idx[-1] != xgrid.shape[1] - 1:
-            x_idx.append(xgrid.shape[1] - 1)
-
-        ygrid_lr = ygrid[y_idx][:, x_idx]
-        xgrid_lr = xgrid[y_idx][:, x_idx]
-
-        # evaluate TPS on low-res grid
-        xshift_lr = rbf_x_inv(xgrid_lr, ygrid_lr)
-        yshift_lr = rbf_y_inv(xgrid_lr, ygrid_lr)
-
-        # interpolate back to full resolution
-        rbsx = RectBivariateSpline(ygrid_lr[:, 0], xgrid_lr[0, :], xshift_lr)
-        rbsy = RectBivariateSpline(ygrid_lr[:, 0], xgrid_lr[0, :], yshift_lr)
-        x_src = rbsx(ygrid[:, 0], xgrid[0, :]).astype(np.float32)
-        y_src = rbsy(ygrid[:, 0], xgrid[0, :]).astype(np.float32)
-
-        return x_src, y_src
-
-    return inverse_tps_fn
 
 
 ####################################################################################################################################
