@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.metrics import root_mean_squared_error
-from sklearn.pipeline import make_pipeline
+from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 ####################################################################################################################################
@@ -227,7 +227,7 @@ def compute_source_and_target_grid(
     grid_shape: tuple[int, int] = (100, 50),
 ) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
     """
-    Generate source and destination control points for rectification
+    Generate source and destination control points for Thin Plate Spline (TPS) rectification
     as structured 2D grids.
 
     This function creates two corresponding 2D grids of control points:
@@ -391,6 +391,76 @@ def detect_peaks_in_collimation_line(
         peaks_y.append(best_peak)
 
     return np.array(peaks_x), np.array(peaks_y)
+
+
+def detect_peaks_in_columns(image: cv2.typing.MatLike, n_peaks: int = 3, distance: float = 0.2) -> NDArray[np.generic]:
+    peaks_x, peaks_y = [], []
+    n_rows, n_cols = image.shape[:2]
+    distance_px = int(distance * n_rows)
+
+    for col in range(n_cols):
+        signal = image[:, col].astype(int)
+
+        # --- Detect peaks and compute their prominence ---
+        peaks, properties = find_peaks(signal, prominence=0, distance=distance_px)
+
+        k = min(n_peaks, len(peaks))
+        top_indices = np.argpartition(properties["prominences"], -k)[-k:]
+        selected_peaks = peaks[top_indices]
+
+        for y in selected_peaks:
+            peaks_x.append(col)
+            peaks_y.append(y)
+    return np.column_stack((peaks_x, peaks_y))
+
+
+def fit_n_ransac_poly(
+    peaks: NDArray[np.generic], residual_threshold: float = 20.0, n_ransac: int = 3, degree: int = 2
+) -> list[Pipeline]:
+    X = peaks[:, 0].reshape(-1, 1)
+    y = peaks[:, 1]
+    remaining_mask = np.ones_like(y, dtype=bool)
+    res = []
+    for i in range(n_ransac):
+        if np.sum(remaining_mask) < 3:
+            break
+        # Modèle polynomial + RANSAC
+        poly_model = make_pipeline(
+            StandardScaler(),
+            PolynomialFeatures(degree=degree),
+            LinearRegression(),
+        )
+        ransac = RANSACRegressor(poly_model, residual_threshold=residual_threshold, min_samples=3)
+        ransac.fit(X[remaining_mask], y[remaining_mask])
+        res.append(ransac.estimator_)
+
+        # remove inliers for next iteration
+        inliers_mask = np.zeros_like(y, dtype=bool)
+        inliers_mask[remaining_mask] = ransac.inlier_mask_
+        remaining_mask[inliers_mask] = False
+    return res
+
+
+def evaluate_poly(image: cv2.typing.MatLike, polys: list[Pipeline], band_thickness: float = 0.2) -> list[float]:
+    band_thickness_px = int(band_thickness * image.shape[0])
+    x = np.arange(image.shape[1])
+    results = []
+
+    rows = np.arange(image.shape[0])[:, None]  # pour vectorisation
+
+    for poly in polys:
+        y = poly.predict(x.reshape(-1, 1)).astype(np.int32)
+        y_top = np.clip(y + band_thickness_px, 0, image.shape[0] - 1)
+        y_bottom = np.clip(y - band_thickness_px, 0, image.shape[0] - 1)
+
+        mask_top = (rows >= y) & (rows <= y_top)
+        mask_bottom = (rows >= y_bottom) & (rows <= y)
+
+        top_mean = np.mean(image[mask_top])
+        bottom_mean = np.mean(image[mask_bottom])
+
+        results.append(np.abs(top_mean - bottom_mean))
+    return results
 
 
 def extract_vertical_edge_points(

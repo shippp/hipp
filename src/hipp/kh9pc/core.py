@@ -220,6 +220,7 @@ def collimation_rectification(
     )
 
     # choose the goood tranformation and set some hyperparamters
+    inverse_remap: ThinPlateSplineTransform | AffineTransform
     if transformation == "tps":
         inverse_remap = ThinPlateSplineTransform()
         lowres_step = 100
