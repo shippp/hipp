@@ -255,10 +255,9 @@ def collimation_rectification(
 
     collimation_lines_after_transform = detect_collimation_lines(
         output_raster_path,
-        0.02,
+        0.05,
         plot=False,
         output_plot_path=qc_dir / "collimation_lines_after_transform" / f"{input_raster_path.stem}.png",
-        peaks_strategy="prominence",
     )
     joblib.dump(collimation_lines_after_transform, data_dir / "collimation_lines_after_transform.pkl")
 

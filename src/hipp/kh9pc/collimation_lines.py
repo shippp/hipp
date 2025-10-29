@@ -94,7 +94,8 @@ def detect_vertical_edges(
             axes[i].scatter(x_local[~inlier_mask], y_local[~inlier_mask], s=5, color="red", label="outliers")
 
             axes[i].axvline(x=ransac_local.estimator_.constant_, color="blue", label="RANSAC line")
-            axes[i].set_title(f"{side} edge detection \n({_ransac_stats_to_str(stats)})")
+            stats_str = "\n".join([f"{k}: {v:.2f}" for k, v in stats.items()])
+            axes[i].set_title(f"{side} edge detection \n({stats_str})")
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=3)
@@ -115,108 +116,134 @@ def detect_collimation_lines(
     height_fraction: float = 0.15,
     stride: tuple[int, int] = (256, 10),
     polynomial_degree: int = 2,
-    ransac_residual_threshold: float = 50.0,
-    ransac_max_trial: int = 100,
-    peaks_strategy: str = "distribution",
+    ransac_residual_threshold: float = 80.0,
+    collimation_line_dist: int = 21770,
     plot: bool = True,
     output_plot_path: str | Path | None = None,
-) -> dict[str, RANSACRegressor]:
+) -> dict[str, Pipeline]:
     """
-    Detect the top and bottom collimation lines from a raster image using peak detection and RANSAC polynomial fitting.
+    Detects and fits collimation lines in the top and bottom portions of a raster image.
 
-    This function extracts two horizontal bands (top and bottom) from a raster image,
-    detects prominent peaks corresponding to collimation features, and fits polynomial
-    models to them using a RANSAC regression approach. The resulting models represent
-    the collimation lines that can be used for geometric correction or alignment analysis.
+    The function reads the input raster, extracts two horizontal windows (top and bottom),
+    detects peak positions in each, fits several polynomial RANSAC models, and selects
+    the best matching pair of top/bottom lines based on their vertical distance consistency.
 
-    Args:
-        raster_filepath (str | Path):
-            Path to the raster image file.
-        height_fraction (float, optional):
-            Fraction of the image height to extract for the top and bottom regions. Defaults to 0.15.
-        stride (tuple[int, int], optional):
-            Step size (width, height) for downsampling the image during processing. Defaults to (256, 10).
-        polynomial_degree (int, optional):
-            Degree of the polynomial model fitted to the detected peaks. Defaults to 2.
-        ransac_residual_threshold (float, optional):
-            Maximum residual threshold for the RANSAC algorithm. Defaults to 50.0.
-        ransac_max_trial (int, optional):
-            Maximum number of iterations for the RANSAC algorithm. Defaults to 100.
-        peaks_strategy (str, optional):
-            Strategy used for peak detection within the collimation band.
-            Possible options depend on `detect_peaks_in_collimation_line`. Defaults to "distribution".
-        plot (bool, optional):
-            Whether to display the resulting plots of detected peaks and polynomial fits. Defaults to True.
-        output_plot_path (str | Path | None, optional):
-            Path to save the plot as an image file. If None, the plot is not saved. Defaults to None.
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster image.
+    height_fraction : float, optional
+        Fraction of the raster height to use for top and bottom windows.
+    stride : tuple[int, int], optional
+        Downsampling stride for (x, y) directions.
+    polynomial_degree : int, optional
+        Degree of the polynomial model used in RANSAC fitting.
+    ransac_residual_threshold : float, optional
+        Maximum residual allowed for inlier detection in RANSAC.
+    collimation_line_dist : int, optional
+        Expected distance between top and bottom collimation lines.
+    plot : bool, optional
+        If True, display the results interactively.
+    output_plot_path : str or Path, optional
+        If provided, save the plot to this path.
 
-    Returns:
-        dict[str, RANSACRegressor]:
-            A dictionary containing the fitted RANSAC models for the "top" and "bottom" collimation lines.
-    Note:
-        - This collimation line should be approximatly on the center of the extracting window.
-
-    See Also:
-        detect_peaks_in_collimation_line : Function used internally for peak detection.
+    Returns
+    -------
+    dict
+        Dictionary containing the best polynomial models for the top and bottom lines.
     """
-    res = {}
+
+    # Create figure with two subplots (top and bottom)
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
+    polys_dict, inliers_dict, peaks_dict = {}, {}, {}
 
     with rasterio.open(raster_filepath) as src:
+        # Define top and bottom windows based on height fraction
         window_height = int(src.height * height_fraction)
         window_top = Window(0, 0, src.width, window_height)
         window_bottom = Window(0, src.height - window_height, src.width, window_height)
-
         windows = {"top": window_top, "bottom": window_bottom}
+
+        # Process both top and bottom sections
         for i, (side, window) in enumerate(windows.items()):
+            # Read and downsample raster band in the selected window
             out_shape = (1, window.height // stride[1], window.width // stride[0])
             band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
 
-            # scaled by columns the band
-            band_scaled = (band - band.mean(axis=0)) / band.std(axis=0)
+            # Detect peaks (local maxima) in each column
+            peaks_local = find_column_peaks(band)
 
-            # detect peaks by the maximum of prominence
-            x_local, y_local = detect_peaks_in_collimation_line(band_scaled, strategy=peaks_strategy)
+            # Convert peak coordinates from local (window) to global raster coordinates
+            peaks_global = peaks_local * np.array(stride) + np.array([0, window.row_off])
 
-            # convert local coordinates into global image coordinates
-            x_global = x_local * stride[0]
-            y_global = y_local * stride[1] + window.row_off
-
-            poly_model = make_pipeline(
-                StandardScaler(), PolynomialFeatures(degree=polynomial_degree), LinearRegression()
+            # Fit several RANSAC polynomial models to the detected peaks
+            polys, inlier_masks = fit_iterative_ransac_polynomials(
+                peaks_global, residual_threshold=ransac_residual_threshold, degree=polynomial_degree
             )
-            ransac = RANSACRegressor(
-                poly_model, residual_threshold=ransac_residual_threshold, max_trials=ransac_max_trial, min_samples=3
-            )
-            ransac.fit(x_global.reshape(-1, 1), y_global)
+            polys_dict[side] = polys
+            inliers_dict[side] = inlier_masks
+            peaks_dict[side] = peaks_global
 
-            res[side] = ransac
+            # Display the raster window with proper spatial extent
+            extent = [
+                window.col_off,
+                window.col_off + window.width,
+                window.row_off + window.height,
+                window.row_off,
+            ]
+            axes[i].imshow(band, cmap="gray", extent=extent, aspect="auto")
+            axes[i].set_title(side.upper())
 
-            # manage the plot
-            axes[i].imshow(band, cmap="gray")
+        # ---- Select the best matching pair of top/bottom polynomials ----
+        x = np.linspace(0, src.width, 100)
+        best_score, best_pair = np.inf, (0, 0)
 
-            # add all of the peaks on the plot
-            axes[i].scatter(x_local, y_local, s=5, color="blue", label="peaks")
+        # Compare all combinations of top/bottom models
+        for i, poly_top in enumerate(polys_dict["top"]):
+            for j, poly_bottom in enumerate(polys_dict["bottom"]):
+                y_top = poly_top.predict(x.reshape(-1, 1))
+                y_bottom = poly_bottom.predict(x.reshape(-1, 1))
 
-            y_global_fit = ransac.predict(x_global.reshape(-1, 1))
-            y_local_fit = (y_global_fit - window.row_off) / stride[1]
-            axes[i].plot(x_local, y_local_fit, color="red", label="polynomial fit")
+                # Compute deviation from expected collimation distance
+                dist = np.abs(collimation_line_dist - np.abs(y_top - y_bottom))
+                score = np.mean(dist) + 10 * np.std(dist)
 
-            # add the axes title
-            axes[i].set_title(f"{side} edge estimation with polynom")
+                if score < best_score:
+                    best_score = score
+                    best_pair = (i, j)
 
-        handles, labels = axes[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="lower center", ncol=3)
+        # ---- Plot selected polynomial models and their inliers/outliers ----
+        for idx, side in enumerate(["top", "bottom"]):
+            poly = polys_dict[side][best_pair[idx]]
+            peaks = peaks_dict[side]
+            inliers_mask = inliers_dict[side][best_pair[idx]]
 
+            y_pred = poly.predict(x.reshape(-1, 1))
+
+            # Plot polynomial curve
+            axes[idx].plot(x, y_pred, color="red", lw=2, label="Best polynomial")
+
+            # Plot inliers and outliers
+            axes[idx].scatter(peaks[inliers_mask, 0], peaks[inliers_mask, 1], s=8, color="lime", label="Inliers")
+            axes[idx].scatter(peaks[~inliers_mask, 0], peaks[~inliers_mask, 1], s=8, color="gray", label="Outliers")
+
+            axes[idx].legend(loc="upper right")
+
+        # ---- Plot display and saving ----
         if output_plot_path:
             Path(output_plot_path).parent.mkdir(parents=True, exist_ok=True)
             plt.savefig(output_plot_path)
+
         if plot:
             plt.show()
         else:
             plt.close()
 
-        return res
+    # Return the best pair of fitted models
+    return {
+        "top": polys_dict["top"][best_pair[0]],
+        "bottom": polys_dict["bottom"][best_pair[1]],
+    }
 
 
 def compute_source_and_target_grid(
@@ -313,87 +340,29 @@ def compute_source_and_target_grid(
 ####################################################################################################################################
 
 
-def detect_peaks_in_collimation_line(
-    image: cv2.typing.MatLike,
-    distance: float = 0.2,
-    half_window: float = 0.2,
-    strategy: str = "distribution",  # "distribution" ou "prominence"
-) -> tuple[NDArray[np.uint], NDArray[np.uint]]:
+def find_column_peaks(image: cv2.typing.MatLike, n_peaks: int = 3, distance: float = 0.2) -> NDArray[np.generic]:
     """
-    Detect one peak per image column corresponding to the collimation line.
+    Detects the most prominent peaks along each column of an image.
 
-    Two detection strategies are available:
-      - **"distribution"**: selects the peak that maximizes the intensity difference
-        between the left and right sides of the column around the candidate peak.
-        This approach leverages the fact that the collimation line separates the
-        Region of Interest (ROI) from the background. By maximizing the contrast
-        between both sides, it avoids detecting bright lines located within the background.
-      - **"prominence"**: selects the most prominent peak in each column based on
-        local prominence criteria. This method is mainly used after rectification
-        and cropping, where the distribution-based approach may fail.
+    This function scans each column of the input image as a 1D signal and identifies
+    up to `n_peaks` local maxima based on their prominence. The detected peaks are
+    returned as (x, y) coordinates in image space.
+
     Args:
-        image (cv2.typing.MatLike):
-            2D grayscale or intensity image.
-        distance (float, optional):
-            Minimum vertical distance between peaks, as a fraction of image height.
-        half_window (float, optional):
-            Fraction of image height used to evaluate intensity distribution
-            around each peak (only used with "distribution" strategy).
-        strategy (str, optional):
-            Peak selection strategy. Either "distribution" or "prominence".
+        image (cv2.typing.MatLike): Input grayscale image or 2D array.
+        n_peaks (int, optional): Maximum number of peaks to keep per column.
+            Defaults to 3.
+        distance (float, optional): Minimum vertical separation between peaks
+            (as a fraction of image height). Defaults to 0.2.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]:
-            (peaks_x, peaks_y) coordinates of detected peaks.
+        NDArray[np.generic]: Array of shape (N, 2) containing (x, y) coordinates
+        of detected peaks across all columns.
+
+    Example:
+        >>> peaks = find_column_peaks(image, n_peaks=2, distance=0.1)
+        >>> plt.scatter(peaks[:,0], peaks[:,1], s=2, color="red")
     """
-    if strategy not in {"distribution", "prominence"}:
-        raise ValueError("strategy must be 'distribution' or 'prominence'")
-
-    peaks_x, peaks_y = [], []
-    n_rows, n_cols = image.shape[:2]
-    half_window_px = int(half_window * n_rows)
-    distance_px = int(distance * n_rows)
-
-    for col in range(n_cols):
-        signal = image[:, col].astype(int)
-
-        # --- Detect peaks and compute their prominence ---
-        peaks, properties = find_peaks(signal, prominence=0, distance=distance_px)
-        if len(peaks) == 0:
-            continue
-
-        # --- Select up to 5 best candidates ---
-        k = min(5, len(peaks))
-        top_indices = np.argpartition(properties["prominences"], -k)[-k:]
-        selected_peaks = peaks[top_indices]
-
-        # --- Optional border filtering (only for 'distribution') ---
-        if strategy == "distribution":
-            selected_peaks = selected_peaks[
-                (selected_peaks > half_window_px) & (selected_peaks < len(signal) - half_window_px)
-            ]
-            if len(selected_peaks) == 0:
-                continue
-
-        # --- Choose the best peak depending on strategy ---
-        if strategy == "distribution":
-            scores = []
-            for peak in selected_peaks:
-                left_part = signal[max(0, peak - half_window_px) : peak]
-                right_part = signal[peak : min(len(signal), peak + half_window_px)]
-                score = np.abs(np.median(left_part) - np.median(right_part))
-                scores.append(score)
-            best_peak = selected_peaks[np.argmax(scores)]
-        else:
-            best_peak = selected_peaks[np.argmax(properties["prominences"][top_indices])]
-
-        peaks_x.append(col)
-        peaks_y.append(best_peak)
-
-    return np.array(peaks_x), np.array(peaks_y)
-
-
-def detect_peaks_in_columns(image: cv2.typing.MatLike, n_peaks: int = 3, distance: float = 0.2) -> NDArray[np.generic]:
     peaks_x, peaks_y = [], []
     n_rows, n_cols = image.shape[:2]
     distance_px = int(distance * n_rows)
@@ -414,53 +383,63 @@ def detect_peaks_in_columns(image: cv2.typing.MatLike, n_peaks: int = 3, distanc
     return np.column_stack((peaks_x, peaks_y))
 
 
-def fit_n_ransac_poly(
-    peaks: NDArray[np.generic], residual_threshold: float = 20.0, n_ransac: int = 3, degree: int = 2
-) -> list[Pipeline]:
+def fit_iterative_ransac_polynomials(
+    peaks: NDArray[np.generic], residual_threshold: float, n_ransac: int = 3, degree: int = 2
+) -> tuple[list[Pipeline], list[NDArray[np.bool]]]:
+    """
+    Fit multiple polynomial models iteratively using RANSAC regression.
+
+    Each iteration fits a polynomial model on the remaining (non-inlier) points,
+    removing detected inliers after each successful fit. This allows extraction
+    of several dominant polynomial trends from a set of (x, y) peak coordinates.
+
+    Args:
+        peaks (NDArray[np.floating]): Array of shape (n_samples, 2) containing (x, y) points.
+        residual_threshold (float): Maximum residual for a data point to be classified as an inlier.
+        n_ransac (int, optional): Maximum number of RANSAC iterations/models to fit. Default is 3.
+        degree (int, optional): Degree of the polynomial features. Default is 2.
+
+    Returns:
+        Tuple[List[Pipeline], List[NDArray[np.bool_]]]:
+            - models: List of fitted polynomial pipelines (StandardScaler + PolyFeatures + LinearRegression).
+            - inlier_masks: List of boolean masks indicating inliers for each fitted model.
+    """
     X = peaks[:, 0].reshape(-1, 1)
     y = peaks[:, 1]
+
+    # Initialize tracking masks
     remaining_mask = np.ones_like(y, dtype=bool)
-    res = []
-    for i in range(n_ransac):
+    models: list[Pipeline] = []
+    inlier_masks: list[NDArray[np.bool]] = []
+
+    for _ in range(n_ransac):
+        # Stop if too few points remain
         if np.sum(remaining_mask) < 3:
             break
-        # Modèle polynomial + RANSAC
+
+        # Create polynomial regression pipeline
         poly_model = make_pipeline(
             StandardScaler(),
             PolynomialFeatures(degree=degree),
             LinearRegression(),
         )
+
+        # Fit RANSAC on remaining points
         ransac = RANSACRegressor(poly_model, residual_threshold=residual_threshold, min_samples=3)
         ransac.fit(X[remaining_mask], y[remaining_mask])
-        res.append(ransac.estimator_)
 
-        # remove inliers for next iteration
+        # Store fitted model
+        models.append(ransac.estimator_)
+
+        # Compute inlier mask in global coordinates
         inliers_mask = np.zeros_like(y, dtype=bool)
         inliers_mask[remaining_mask] = ransac.inlier_mask_
+        inlier_masks.append(inliers_mask)
+
+        # Exclude inliers for next iteration
         remaining_mask[inliers_mask] = False
-    return res
 
-
-def evaluate_poly(image: cv2.typing.MatLike, polys: list[Pipeline], band_thickness: float = 0.2) -> list[float]:
-    band_thickness_px = int(band_thickness * image.shape[0])
-    x = np.arange(image.shape[1])
-    results = []
-
-    rows = np.arange(image.shape[0])[:, None]  # pour vectorisation
-
-    for poly in polys:
-        y = poly.predict(x.reshape(-1, 1)).astype(np.int32)
-        y_top = np.clip(y + band_thickness_px, 0, image.shape[0] - 1)
-        y_bottom = np.clip(y - band_thickness_px, 0, image.shape[0] - 1)
-
-        mask_top = (rows >= y) & (rows <= y_top)
-        mask_bottom = (rows >= y_bottom) & (rows <= y)
-
-        top_mean = np.mean(image[mask_top])
-        bottom_mean = np.mean(image[mask_bottom])
-
-        results.append(np.abs(top_mean - bottom_mean))
-    return results
+    return models, inlier_masks
 
 
 def extract_vertical_edge_points(
@@ -563,7 +542,3 @@ def vertical_ransac(
         "inlier_percent": np.mean(ransac.inlier_mask_) * 100,
     }
     return ransac, stats
-
-
-def _ransac_stats_to_str(stats: dict[str, float]) -> str:
-    return "\n".join([f"{k}: {v:.2f}" for k, v in stats.items()])
