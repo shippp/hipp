@@ -76,13 +76,16 @@ See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
   - Joins split images into a single composite image
   - Requires input images named sequentially (e.g. `ImageId_a`, `ImageId_b`, `ImageId_c`, …)
   - A small overlap between image parts is required for proper stitching
-  - Uses [`image_mosaic`](https://stereopipeline.readthedocs.io/en/latest/tools/image_mosaic.html) from the [ASP toolkit](https://stereopipeline.readthedocs.io/en/latest/introduction.html)
+  - Performs stitching using matched keypoints and successive affine transformations for robust, geometry-aware merging.
 
-- **Image Cropping**
-  - Built-in interactive tool to manually select corners of the region of interest
-  - Rotates and crops the image to align the selected top edge horizontally
+- **Image Restitutions**
+  - Estimates the top and bottom collimation lines using a second-degree polynomial fit.
+  - Determines the vertical boundaries (x1 and x2) of the region of interest (ROI).
+  - Computes the geometric transformation needed to crop and restitute the ROI using a Thin Plate Spline (TPS) deformation model.
 
-See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for example.
+See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for example of full preprocessing.
+
+See this [notebook](notebooks/kh9pc_collimation_rectification.ipynb) for a detailed example of collimation rectification.
 
 ### Preprocessing of KH-9 Mapping Camera Satellite Images *(feature in development)*
 
