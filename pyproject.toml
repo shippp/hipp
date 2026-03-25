@@ -53,6 +53,7 @@ dependencies = [
   "pre-commit",
   "usgsxplore",
   "ipykernel",
+  "jupyter"
 ]
 [tool.hatch.envs.dev.scripts]
 check = [
@@ -60,6 +61,7 @@ check = [
   "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
 ]
 kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
+lab = "jupyter lab --no-browser --ip=127.0.0.1 --port=8333"
 
 
 [tool.coverage.run]

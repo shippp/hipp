@@ -29,7 +29,7 @@ from hipp.kh9pc.quality_control import (
 ####################################################################################################################################
 
 
-def image_mosaic(
+def image_mosaic_asp(
     image_paths: list[str],
     output_image_path: str,
     overwrite: bool = False,
@@ -195,8 +195,8 @@ def collimation_rectification(
     vertical_edges = detect_vertical_edges(
         input_raster_path,
         bg_px_threshold,
-        plot=False,
-        output_plot_path=qc_dir / "vertical_edges" / f"{input_raster_path.stem}.png",
+        # plot=False,
+        # output_plot_path=qc_dir / "vertical_edges" / f"{input_raster_path.stem}.png",
     )
     joblib.dump(vertical_edges, data_dir / "vertical_edges.pkl")
 

@@ -18,6 +18,7 @@ from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.metrics import root_mean_squared_error
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from matplotlib.patches import Rectangle
 
 ####################################################################################################################################
 #                                                   PUBLIC FUNCTIONS
@@ -26,79 +27,257 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 def detect_vertical_edges(
     raster_filepath: str | Path,
-    px_threshold: int = 20,
-    width_fraction: float = 0.05,
-    stride: tuple[int, int] = (20, 20),
-    ransac_residual_threshold: float = 100,
-    ransac_max_trials: int = 100,
-    plot: bool = True,
-    output_plot_path: str | Path | None = None,
-) -> dict[str, int]:
+    background_threshold: int = 20,
+    width_fraction: float = 0.15,
+    stride: int = 10,
+) -> tuple[int, int]:
+    """Detect the left and right film edges of a KH-9 PC scan strip.
+
+    The function reads narrow vertical bands on each side of the image,
+    downsamples them along the x-axis, and locates the abrupt intensity
+    transition (rupture) that marks the boundary between the dark film
+    border and the exposed image area.
+
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster (single-band GeoTIFF).
+    background_threshold : int, optional
+        Minimum pixel intensity used to discriminate image content from
+        the dark background border. Default is 20.
+    width_fraction : float, optional
+        Fraction of the total image width used as the search window on
+        each side (e.g. 0.15 → leftmost / rightmost 15 %). Default is 0.15.
+    stride : int, optional
+        Downsampling stride along the x-axis for the rupture detection
+        profile. Larger values are faster but less precise. Default is 10.
+
+    Returns
+    -------
+    tuple[int, int]
+        A ``(left, right)`` tuple of detected edge column indices in the
+        full-image coordinate system.
     """
-    Detect the left and right vertical edges of a raster image using RANSAC regression.
-
-    This function extracts two vertical bands (left and right) from a raster image,
-    identifies strong vertical edge points based on pixel intensity changes, and fits
-    a robust RANSAC regression line to estimate the most probable edge position.
-    The detected vertical positions (in pixel coordinates) represent the image's
-    lateral boundaries, which can be used for geometric calibration or alignment tasks.
-
-    Args:
-        raster_filepath (str | Path):
-            Path to the raster image file.
-        px_threshold (int, optional):
-            Minimum pixel intensity difference used to identify edge points. Defaults to 20.
-        width_fraction (float, optional):
-            Fraction of the image width used to define the left and right edge bands. Defaults to 0.05.
-        stride (tuple[int, int], optional):
-            Downsampling step (width, height) applied when reading the image to reduce computation. Defaults to (20, 20).
-        ransac_residual_threshold (float, optional):
-            Maximum distance for a data point to be classified as an inlier by the RANSAC algorithm. Defaults to 100.
-        ransac_max_trials (int, optional):
-            Maximum number of iterations performed by the RANSAC algorithm. Defaults to 100.
-        plot (bool, optional):
-            Whether to display the visualization of detected edges and RANSAC fits. Defaults to True.
-        output_plot_path (str | Path | None, optional):
-            Path to save the resulting plot as an image file. If None, the plot is not saved. Defaults to None.
-
-    Returns:
-        dict[str, int]:
-            A dictionary mapping "left" and "right" to the detected x-coordinate positions (in pixels)
-            of the corresponding vertical edges.
-
-    Notes:
-        - This function relies on helper functions `extract_vertical_edge_points()` and `vertical_ransac()`.
-        - The RANSAC method ensures robustness against noise and false edge detections.
-        - The detected vertical positions can be used to correct lateral distortions in remote sensing imagery.
-    """
-    res = {}
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
-
     with rasterio.open(raster_filepath) as src:
         window_width = int(src.width * width_fraction)
-        window_left = Window(0, 0, window_width, src.height)
-        window_right = Window(src.width - window_width, 0, window_width, src.height)
+        out_shape = (1, 1, window_width // stride)
 
-        windows = {"left": window_left, "right": window_right}
-        for i, (side, window) in enumerate(windows.items()):
-            out_shape = (1, window.height // stride[1], window.width // stride[0])
+        for side, window in {
+            "left": Window(0, 0, window_width, src.height),
+            "right": Window(src.width - window_width, 0, window_width, src.height),
+        }.items():
             band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
-            x_local, y_local = extract_vertical_edge_points(band, px_threshold, side)
-            ransac_local, stats = vertical_ransac(x_local, y_local, ransac_residual_threshold, ransac_max_trials)
-            res[side] = int(ransac_local.estimator_.constant_ * stride[0] + window.col_off)
+            ruptures = detect_ruptures(band.flatten(), background_threshold, reverse_scan=(side == "left"))
+            if side == "left":
+                left = int(ruptures[0] * stride + window.col_off)
+            else:
+                right = int(ruptures[0] * stride + window.col_off)
 
-            axes[i].imshow(band, cmap="gray")
+    return left, right
 
-            inlier_mask = ransac_local.inlier_mask_
-            axes[i].scatter(x_local[inlier_mask], y_local[inlier_mask], s=5, color="green", label="inliers")
-            axes[i].scatter(x_local[~inlier_mask], y_local[~inlier_mask], s=5, color="red", label="outliers")
 
-            axes[i].axvline(x=ransac_local.estimator_.constant_, color="blue", label="RANSAC line")
-            stats_str = "\n".join([f"{k}: {v:.2f}" for k, v in stats.items()])
-            axes[i].set_title(f"{side} edge detection \n({stats_str})")
+def detect_horizontal_edges(
+    raster_filepath: str | Path,
+    vertical_edges: tuple[int, int] | None = None,
+    background_threshold: int = 20,
+    height_fraction: float = 0.15,
+    stride: int = 10,
+) -> tuple[int, int]:
+    """Detect the top and bottom film edges of a KH-9 PC scan strip.
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=3)
+    The function reads narrow horizontal bands at the top and bottom of the
+    image, downsamples them along the y-axis, and locates the abrupt intensity
+    transition (rupture) that marks the boundary between the dark film border
+    and the exposed image area.
+
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster (single-band GeoTIFF).
+    vertical_edges : tuple[int, int] or None, optional
+        ``(left, right)`` column indices returned by :func:`detect_vertical_edges`.
+        When provided, the search is restricted to that column range, which
+        avoids picking up the dark border on the sides. Default is None (full width).
+    background_threshold : int, optional
+        Minimum pixel intensity used to discriminate image content from the
+        dark background border. Default is 20.
+    height_fraction : float, optional
+        Fraction of the total image height used as the search window on each
+        side (e.g. 0.15 → topmost / bottommost 15 %). Default is 0.15.
+    stride : int, optional
+        Downsampling stride along the y-axis for the rupture detection profile.
+        Larger values are faster but less precise. Default is 10.
+
+    Returns
+    -------
+    tuple[int, int]
+        A ``(top, bottom)`` tuple of detected edge row indices in the
+        full-image coordinate system.
+    """
+    with rasterio.open(raster_filepath) as src:
+        window_height = int(src.height * height_fraction)
+        col_off = vertical_edges[0] if vertical_edges is not None else 0
+        col_end = vertical_edges[1] if vertical_edges is not None else src.width
+        window_width = col_end - col_off
+        out_shape = (1, window_height // stride, 1)
+
+        for side, window in {
+            "top": Window(col_off, 0, window_width, window_height),
+            "bottom": Window(col_off, src.height - window_height, window_width, window_height),
+        }.items():
+            band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
+            ruptures = detect_ruptures(band.flatten(), background_threshold, reverse_scan=(side == "top"))
+            if side == "top":
+                top = int(ruptures[0] * stride + window.row_off)
+            else:
+                bottom = int(ruptures[0] * stride + window.row_off)
+
+    return top, bottom
+
+
+def estimate_horizontal_poly(
+    raster_filepath: str | Path,
+    vertical_edges: tuple[int, int] | None = None,
+    n_point: int = 100,
+    background_threshold: int = 20,
+    height_fraction: float = 0.15,
+    stride: int = 10,
+    polynomial_degree: int = 2,
+    ransac_residual_threshold: float = 80.0,
+    ransac_max_trials: int = 500,
+) -> tuple[Pipeline, Pipeline]:
+    """Fit polynomial RANSAC models to the top and bottom horizontal film edges.
+
+    Works similarly to :func:`detect_horizontal_edges`: reads a band of height
+    ``height_fraction`` at the top and bottom of the image, detects the
+    background/image rupture column by column, converts the detected points to
+    global image coordinates, and fits a polynomial RANSAC model on each side.
+
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster (single-band GeoTIFF).
+    vertical_edges : tuple[int, int] or None, optional
+        ``(left, right)`` column indices as returned by :func:`detect_vertical_edges`.
+        When provided, restricts the search to that column range. Default is None (full width).
+    n_point : int, optional
+        Number of evenly-spaced sample columns across the strip width. Default is 100.
+    background_threshold : int, optional
+        Pixel intensity threshold separating background from image content. Default is 20.
+    height_fraction : float, optional
+        Fraction of the total image height used as the search window on each
+        side (e.g. 0.15 → topmost / bottommost 15 %). Default is 0.15.
+    stride : int, optional
+        Downsampling stride along the y-axis inside the window. Default is 10.
+    polynomial_degree : int, optional
+        Degree of the polynomial fitted by RANSAC. Default is 2.
+    ransac_residual_threshold : float, optional
+        Maximum residual (in pixels) for a point to be considered an inlier. Default is 80.0.
+    ransac_max_trials : int, optional
+        Maximum number of RANSAC iterations. Default is 100.
+
+    Returns
+    -------
+    tuple[Pipeline, Pipeline]
+        A ``(top, bottom)`` pair of fitted polynomial pipelines.
+    """
+    with rasterio.open(raster_filepath) as src:
+        col_off = vertical_edges[0] if vertical_edges is not None else 0
+        col_end = vertical_edges[1] if vertical_edges is not None else src.width
+        window_width = col_end - col_off
+        window_height = int(src.height * height_fraction)
+        out_shape = (1, window_height // stride, n_point)
+        scale_x = window_width / n_point
+
+        top: Pipeline
+        bottom: Pipeline
+
+        for side, window in {
+            "top": Window(col_off, 0, window_width, window_height),
+            "bottom": Window(col_off, src.height - window_height, window_width, window_height),
+        }.items():
+            band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
+
+            res = []
+            for i in range(band.shape[1]):
+                ruptures = detect_ruptures(band[:, i], background_threshold, reverse_scan=(side == "top"))
+                if len(ruptures) > 0:
+                    res.append((i, ruptures[0]))
+
+            if not res:
+                raise RuntimeError(f"No rupture detected on the {side} edge.")
+
+            np_res = np.array(res)
+            x_global = np_res[:, 0] * scale_x + window.col_off
+            y_global = np_res[:, 1] * stride + window.row_off
+
+            model = fit_ransac_poly(
+                x_global,
+                y_global,
+                degree=polynomial_degree,
+                residual_threshold=ransac_residual_threshold,
+                max_trials=ransac_max_trials,
+            )
+
+            if side == "top":
+                top = model.estimator_
+            else:
+                bottom = model.estimator_
+
+    return top, bottom
+
+
+def plot_edges(
+    raster_filepath: str | Path,
+    vertical_edges: tuple[int, int],
+    horizontal_edges: tuple[int, int],
+    plot_size: int = 512,
+    plot: bool = True,
+    output_plot_path: str | Path | None = None,
+) -> None:
+    """Generate a diagnostic figure showing detected film edges as a red rectangle.
+
+    Reads the full image downsampled to a square thumbnail of ``plot_size`` pixels
+    and overlays a red rectangle delimiting the detected left, right, top, and
+    bottom edges.
+
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster (single-band GeoTIFF).
+    vertical_edges : tuple[int, int]
+        ``(left, right)`` column indices as returned by :func:`detect_vertical_edges`.
+    horizontal_edges : tuple[int, int]
+        ``(top, bottom)`` row indices as returned by :func:`detect_horizontal_edges`.
+    plot_size : int, optional
+        Side length in pixels of the square thumbnail produced by rasterio
+        resampling. Default is 512.
+    plot : bool, optional
+        If True, display the figure interactively. Default is True.
+    output_plot_path : str, Path, or None, optional
+        If provided, save the figure to this path. Default is None.
+    """
+    fig, ax = plt.subplots(figsize=(8, 8), constrained_layout=True)
+
+    with rasterio.open(raster_filepath) as src:
+        band = src.read(1, out_shape=(1, plot_size, plot_size), resampling=Resampling.average)
+        scale_x = plot_size / src.width
+        scale_y = plot_size / src.height
+
+    ax.imshow(band, cmap="gray")
+
+    left, right = vertical_edges[0] * scale_x, vertical_edges[1] * scale_x
+    top, bottom = horizontal_edges[0] * scale_y, horizontal_edges[1] * scale_y
+    rect = Rectangle(
+        (left, top),
+        right - left,
+        bottom - top,
+        linewidth=1.5,
+        edgecolor="red",
+        facecolor="none",
+    )
+    ax.add_patch(rect)
+    ax.set_title("Detected edges")
 
     if output_plot_path:
         Path(output_plot_path).parent.mkdir(parents=True, exist_ok=True)
@@ -108,7 +287,138 @@ def detect_vertical_edges(
     else:
         plt.close()
 
-    return res
+
+def plot_vertical_edges(
+    raster_filepath: str | Path,
+    edges: tuple[int, int],
+    margin_fraction: float = 0.03,
+    plot_res: float = 0.05,
+    plot: bool = True,
+    output_plot_path: str | Path | None = None,
+) -> None:
+    """Generate a diagnostic figure for detected vertical film edges.
+
+    Displays two subplots — one per edge (left, right) — each showing a
+    low-resolution thumbnail of the search window centered on the detected
+    edge with a red vertical line overlay.
+
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster (single-band GeoTIFF).
+    edges : tuple[int, int]
+        Detected edge positions as returned by :func:`detect_vertical_edges`,
+        as a ``(left, right)`` tuple of column indices.
+    margin_fraction : float, optional
+        Fraction of the total image width used as margin on each side of the
+        detected edge. Default is 0.03.
+    plot_res : float, optional
+        Fraction of the original resolution used for the diagnostic thumbnail.
+        Default is 0.05.
+    plot : bool, optional
+        If True, display the figure interactively. Default is True.
+    output_plot_path : str, Path, or None, optional
+        If provided, save the figure to this path. Default is None.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(10, 8), constrained_layout=True)
+
+    with rasterio.open(raster_filepath) as src:
+        margin = int(src.width * margin_fraction)
+
+        for i, (side, edge_col) in enumerate(zip(["left", "right"], edges)):
+            col_off = max(0, edge_col - margin)
+            col_end = min(src.width, edge_col + margin)
+            window = Window(col_off, 0, col_end - col_off, src.height)
+            out_shape = (1, int(src.height * plot_res), int(window.width * plot_res))
+
+            band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
+            axes[i].imshow(band, cmap="gray", aspect="auto")
+            axes[i].axvline(x=(edge_col - col_off) * plot_res, color="red")
+            axes[i].set_title(f"{side} edge detection")
+            axes[i].axis("off")
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_plot_path)
+    if plot:
+        plt.show()
+    else:
+        plt.close()
+
+
+def plot_horizontal_poly(
+    raster_filepath: str | Path,
+    polys: tuple[Pipeline, Pipeline],
+    vertical_edges: tuple[int, int] | None = None,
+    height_fraction: float = 0.15,
+    n_point: int = 100,
+    stride: int = 10,
+    plot: bool = True,
+    output_plot_path: str | Path | None = None,
+) -> None:
+    """Generate a diagnostic figure for the fitted horizontal polynomial models.
+
+    Uses the same sampling parameters as :func:`estimate_horizontal_poly`
+    (``n_point`` columns, ``stride`` downsampling along y). Displays two subplots
+    — one for the top band, one for the bottom — each showing the resampled window
+    with the fitted polynomial overlaid in red.
+
+    Parameters
+    ----------
+    raster_filepath : str or Path
+        Path to the input raster (single-band GeoTIFF).
+    polys : tuple[Pipeline, Pipeline]
+        ``(top, bottom)`` polynomial pipelines as returned by
+        :func:`estimate_horizontal_poly`.
+    vertical_edges : tuple[int, int] or None, optional
+        ``(left, right)`` column indices used to restrict the window. Default is None.
+    height_fraction : float, optional
+        Fraction of the total image height used as search window, must match the
+        value used in :func:`estimate_horizontal_poly`. Default is 0.15.
+    n_point : int, optional
+        Number of sample columns (x-axis of the thumbnail). Default is 100.
+    stride : int, optional
+        Downsampling stride along the y-axis. Default is 10.
+    plot : bool, optional
+        If True, display the figure interactively. Default is True.
+    output_plot_path : str, Path, or None, optional
+        If provided, save the figure to this path. Default is None.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), constrained_layout=True)
+
+    with rasterio.open(raster_filepath) as src:
+        col_off = vertical_edges[0] if vertical_edges is not None else 0
+        col_end = vertical_edges[1] if vertical_edges is not None else src.width
+        window_width = col_end - col_off
+        window_height = int(src.height * height_fraction)
+        out_shape = (1, window_height // stride, n_point)
+
+        for i, (side, window, poly) in enumerate(
+            zip(
+                ["top", "bottom"],
+                [
+                    Window(col_off, 0, window_width, window_height),
+                    Window(col_off, src.height - window_height, window_width, window_height),
+                ],
+                polys,
+            )
+        ):
+            band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
+
+            extent = [col_off, col_end, window.row_off + window_height, window.row_off]
+            axes[i].imshow(band, cmap="gray", extent=extent, aspect="auto")
+
+            x = np.linspace(col_off, col_end, 500)
+            axes[i].plot(x, poly.predict(x.reshape(-1, 1)), color="red", lw=1.5)
+            axes[i].set_title(f"{side} polynomial fit")
+
+    if output_plot_path:
+        Path(output_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_plot_path)
+    if plot:
+        plt.show()
+    else:
+        plt.close()
 
 
 def detect_collimation_lines(
@@ -246,8 +556,69 @@ def detect_collimation_lines(
     }
 
 
+def compute_source_and_target_grid_v2(
+    vertical_edges: tuple[int, int],
+    horizontal_polys: tuple[Pipeline, Pipeline],
+    img_height: int | None = None,
+    grid_shape: tuple[int, int] = (100, 50),
+) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
+    """Generate source and destination control point grids for TPS rectification.
+
+    Parameters
+    ----------
+    vertical_edges : tuple[int, int]
+        ``(left, right)`` column indices as returned by :func:`detect_vertical_edges`.
+    horizontal_polys : tuple[Pipeline, Pipeline]
+        ``(top, bottom)`` polynomial pipelines as returned by
+        :func:`estimate_horizontal_poly`.
+    img_height : int or None, optional
+        Target height of the rectified image in pixels. If None, estimated as the
+        mean distance between the top and bottom polynomial models. Default is None.
+    grid_shape : tuple[int, int], optional
+        Number of control points along ``(width, height)``. Default is (100, 50).
+
+    Returns
+    -------
+    src_points : np.ndarray
+        Distorted source coordinates, shape ``(grid_shape[0], grid_shape[1], 2)``.
+    dst_points : np.ndarray
+        Regular destination coordinates, shape ``(grid_shape[0], grid_shape[1], 2)``.
+    output_size : tuple[int, int]
+        Expected ``(width, height)`` of the rectified raster.
+    """
+    cropped_img_width = vertical_edges[1] - vertical_edges[0]
+
+    x_src = np.linspace(vertical_edges[0], vertical_edges[1], grid_shape[0])
+    y_top_src = horizontal_polys[0].predict(x_src.reshape(-1, 1)).ravel()
+    y_bottom_src = horizontal_polys[1].predict(x_src.reshape(-1, 1)).ravel()
+
+    # compute the approximate img_height with the mean distance between
+    # top and bottom poly
+    if img_height is None:
+        img_height = int(np.abs(np.mean(y_bottom_src - y_top_src)))
+
+    x_dst = np.linspace(0, cropped_img_width, grid_shape[0])
+    y_top_dst = np.zeros_like(x_dst)
+    y_bottom_dst = np.full_like(x_dst, img_height)
+
+    dst_points = np.zeros((grid_shape[0], grid_shape[1], 2), dtype=float)
+    for i, (xi, yt, yb) in enumerate(zip(x_dst, y_top_dst, y_bottom_dst)):
+        ys = np.linspace(yt, yb, grid_shape[1])
+        dst_points[i, :, 0] = np.full_like(ys, xi)
+        dst_points[i, :, 1] = ys
+
+    src_points = np.zeros((grid_shape[0], grid_shape[1], 2), dtype=float)
+    for i, (xi, yt, yb) in enumerate(zip(x_src, y_top_src, y_bottom_src)):
+        ys = np.linspace(yt, yb, grid_shape[1])
+        src_points[i, :, 0] = np.full_like(ys, xi)
+        src_points[i, :, 1] = ys
+
+    output_size = (cropped_img_width, img_height)
+    return src_points, dst_points, output_size
+
+
 def compute_source_and_target_grid(
-    detected_vertical_edges: dict[str, int],
+    detected_vertical_edges: tuple[int, int],
     detected_horizontal_ransac: dict[str, RANSACRegressor],
     colimation_line_dist: int = 21770,
     margin: tuple[int, int] = (0, 147),
@@ -298,7 +669,7 @@ def compute_source_and_target_grid(
     - The destination points form a uniform rectangular grid spanning from (0,0) to
       (cropped_img_width, colimation_line_dist), shifted by the specified margin.
     """
-    cropped_img_width = detected_vertical_edges["right"] - detected_vertical_edges["left"]
+    cropped_img_width = detected_vertical_edges[1] - detected_vertical_edges[0]
 
     # --- Destination points ---
     x_dst = np.linspace(0, cropped_img_width, grid_shape[0])
@@ -317,7 +688,7 @@ def compute_source_and_target_grid(
     dst_points += np.array(margin)
 
     # --- Source points ---
-    x_src = x_dst + detected_vertical_edges["left"]
+    x_src = x_dst + detected_vertical_edges[0]
     y_top_src = detected_horizontal_ransac["top"].predict(x_src.reshape(-1, 1))
     y_bottom_src = detected_horizontal_ransac["bottom"].predict(x_src.reshape(-1, 1))
 
@@ -442,6 +813,25 @@ def fit_iterative_ransac_polynomials(
     return models, inlier_masks
 
 
+def fit_ransac_poly(
+    x: NDArray[np.generic],
+    y: NDArray[np.generic],
+    degree: int = 3,
+    residual_threshold: float = 100,
+    max_trials: int = 100,
+) -> RANSACRegressor:
+    poly_model = make_pipeline(
+        StandardScaler(),
+        PolynomialFeatures(degree=degree),
+        LinearRegression(),
+    )
+    ransac = RANSACRegressor(
+        poly_model, residual_threshold=residual_threshold, min_samples=degree + 1, max_trials=max_trials
+    )
+    ransac.fit(x.reshape(-1, 1), y)
+    return ransac
+
+
 def extract_vertical_edge_points(
     image: cv2.typing.MatLike, px_threshold: int = 20, direction: str = "left"
 ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
@@ -542,3 +932,41 @@ def vertical_ransac(
         "inlier_percent": np.mean(ransac.inlier_mask_) * 100,
     }
     return ransac, stats
+
+
+def bg_ruptures(
+    image: cv2.typing.MatLike, background_threshold: int = 20, axis: int = 0, reverse_scan: bool = False
+) -> NDArray[np.generic]:
+    """Find the first background pixel per row or column.
+
+    For each line along `axis`, scans until a pixel at or below `bg_threshold` is found and
+    records its position. `reverse_scan=True` scans from the far end instead.
+
+    Returns an (N, 2) array of (col, row) coordinates, one per line that has a background pixel.
+    """
+    ruptures = []
+
+    for idx in range(image.shape[1 - axis] if axis == 0 else image.shape[0]):
+        vec = image[:, idx] if axis == 0 else image[idx, :]
+        vec_scan = vec[::-1] if reverse_scan else vec
+
+        below = np.where(vec_scan <= background_threshold)[0]
+        if below.size > 0:
+            first_idx = below[0]
+            if reverse_scan:
+                first_idx = len(vec) - 1 - first_idx
+            ruptures.append((idx, first_idx) if axis == 0 else (first_idx, idx))
+
+    return np.array(ruptures)
+
+
+def detect_ruptures(vec: NDArray[np.floating], threshold: float, reverse_scan: bool = False) -> NDArray[np.integer]:
+    if reverse_scan:
+        vec = vec[::-1]
+
+    idx = np.where((vec[1:] <= threshold) & (vec[:-1] > threshold))[0] + 1
+
+    if reverse_scan:
+        idx = len(vec) - 1 - idx
+
+    return idx

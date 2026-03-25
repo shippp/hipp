@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 # from hipp.image import warp_tif_blockwise_to_dst
-from hipp.kh9pc.core import collimation_rectification, image_mosaic
+from hipp.kh9pc.core import collimation_rectification, image_mosaic_asp
 from hipp.kh9pc.image_mosaic import compute_sequential_alignment, mosaic_images
 
 
@@ -55,7 +55,7 @@ def join_images_asp(
 
         # Call image_mosaic for each group
         # Sort image paths alphabetically to ensure consistent mosaicking order
-        image_mosaic(image_paths, output_image_path, overwrite, threads, cleanup, verbose, dryrun)
+        image_mosaic_asp(image_paths, output_image_path, overwrite, threads, cleanup, verbose, dryrun)
 
 
 def join_images(
