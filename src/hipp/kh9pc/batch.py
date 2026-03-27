@@ -5,10 +5,9 @@ Description: Functions for applying core preprocessing functions to images batch
 
 import os
 from collections import defaultdict
-from pathlib import Path
 
 # from hipp.image import warp_tif_blockwise_to_dst
-from hipp.kh9pc.core import collimation_rectification, image_mosaic_asp
+from hipp.kh9pc.core import image_mosaic_asp
 from hipp.kh9pc.image_mosaic import compute_sequential_alignment, mosaic_images
 
 
@@ -90,95 +89,3 @@ def join_images(
         else:
             matrix = compute_sequential_alignment(image_paths, verbose=verbose)
             mosaic_images(matrix, output_image_path, max_workers, verbose)
-
-
-def iter_collimation_rectification(
-    input_dir: str | Path,
-    output_dir: str | Path,
-    qc_dir: str | Path,
-    bg_px_threshold: int = 20,
-    collimation_line_dist: int = 21770,
-    transformation: str = "tps",
-    verbose: bool = True,
-    overwrite: bool = False,
-) -> None:
-    """
-    Apply collimation rectification iteratively to all raster images in a directory.
-
-    This function loops over all `.tif` images in the input directory and applies
-    the `collimation_rectification()` function to each. The user can choose between
-    Thin Plate Spline (TPS) or Affine transformations for geometric correction.
-    Quality control (QC) outputs for each image are stored in the specified QC directory.
-
-    Args:
-        input_dir (str | Path):
-            Directory containing the input raster images to rectify.
-        output_dir (str | Path):
-            Directory where rectified raster images will be saved.
-        qc_dir (str | Path):
-            Directory where quality control plots and intermediate data will be stored.
-        bg_px_threshold (int, optional):
-            Minimum pixel intensity difference used to detect vertical edges. Defaults to 20.
-        collimation_line_dist (int, optional):
-            Expected distance (in pixels) between the top and bottom collimation lines
-            in the rectified image. Defaults to 21770.
-        transformation (str, optional):
-            Type of geometric transformation to apply.
-            - "tps": Thin Plate Spline (non-linear, smooth correction)
-            - "affine": Affine (linear correction)
-            Defaults to "tps".
-        verbose (bool, optional):
-            If True, prints progress updates during processing. Defaults to True.
-        overwrite (bool, optional):
-            If False, skips processing for images that already have a rectified output.
-            If True, overwrites existing rectified images. Defaults to False.
-
-    Returns:
-        None
-
-    Workflow:
-        1. Scan the `input_dir` for all `.tif` files.
-        2. For each image:
-            a. Check if the output file already exists.
-            b. If not (or if `overwrite=True`), perform collimation rectification using
-               `collimation_rectification()`.
-        3. Store rectified images in `output_dir` and QC data in `qc_dir`.
-
-    Notes:
-        - This function is designed for batch rectification of multiple raster scenes.
-        - Each image’s intermediate data (collimation lines, grids, QC plots)
-          will be organized under its corresponding subdirectories in `qc_dir`.
-        - The same transformation type (`transformation`) is applied to all images
-          in the batch for consistency.
-
-    Example:
-        >>> iter_collimation_rectification(
-        ...     input_dir="raw_scenes/",
-        ...     output_dir="rectified_scenes/",
-        ...     qc_dir="quality_control/",
-        ...     bg_px_threshold=25,
-        ...     collimation_line_dist=21800,
-        ...     transformation="tps",
-        ...     verbose=True,
-        ...     overwrite=False
-        ... )
-    """
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
-
-    for input_raster_path in sorted(input_dir.glob("*.tif")):
-        output_raster_path = output_dir / input_raster_path.name
-
-        if output_raster_path.exists() and not overwrite:
-            if verbose:
-                print(f"Skipping {input_raster_path.name} : output already exists")
-        else:
-            collimation_rectification(
-                input_raster_path,
-                output_raster_path,
-                qc_dir,
-                bg_px_threshold,
-                collimation_line_dist,
-                transformation,
-                verbose,
-            )
