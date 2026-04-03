@@ -228,7 +228,7 @@ class PolyRectificationStrategy(RectificationStrategy):
             ruptures = utils.detect_ruptures(
                 sub_image.band[:, i], self.background_threshold, reverse_scan=(side == "top")
             )
-            if len(ruptures > 0):
+            if len(ruptures) > 0:
                 res.append((i, ruptures[0]))
 
         if not res:
