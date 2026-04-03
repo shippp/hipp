@@ -2,18 +2,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.typing import NDArray
 import rasterio
 from rasterio.windows import Window
-from rasterio.warp import Resampling
 from sklearn.linear_model import RANSACRegressor
 from sklearn.pipeline import Pipeline
 
 from hipp.kh9pc.rectification_strategy.base import RectificationStrategy
-from hipp.kh9pc.utils import make_summary_figure
+from hipp.kh9pc.utils import SubImage
 from hipp.kh9pc.rectification_strategy.vertical_edges_estimator import VerticalEdgesEstimator
 
 
@@ -24,7 +22,7 @@ class EdgeResult:
     distortion_local: NDArray[np.floating]
     distortion_global: NDArray[np.floating]
     model: RANSACRegressor
-    band: NDArray[np.integer]
+    sub_image: SubImage
 
     @property
     def poly(self) -> Pipeline:
@@ -92,6 +90,10 @@ class PolyRectificationStrategy(RectificationStrategy):
         self.raster_filepath_: Path | None = None
         self.vertical_edges_: tuple[int, int] | None = None
 
+    @property
+    def is_fitted(self) -> bool:
+        return self.raster_filepath_ is not None
+
     def fit(self, raster_filepath: str | Path) -> "PolyRectificationStrategy":
         self.raster_filepath_ = Path(raster_filepath)
         self.vertical_estimator.fit(raster_filepath)
@@ -102,14 +104,13 @@ class PolyRectificationStrategy(RectificationStrategy):
             window_width = col_end - col_off
             window_height = int(src.height * self.height_fraction)
             out_shape = (1, window_height // self.stride, self.grid_shape[0])
-            scale_x = window_width / self.grid_shape[0]
 
             for side, window in {
                 "top": Window(col_off, 0, window_width, window_height),
                 "bottom": Window(col_off, src.height - window_height, window_width, window_height),
             }.items():
-                band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
-                setattr(self, side, self._process_side(band, window, scale_x, side))
+                sub_image = SubImage(src, window, out_shape)
+                setattr(self, side, self._process_side(sub_image, side))
 
         return self
 
@@ -136,31 +137,8 @@ class PolyRectificationStrategy(RectificationStrategy):
 
         return src_points, dst_points, (output_width, img_height)
 
-    def generate_qc_report(self, output_path: str | Path) -> None:
-        if self.top is None or self.bottom is None or self.vertical_edges_ is None or self.raster_filepath_ is None:
-            raise RuntimeError("Call fit() before generate_qc_report()")
-
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        left, right = self.vertical_edges_
-        n_top = int(self.top.model.inlier_mask_.sum())
-        n_top_total = len(self.top.model.inlier_mask_)
-        n_bot = int(self.bottom.model.inlier_mask_.sum())
-        n_bot_total = len(self.bottom.model.inlier_mask_)
-
-        summary_lines = [
-            "PolyRectificationStrategy — QC Report",
-            "",
-            f"Image                    : {self.raster_filepath_.name}",
-            "",
-            "Detected edges",
-            f"  Vertical               : left={left} px,  right={right} px",
-            "",
-            "RANSAC fit",
-            f"  top edge               : {n_top} inliers / {n_top_total} points",
-            f"  bottom edge            : {n_bot} inliers / {n_bot_total} points",
-            "",
+    def __str__(self) -> str:
+        params = [
             "Parameters",
             f"  polynomial_degree      : {self.polynomial_degree}",
             f"  ransac_residual_thr    : {self.ransac_residual_threshold}",
@@ -171,100 +149,118 @@ class PolyRectificationStrategy(RectificationStrategy):
             f"  grid_shape             : {self.grid_shape}",
         ]
 
-        with PdfPages(output_path) as pdf:
-            summary_fig = make_summary_figure(summary_lines)
-            pdf.savefig(summary_fig)
-            plt.close(summary_fig)
+        if not self.is_fitted:
+            return "\n".join(["PolyRectificationStrategy (not fitted)", ""] + params)
 
-            vert_edges_fig = self.vertical_estimator.plot_edges(self.raster_filepath_)
-            pdf.savefig(vert_edges_fig)
-            plt.close(vert_edges_fig)
+        assert self.top is not None
+        assert self.bottom is not None
+        assert self.raster_filepath_ is not None
 
-            vert_rupt_fig = self.vertical_estimator.plot_ruptures()
-            pdf.savefig(vert_rupt_fig)
-            plt.close(vert_rupt_fig)
+        n_top = int(self.top.model.inlier_mask_.sum())
+        n_top_total = len(self.top.model.inlier_mask_)
+        n_bot = int(self.bottom.model.inlier_mask_.sum())
+        n_bot_total = len(self.bottom.model.inlier_mask_)
 
-            horiz_fig = self._plot_horizontal_edges()
-            pdf.savefig(horiz_fig)
-            plt.close(horiz_fig)
+        vertical_str = "\n".join(f"  {line}" for line in str(self.vertical_estimator).splitlines())
+
+        fitted = [
+            "PolyRectificationStrategy",
+            "",
+            f"Image                    : {self.raster_filepath_.name}",
+            "",
+            "Vertical edges estimator",
+            vertical_str,
+            "",
+            "RANSAC fit",
+            f"  top edge               : {n_top} inliers / {n_top_total} points",
+            f"  bottom edge            : {n_bot} inliers / {n_bot_total} points",
+            "",
+        ]
+
+        return "\n".join(fitted + params)
+
+    def get_qc_figures(self) -> list[Figure]:
+        return self.vertical_estimator.get_qc_figures() + [self._plot_horizontal_edges(), self._plot_distortions()]
 
     def _plot_horizontal_edges(self) -> Figure:
-        assert self.top is not None and self.bottom is not None and self.vertical_edges_ is not None
+        assert self.top is not None and self.bottom is not None
 
-        fig, axes = plt.subplots(3, 1, figsize=(8, 20), constrained_layout=True)
-        ax_top, ax_bot, ax_dist = axes
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-        for ax, side, result in zip([ax_top, ax_bot], ["top", "bottom"], [self.top, self.bottom]):
-            ax.imshow(result.band, cmap="gray", aspect="auto")
-
-            x_local = result.ruptures_local[:, 0].astype(float)
-            y_local = result.ruptures_local[:, 1].astype(float)
-            x_global = result.ruptures_global[:, 0]
-            y_global = result.ruptures_global[:, 1]
-
-            scale_x, col_off = np.polyfit(x_local, x_global, 1)
-            row_off = float(np.mean(y_global - y_local * self.stride))
+        for ax, side, result in zip(axes, ["top", "bottom"], [self.top, self.bottom]):
+            ax.imshow(result.sub_image.band, cmap="gray", aspect="auto")
 
             inlier_mask = result.model.inlier_mask_
-            ax.scatter(x_local[~inlier_mask], y_local[~inlier_mask], c="red", s=12, label="outliers", zorder=3)
-            ax.scatter(x_local[inlier_mask], y_local[inlier_mask], c="lime", s=12, label="inliers", zorder=3)
+            pts = result.ruptures_local
+            ax.scatter(pts[~inlier_mask, 0], pts[~inlier_mask, 1], s=12, c="red", label="outliers")
+            ax.scatter(pts[inlier_mask, 0], pts[inlier_mask, 1], s=12, c="green", label="inliers")
 
-            x_local_range = np.linspace(0, result.band.shape[1] - 1, 500)
-            x_global_range = x_local_range * scale_x + col_off
+            x_global_range = result.ruptures_global[:, 0].astype(float)
             y_global_pred = result.model.predict(x_global_range.reshape(-1, 1))
-            y_local_pred = (y_global_pred - row_off) / self.stride
-            ax.plot(x_local_range, y_local_pred, color="yellow", linewidth=1.5, label="model")
+            global_pred = np.column_stack([x_global_range, y_global_pred.ravel()])
+            local_pred = result.sub_image.to_local(global_pred)
+            ax.plot(local_pred[:, 0], local_pred[:, 1], color="blue", linewidth=1, label="model")
 
             ax.set_title(f"{side} edge")
             ax.legend(loc="best", fontsize=8)
             ax.axis("off")
 
+        return fig
+
+    def _plot_distortions(self) -> Figure:
+        assert self.top is not None and self.bottom is not None and self.vertical_edges_ is not None
+
+        fig, ax = plt.subplots(figsize=(4, 4), constrained_layout=True)
+
         left, right = self.vertical_edges_
         x_dist = np.linspace(left, right, self.grid_shape[0])
-        ax_dist.plot(x_dist, self.top.distortion_global, color="steelblue", linewidth=1.5, label="top")
-        ax_dist.plot(x_dist, self.bottom.distortion_global, color="tomato", linewidth=1.5, label="bottom")
-        ax_dist.axhline(0, color="gray", linewidth=0.8, linestyle="--")
-        ax_dist.set_title("global distortion (top & bottom)")
-        ax_dist.set_xlabel("column (px)")
-        ax_dist.set_ylabel("distortion (px)")
-        ax_dist.legend(fontsize=8)
+        ax.plot(x_dist, self.top.distortion_global, label="top")
+        ax.plot(x_dist, self.bottom.distortion_global, label="bottom")
+        ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+        ax.legend()
+        ax.set_title("global distortion (top & bottom)")
+        ax.set_xlabel("column (px)")
+        ax.set_ylabel("distortion (px)")
 
         return fig
 
-    def _process_side(self, band: NDArray[np.integer], window: Window, scale_x: float, side: str) -> EdgeResult:
+    def _process_side(self, sub_image: SubImage, side: str) -> EdgeResult:
         from hipp.kh9pc import utils
 
         res = []
-        for i in range(band.shape[1]):
-            ruptures = utils.detect_ruptures(band[:, i], self.background_threshold, reverse_scan=(side == "top"))
+        for i in range(sub_image.band.shape[1]):
+            ruptures = utils.detect_ruptures(
+                sub_image.band[:, i], self.background_threshold, reverse_scan=(side == "top")
+            )
             if len(ruptures > 0):
                 res.append((i, ruptures[0]))
 
         if not res:
             raise RuntimeError(f"No rupture detected on the {side} edge.")
 
-        np_res = np.array(res)
-        x_global = np_res[:, 0] * scale_x + window.col_off
-        y_global = np_res[:, 1] * self.stride + window.row_off
+        ruptures_local = np.array(res)
+        ruptures_global = sub_image.to_global(ruptures_local)
 
         model = utils.fit_ransac_poly(
-            x_global,
-            y_global,
+            ruptures_global[:, 0],
+            ruptures_global[:, 1],
             degree=self.polynomial_degree,
             residual_threshold=self.ransac_residual_threshold,
             max_trials=self.ransac_max_trials,
         )
 
-        x_sample = np.linspace(window.col_off, window.col_off + window.width, self.grid_shape[0])
+        x_sample = np.linspace(
+            sub_image.window.col_off, sub_image.window.col_off + sub_image.window.width, self.grid_shape[0]
+        )
         y_global_pred = model.predict(x_sample.reshape(-1, 1)).ravel()
         distortion_global = y_global_pred - y_global_pred.mean()
         distortion_local = distortion_global / self.stride
 
         return EdgeResult(
-            ruptures_local=np_res,
-            ruptures_global=np.column_stack((x_global, y_global)),
+            ruptures_local=ruptures_local,
+            ruptures_global=ruptures_global.astype(int),
             distortion_local=distortion_local,
             distortion_global=distortion_global,
             model=model,
-            band=band,
+            sub_image=sub_image,
         )

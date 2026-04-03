@@ -9,19 +9,18 @@ from hipp.kh9pc.rectification_strategy.base import RectificationStrategy
 from hipp.kh9pc.rectification_strategy.vertical_edges_estimator import VerticalEdgesEstimator
 
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 from rasterio.windows import Window
 from rasterio.warp import Resampling
 
-from hipp.kh9pc.utils import detect_ruptures, make_summary_figure
+from hipp.kh9pc.utils import SubImage, detect_ruptures
 
 
 @dataclass
 class FlatResult:
     position: int
     rupture_local: int
-    band: NDArray[np.integer]
+    sub_image: SubImage
 
 
 class FlatRectificationStrategy(RectificationStrategy):
@@ -64,6 +63,10 @@ class FlatRectificationStrategy(RectificationStrategy):
         self.raster_filepath_: Path | None = None
         self.vertical_edges_: tuple[int, int] | None = None
 
+    @property
+    def is_fitted(self) -> bool:
+        return self.raster_filepath_ is not None
+
     def fit(self, raster_filepath: str | Path) -> "FlatRectificationStrategy":
         self.raster_filepath_ = Path(raster_filepath)
         self.vertical_estimator.fit(raster_filepath)
@@ -78,8 +81,8 @@ class FlatRectificationStrategy(RectificationStrategy):
                 "top": Window(self.vertical_edges_[0], 0, window_width, window_height),
                 "bottom": Window(self.vertical_edges_[0], src.height - window_height, window_width, window_height),
             }.items():
-                band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
-                setattr(self, side, self._process_side(band, window, side))
+                sub_image = SubImage(src, window, out_shape)
+                setattr(self, side, self._process_side(sub_image, side))
 
         return self
 
@@ -110,66 +113,56 @@ class FlatRectificationStrategy(RectificationStrategy):
         )
         return src_points, dst_points, (output_width, output_height)
 
-    def generate_qc_report(self, output_path: str | Path) -> None:
-        if self.raster_filepath_ is None or self.top is None or self.bottom is None or self.vertical_edges_ is None:
-            raise RuntimeError("Call fit() before generate_qc_report()")
-
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        left, right = self.vertical_edges_
-
-        summary_lines = [
-            "FlatRectificationStrategy — QC Report",
-            "",
-            f"Image              : {self.raster_filepath_.name}",
-            "",
-            "Detected edges",
-            f"  Vertical         : left={left} px,  right={right} px",
-            f"  Horizontal       : top={self.top.position} px,  bottom={self.bottom.position} px",
-            "",
+    def __str__(self) -> str:
+        params = [
             "Parameters",
-            f"  background_threshold : {self.background_threshold}",
-            f"  height_fraction      : {self.height_fraction}",
-            f"  stride               : {self.stride}",
+            f"  background_threshold   : {self.background_threshold}",
+            f"  height_fraction        : {self.height_fraction}",
+            f"  stride                 : {self.stride}",
         ]
 
-        with PdfPages(output_path) as pdf:
-            summary_fig = make_summary_figure(summary_lines)
-            pdf.savefig(summary_fig)
-            plt.close(summary_fig)
+        if not self.is_fitted:
+            return "\n".join(["FlatRectificationStrategy (not fitted)", ""] + params)
 
-            vert_edges_fig = self.vertical_estimator.plot_edges(self.raster_filepath_)
-            pdf.savefig(vert_edges_fig)
-            plt.close(vert_edges_fig)
+        assert self.top is not None
+        assert self.bottom is not None
+        assert self.raster_filepath_ is not None
 
-            vert_rupt_fig = self.vertical_estimator.plot_ruptures()
-            pdf.savefig(vert_rupt_fig)
-            plt.close(vert_rupt_fig)
+        vertical_str = "\n".join(f"  {line}" for line in str(self.vertical_estimator).splitlines())
 
-            horiz_fig = self._plot_horizontal_edges()
-            pdf.savefig(horiz_fig)
-            plt.close(horiz_fig)
+        fitted = [
+            "FlatRectificationStrategy",
+            "",
+            f"Image                    : {self.raster_filepath_.name}",
+            "",
+            "Vertical edges estimator",
+            vertical_str,
+            "",
+            "Detected edges",
+            f"  top                    : row={self.top.position} px",
+            f"  bottom                 : row={self.bottom.position} px",
+            "",
+        ]
+
+        return "\n".join(fitted + params)
+
+    def get_qc_figures(self) -> list[Figure]:
+        return self.vertical_estimator.get_qc_figures() + [self._plot_horizontal_edges(), self._plot_ruptures()]
 
     def _plot_horizontal_edges(self) -> Figure:
         assert self.raster_filepath_ is not None and self.top is not None
         assert self.bottom is not None and self.vertical_edges_ is not None
 
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10), constrained_layout=True)
-        (ax_top_img, ax_bot_img), (ax_top_prof, ax_bot_prof) = axes
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
         with rasterio.open(self.raster_filepath_) as src:
-            img_h = src.height
             left, right = self.vertical_edges_
             roi_w = right - left
-            margin = int(0.03 * img_h)
+            margin = int(0.03 * src.height)
 
-            for ax_img, ax_prof, side, result in [
-                (ax_top_img, ax_top_prof, "top", self.top),
-                (ax_bot_img, ax_bot_prof, "bottom", self.bottom),
-            ]:
+            for ax, side, result in zip(axes, ["top", "bottom"], [self.top, self.bottom]):
                 row_off = max(0, result.position - margin)
-                row_end = min(img_h, result.position + margin)
+                row_end = min(src.height, result.position + margin)
                 win_h = row_end - row_off
                 thumb = src.read(
                     1,
@@ -178,28 +171,34 @@ class FlatRectificationStrategy(RectificationStrategy):
                     resampling=Resampling.average,
                 )
                 line_row = (result.position - row_off) / win_h * 512
-                ax_img.imshow(thumb, cmap="gray", aspect="auto")
-                ax_img.axhline(line_row, color="yellow", linewidth=1.5)
-                ax_img.set_title(f"{side} edge — position={result.position} px")
-                ax_img.axis("off")
-
-                profile = result.band.flatten()
-                ax_prof.plot(profile, color="steelblue", linewidth=1)
-                ax_prof.axvline(
-                    result.rupture_local, color="red", linewidth=1.5, label=f"rupture={result.rupture_local}"
-                )
-                ax_prof.set_title(f"{side} band profile")
-                ax_prof.set_xlabel("row index (downsampled)")
-                ax_prof.set_ylabel("intensity")
-                ax_prof.legend(fontsize=8)
+                ax.imshow(thumb, cmap="gray", aspect="auto")
+                ax.axhline(line_row, color="yellow", linewidth=1.5)
+                ax.set_title(f"{side} edge — position={result.position} px")
+                ax.axis("off")
 
         return fig
 
-    def _process_side(self, band: NDArray[np.integer], window: Window, side: str) -> FlatResult:
-        ruptures = detect_ruptures(band.flatten(), self.background_threshold, reverse_scan=(side == "top"))
+    def _plot_ruptures(self) -> Figure:
+        assert self.top is not None and self.bottom is not None
+
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
+
+        for ax, side, result in zip(axes, ["top", "bottom"], [self.top, self.bottom]):
+            profile = result.sub_image.band.flatten()
+            ax.plot(profile, color="steelblue", linewidth=1)
+            ax.axvline(result.rupture_local, color="red", linewidth=1.5, label=f"rupture={result.rupture_local}")
+            ax.set_title(f"{side} band profile")
+            ax.set_xlabel("row index (downsampled)")
+            ax.set_ylabel("intensity")
+            ax.legend(fontsize=8)
+
+        return fig
+
+    def _process_side(self, sub_image: SubImage, side: str) -> FlatResult:
+        ruptures = detect_ruptures(sub_image.band.flatten(), self.background_threshold, reverse_scan=(side == "top"))
         if len(ruptures) == 0:
             raise RuntimeError(f"No rupture detected on the {side} edge.")
 
         rupture_local = int(ruptures[0])
-        position = int(rupture_local * self.stride + window.row_off)
-        return FlatResult(position, rupture_local, band)
+        position = int(sub_image.to_global(np.array([0.0, rupture_local]))[1])
+        return FlatResult(position, rupture_local, sub_image)

@@ -101,9 +101,6 @@ class CollimationRectificationStrategy(RectificationStrategy):
     def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
         raise NotImplementedError
 
-    def generate_qc_report(self, output_path: str | Path) -> None:
-        raise NotImplementedError
-
     def __str__(self) -> str:
         params = [
             "Parameters",
@@ -119,24 +116,24 @@ class CollimationRectificationStrategy(RectificationStrategy):
         if not self.is_fitted:
             return "\n".join(["CollimationRectificationStrategy (not fitted)", ""] + params)
 
-        assert self.vertical_edges_ is not None
         assert self.top is not None
         assert self.bottom is not None
         assert self.raster_filepath_ is not None
 
-        left, right = self.vertical_edges_
         n_top = int(self.top.model.inlier_mask_.sum())
         n_top_total = len(self.top.model.inlier_mask_)
         n_bot = int(self.bottom.model.inlier_mask_.sum())
         n_bot_total = len(self.bottom.model.inlier_mask_)
+
+        vertical_str = "\n".join(f"  {line}" for line in str(self.vertical_estimator).splitlines())
 
         fitted = [
             "CollimationRectificationStrategy",
             "",
             f"Image                    : {self.raster_filepath_.name}",
             "",
-            "Detected edges",
-            f"  Vertical               : left={left} px,  right={right} px",
+            "Vertical edges estimator",
+            vertical_str,
             "",
             "RANSAC fit",
             f"  top collimation line   : {n_top} inliers / {n_top_total} points",
@@ -145,6 +142,9 @@ class CollimationRectificationStrategy(RectificationStrategy):
         ]
 
         return "\n".join(fitted + params)
+
+    def get_qc_figures(self) -> list[Figure]:
+        return self.vertical_estimator.get_qc_figures() + [self._plot_horizontal_edges(), self._plot_distortions()]
 
     def _process_side(self, side: str, sub_img: SubImage) -> CollimationResult:
         h, w = sub_img.band.shape

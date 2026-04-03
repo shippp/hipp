@@ -75,14 +75,14 @@ def make_summary_figure(lines: list[str]) -> Figure:
     first = True
     for line in lines:
         if first:
-            fig.text(0.5, y, line, ha="center", va="top", fontsize=16, fontweight="bold")
+            fig.text(0.5, y, line, ha="center", va="top", fontsize=12, fontweight="bold")
             first = False
-            y -= 0.06
-        elif line == "":
-            y -= 0.02
-        else:
-            fig.text(0.1, y, line, ha="left", va="top", fontsize=10, family="monospace")
             y -= 0.04
+        elif line == "":
+            y -= 0.01
+        else:
+            fig.text(0.1, y, line, ha="left", va="top", fontsize=8, family="monospace")
+            y -= 0.025
     return fig
 
 
