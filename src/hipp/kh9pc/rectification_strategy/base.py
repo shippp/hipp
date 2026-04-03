@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
+import time
+from typing import Self
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -10,24 +13,30 @@ from numpy.typing import NDArray
 from hipp.kh9pc.utils import make_summary_figure
 
 
-class RectificationStrategy(ABC):
-    """Abstract base class for image rectification strategies.
+class FittedEstimator(ABC):
+    """Abstract base class for estimators that track wall-clock fitting time.
 
-    Each strategy is responsible for the complete ROI detection pipeline:
-    vertical edge detection, horizontal edge detection, and quality control.
-    Implementers receive the raster path directly in :meth:`fit` and decide
-    internally how to detect vertical and horizontal boundaries.
+    Subclasses implement :meth:`_fit` (the actual fitting logic). The public
+    :meth:`fit` method wraps :meth:`_fit` with timing so that
+    :attr:`fitting_time_` is always populated after a successful fit.
     """
+
+    fitting_time_: float | None = None
+    fitted_at_: datetime | None = None
 
     @property
     @abstractmethod
     def is_fitted(self) -> bool:
-        """Return True if the strategy has been fitted."""
+        """Return True if the estimator has been fitted."""
         ...
 
     @abstractmethod
-    def fit(self, raster_filepath: str | Path) -> "RectificationStrategy":
-        """Detect the image boundaries (vertical and horizontal).
+    def _fit(self, raster_filepath: str | Path) -> Self:
+        """Internal fitting logic to implement in subclasses."""
+        ...
+
+    def fit(self, raster_filepath: str | Path) -> Self:
+        """Fit the estimator and record the wall-clock duration.
 
         Parameters
         ----------
@@ -38,7 +47,31 @@ class RectificationStrategy(ABC):
         -------
         self
         """
-        ...
+        t0 = time.perf_counter()
+        self.fitted_at_ = datetime.now()
+        result = self._fit(raster_filepath)
+        self.fitting_time_ = time.perf_counter() - t0
+        return result  # type: ignore[return-value]
+
+    def _fitting_time_str(self) -> str:
+        if self.fitting_time_ is None:
+            return ""
+        return f"Fitting time             : {self.fitting_time_:.2f} s"
+
+    def _fitted_at_str(self) -> str:
+        if self.fitted_at_ is None:
+            return ""
+        return f"Fitted at                : {self.fitted_at_.strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+class RectificationStrategy(FittedEstimator):
+    """Abstract base class for image rectification strategies.
+
+    Each strategy is responsible for the complete ROI detection pipeline:
+    vertical edge detection, horizontal edge detection, and quality control.
+    Implementers receive the raster path directly in :meth:`_fit` and decide
+    internally how to detect vertical and horizontal boundaries.
+    """
 
     @abstractmethod
     def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -9,6 +10,7 @@ from rasterio.warp import Resampling
 import numpy as np
 
 import hipp.kh9pc.utils as utils
+from hipp.kh9pc.rectification_strategy.base import FittedEstimator
 
 
 @dataclass
@@ -18,7 +20,7 @@ class VerticalEdgeResult:
     sub_image: utils.SubImage
 
 
-class VerticalEdgesEstimator:
+class VerticalEdgesEstimator(FittedEstimator):
     def __init__(
         self,
         background_threshold: int = 20,
@@ -32,7 +34,7 @@ class VerticalEdgesEstimator:
         self.right: VerticalEdgeResult | None = None
         self.raster_filepath_: Path | None = None
 
-    def fit(self, raster_filepath: str | Path) -> "VerticalEdgesEstimator":
+    def _fit(self, raster_filepath: str | Path) -> Self:
         with rasterio.open(raster_filepath) as src:
             window_width = int(src.width * self.width_fraction)
             out_shape = (1, 1, window_width // self.stride)
@@ -87,6 +89,8 @@ class VerticalEdgesEstimator:
             "VerticalEdgesEstimator",
             "",
             f"Image                    : {self.raster_filepath_.name}",
+            self._fitted_at_str(),
+            self._fitting_time_str(),
             "",
             "Detected edges",
             f"  left                   : col={self.left.position} px",

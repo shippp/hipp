@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 import warnings
 
 import matplotlib.pyplot as plt
@@ -95,7 +96,7 @@ class PolyRectificationStrategy(RectificationStrategy):
     def is_fitted(self) -> bool:
         return self.raster_filepath_ is not None
 
-    def fit(self, raster_filepath: str | Path) -> "PolyRectificationStrategy":
+    def _fit(self, raster_filepath: str | Path) -> Self:
         self.raster_filepath_ = Path(raster_filepath)
         self.vertical_estimator.fit(raster_filepath)
         self.vertical_edges_ = self.vertical_estimator.edges
@@ -165,6 +166,8 @@ class PolyRectificationStrategy(RectificationStrategy):
             "PolyRectificationStrategy",
             "",
             f"Image                    : {self.raster_filepath_.name}",
+            self._fitted_at_str(),
+            self._fitting_time_str(),
             "",
             "Vertical edges estimator",
             vertical_str,
