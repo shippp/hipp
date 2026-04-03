@@ -1,4 +1,4 @@
-from . import collimation_lines, core, image_mosaic
+from . import collimation_lines, image_mosaic
 from . import quality_control as qc
 from .batch import join_images, join_images_asp
 
@@ -23,5 +23,4 @@ __all__ = [
     "join_images_asp",
     "qc",
     "collimation_lines",
-    "core",
 ]

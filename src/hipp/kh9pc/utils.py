@@ -1,10 +1,17 @@
+from pathlib import Path
+
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.typing import NDArray
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.pipeline import make_pipeline
+from scipy.ndimage import gaussian_filter1d
+
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from rasterio.windows import Window
+import rasterio
+from rasterio.warp import Resampling
 
 
 def detect_ruptures(vec: NDArray[np.number], threshold: float, reverse_scan: bool = False) -> NDArray[np.integer]:
@@ -23,6 +30,24 @@ def detect_ruptures(vec: NDArray[np.number], threshold: float, reverse_scan: boo
     return idx
 
 
+def detect_collimation_peak(x: NDArray[np.number], max_peak_width: int, sigma: int = 2) -> int:
+    smooth = gaussian_filter1d(x, sigma=sigma)
+
+    grad = np.gradient(smooth)
+
+    idx_max = np.argmax(grad)
+    idx_min = np.argmin(grad)
+
+    if abs(idx_max - idx_min) < max_peak_width and idx_max != idx_min:
+        w_start = min(idx_max, idx_min)
+        w_end = max(idx_max, idx_min)
+        idx = np.argmax(smooth[w_start:w_end]) + w_start
+    else:
+        idx = np.argmax(smooth)  # fallback
+
+    return int(idx)
+
+
 def fit_ransac_poly(
     x: NDArray[np.generic],
     y: NDArray[np.generic],
@@ -32,8 +57,8 @@ def fit_ransac_poly(
 ) -> RANSACRegressor:
     """Fit a polynomial regression with RANSAC on 1D data. Returns the fitted RANSACRegressor."""
     poly_model = make_pipeline(
-        StandardScaler(),
         PolynomialFeatures(degree=degree),
+        StandardScaler(),
         LinearRegression(),
     )
     ransac = RANSACRegressor(
@@ -59,3 +84,54 @@ def make_summary_figure(lines: list[str]) -> Figure:
             fig.text(0.1, y, line, ha="left", va="top", fontsize=10, family="monospace")
             y -= 0.04
     return fig
+
+
+class SubImage:
+    def __init__(
+        self,
+        raster: str | Path | rasterio.DatasetReader,
+        window: Window,
+        out_shape: tuple[int, int, int],
+        resampling: Resampling = Resampling.average,
+    ):
+        self.window = window
+        self.out_shape = out_shape
+
+        if isinstance(raster, rasterio.DatasetReader):
+            self.band = raster.read(1, window=window, out_shape=out_shape, resampling=resampling)
+        else:
+            with rasterio.open(raster) as src:
+                self.band = src.read(1, window=window, out_shape=out_shape, resampling=resampling)
+
+        self._scale = np.array([window.width / out_shape[2], window.height / out_shape[1]], dtype=np.float64)
+        self._offset = np.array([window.col_off, window.row_off], dtype=np.float64)
+
+    def to_global(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Convert local sub-image pixel coordinates to global raster coordinates.
+
+        Parameters
+        ----------
+        pts : ndarray of shape (2,) or (n, 2)
+            Point(s) in local coordinates as [x, y] (column, row).
+
+        Returns
+        -------
+        ndarray of same shape
+            Corresponding [x, y] coordinates in the full raster.
+        """
+        return pts * self._scale + self._offset
+
+    def to_local(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Convert global raster pixel coordinates to local sub-image coordinates.
+
+        Parameters
+        ----------
+        pts : ndarray of shape (2,) or (n, 2)
+            Point(s) in global coordinates as [x, y] (column, row).
+
+        Returns
+        -------
+        ndarray of same shape
+            Corresponding [x, y] coordinates in the sub-image.
+        """
+        return (pts - self._offset) / self._scale

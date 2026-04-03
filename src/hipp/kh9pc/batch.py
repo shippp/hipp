@@ -7,8 +7,7 @@ import os
 from collections import defaultdict
 
 # from hipp.image import warp_tif_blockwise_to_dst
-from hipp.kh9pc.core import image_mosaic_asp
-from hipp.kh9pc.image_mosaic import compute_sequential_alignment, mosaic_images
+from hipp.kh9pc.image_mosaic import compute_sequential_alignment, mosaic_images, image_mosaic_asp
 
 
 def join_images_asp(
