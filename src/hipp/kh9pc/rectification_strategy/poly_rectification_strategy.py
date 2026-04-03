@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import warnings
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -19,8 +20,8 @@ from hipp.kh9pc.rectification_strategy.vertical_edges_estimator import VerticalE
 class EdgeResult:
     ruptures_local: NDArray[np.integer]
     ruptures_global: NDArray[np.integer]
-    distortion_local: NDArray[np.floating]
-    distortion_global: NDArray[np.floating]
+    distortion: NDArray[np.floating]
+    inlier_ratio: float
     model: RANSACRegressor
     sub_image: SubImage
 
@@ -123,7 +124,9 @@ class PolyRectificationStrategy(RectificationStrategy):
         y_top_src = self.top.poly.predict(x_src.reshape(-1, 1)).ravel()
         y_bottom_src = self.bottom.poly.predict(x_src.reshape(-1, 1)).ravel()
 
-        img_height = self.img_height if self.img_height is not None else int(np.abs(np.mean(y_bottom_src - y_top_src)))
+        mean_dist = int(np.abs(np.mean(y_bottom_src - y_top_src)))
+        output_height = self.img_height if self.img_height is not None else mean_dist
+        y_offset = (output_height - mean_dist) / 2
 
         x_dst = np.linspace(0, output_width, self.grid_shape[0])
 
@@ -133,9 +136,9 @@ class PolyRectificationStrategy(RectificationStrategy):
             src_points[i, :, 0] = xi_src
             src_points[i, :, 1] = np.linspace(yt, yb, self.grid_shape[1])
             dst_points[i, :, 0] = xi_dst
-            dst_points[i, :, 1] = np.linspace(0, img_height, self.grid_shape[1])
+            dst_points[i, :, 1] = np.linspace(y_offset, y_offset + mean_dist, self.grid_shape[1])
 
-        return src_points, dst_points, (output_width, img_height)
+        return src_points, dst_points, (output_width, output_height)
 
     def __str__(self) -> str:
         params = [
@@ -156,11 +159,6 @@ class PolyRectificationStrategy(RectificationStrategy):
         assert self.bottom is not None
         assert self.raster_filepath_ is not None
 
-        n_top = int(self.top.model.inlier_mask_.sum())
-        n_top_total = len(self.top.model.inlier_mask_)
-        n_bot = int(self.bottom.model.inlier_mask_.sum())
-        n_bot_total = len(self.bottom.model.inlier_mask_)
-
         vertical_str = "\n".join(f"  {line}" for line in str(self.vertical_estimator).splitlines())
 
         fitted = [
@@ -172,8 +170,8 @@ class PolyRectificationStrategy(RectificationStrategy):
             vertical_str,
             "",
             "RANSAC fit",
-            f"  top edge               : {n_top} inliers / {n_top_total} points",
-            f"  bottom edge            : {n_bot} inliers / {n_bot_total} points",
+            f"  top edge               : {self.top.inlier_ratio:.1%}",
+            f"  bottom edge            : {self.bottom.inlier_ratio:.1%}",
             "",
         ]
 
@@ -208,14 +206,12 @@ class PolyRectificationStrategy(RectificationStrategy):
         return fig
 
     def _plot_distortions(self) -> Figure:
-        assert self.top is not None and self.bottom is not None and self.vertical_edges_ is not None
+        assert self.top is not None and self.bottom is not None
 
         fig, ax = plt.subplots(figsize=(4, 4), constrained_layout=True)
 
-        left, right = self.vertical_edges_
-        x_dist = np.linspace(left, right, self.grid_shape[0])
-        ax.plot(x_dist, self.top.distortion_global, label="top")
-        ax.plot(x_dist, self.bottom.distortion_global, label="bottom")
+        ax.plot(self.top.distortion[:, 0], self.top.distortion[:, 1], label="top")
+        ax.plot(self.bottom.distortion[:, 0], self.bottom.distortion[:, 1], label="bottom")
         ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
         ax.legend()
         ax.set_title("global distortion (top & bottom)")
@@ -249,18 +245,26 @@ class PolyRectificationStrategy(RectificationStrategy):
             max_trials=self.ransac_max_trials,
         )
 
+        inlier_ratio = float(model.inlier_mask_.mean())
+        if inlier_ratio < 0.5:
+            warnings.warn(
+                f"{side} edge: low inlier ratio ({inlier_ratio:.1%}), RANSAC fit may be unreliable.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         x_sample = np.linspace(
             sub_image.window.col_off, sub_image.window.col_off + sub_image.window.width, self.grid_shape[0]
         )
         y_global_pred = model.predict(x_sample.reshape(-1, 1)).ravel()
-        distortion_global = y_global_pred - y_global_pred.mean()
-        distortion_local = distortion_global / self.stride
+        y_distortion = y_global_pred - y_global_pred.mean()
+        distortion = np.column_stack([x_sample, y_distortion])
 
         return EdgeResult(
             ruptures_local=ruptures_local,
             ruptures_global=ruptures_global.astype(int),
-            distortion_local=distortion_local,
-            distortion_global=distortion_global,
+            distortion=distortion,
+            inlier_ratio=inlier_ratio,
             model=model,
             sub_image=sub_image,
         )

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import warnings
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -20,8 +21,8 @@ class CollimationResult:
     peaks_local: NDArray[np.integer]
     peaks_global: NDArray[np.integer]
     distortion: NDArray[np.floating]
+    inlier_ratio: float
     model: RANSACRegressor
-
     sub_img: SubImage
 
 
@@ -54,6 +55,7 @@ class CollimationRectificationStrategy(RectificationStrategy):
         ransac_residual_threshold: float = 80.0,
         ransac_max_trials: int = 1000,
         img_height: int | None = None,
+        colimation_line_dist: int = 21770,
         grid_shape: tuple[int, int] = (100, 50),
         stride: int = 10,
         height_fraction: float = 0.15,
@@ -64,6 +66,7 @@ class CollimationRectificationStrategy(RectificationStrategy):
         self.ransac_residual_threshold = ransac_residual_threshold
         self.ransac_max_trials = ransac_max_trials
         self.img_height = img_height
+        self.colimation_line_dist = colimation_line_dist
         self.grid_shape = grid_shape
         self.stride = stride
         self.height_fraction = height_fraction
@@ -99,7 +102,31 @@ class CollimationRectificationStrategy(RectificationStrategy):
         return self
 
     def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
-        raise NotImplementedError
+        assert self.top is not None and self.bottom is not None and self.vertical_edges_ is not None
+
+        left, right = self.vertical_edges_
+        output_width = right - left
+        output_height = self.img_height if self.img_height is not None else self.colimation_line_dist
+
+        # center the collimation lines vertically within the output
+        y_offset = (output_height - self.colimation_line_dist) / 2
+
+        x_src = np.linspace(left, right, self.grid_shape[0])
+        y_top_src = self.top.model.predict(x_src.reshape(-1, 1)).ravel()
+        y_bottom_src = self.bottom.model.predict(x_src.reshape(-1, 1)).ravel()
+
+        x_dst = np.linspace(0, output_width, self.grid_shape[0])
+
+        src_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
+        dst_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
+
+        for i, (xi_src, xi_dst, yt, yb) in enumerate(zip(x_src, x_dst, y_top_src, y_bottom_src)):
+            src_points[i, :, 0] = xi_src
+            src_points[i, :, 1] = np.linspace(yt, yb, self.grid_shape[1])
+            dst_points[i, :, 0] = xi_dst
+            dst_points[i, :, 1] = np.linspace(y_offset, y_offset + self.colimation_line_dist, self.grid_shape[1])
+
+        return src_points, dst_points, (output_width, output_height)
 
     def __str__(self) -> str:
         params = [
@@ -120,11 +147,6 @@ class CollimationRectificationStrategy(RectificationStrategy):
         assert self.bottom is not None
         assert self.raster_filepath_ is not None
 
-        n_top = int(self.top.model.inlier_mask_.sum())
-        n_top_total = len(self.top.model.inlier_mask_)
-        n_bot = int(self.bottom.model.inlier_mask_.sum())
-        n_bot_total = len(self.bottom.model.inlier_mask_)
-
         vertical_str = "\n".join(f"  {line}" for line in str(self.vertical_estimator).splitlines())
 
         fitted = [
@@ -136,8 +158,8 @@ class CollimationRectificationStrategy(RectificationStrategy):
             vertical_str,
             "",
             "RANSAC fit",
-            f"  top collimation line   : {n_top} inliers / {n_top_total} points",
-            f"  bottom collimation line: {n_bot} inliers / {n_bot_total} points",
+            f"  top collimation line   : {self.top.inlier_ratio:.1%}",
+            f"  bottom collimation line: {self.bottom.inlier_ratio:.1%}",
             "",
         ]
 
@@ -168,6 +190,14 @@ class CollimationRectificationStrategy(RectificationStrategy):
             max_trials=self.ransac_max_trials,
         )
 
+        inlier_ratio = float(model.inlier_mask_.mean())
+        if inlier_ratio < 0.5:
+            warnings.warn(
+                f"{side} collimation line: low inlier ratio ({inlier_ratio:.1%}), RANSAC fit may be unreliable.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         y_global_pred = model.predict(peaks_global[:, 0].reshape(-1, 1))
         y_distortion = y_global_pred - y_global_pred.mean()
         distortion = np.column_stack([peaks_global[:, 0], y_distortion])
@@ -176,6 +206,7 @@ class CollimationRectificationStrategy(RectificationStrategy):
             peaks_local=peaks_local,
             peaks_global=sub_img.to_global(peaks_local).astype(int),
             distortion=distortion,
+            inlier_ratio=inlier_ratio,
             model=model,
             sub_img=sub_img,
         )
