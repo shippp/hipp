@@ -2,18 +2,21 @@ from . import image_mosaic
 from . import quality_control as qc
 from .batch import join_images, join_images_asp
 
-from .rectification_strategy import (
+from .restitution import (
     CollimationRectificationStrategy,
     FlatRectificationStrategy,
+    ImageTransformer,
+    ImageTransformerAffine,
+    ImageTransformerTps,
     PolyRectificationStrategy,
     RectificationStrategy,
 )
 
-from .image_rectification import ImageRectification
-
 __all__ = [
     "image_mosaic",
-    "ImageRectification",
+    "ImageTransformer",
+    "ImageTransformerTps",
+    "ImageTransformerAffine",
     "RectificationStrategy",
     "FlatRectificationStrategy",
     "PolyRectificationStrategy",

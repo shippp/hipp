@@ -10,7 +10,7 @@ from rasterio.warp import Resampling
 import numpy as np
 
 import hipp.kh9pc.utils as utils
-from hipp.kh9pc.rectification_strategy.base import FittedEstimator
+from hipp.kh9pc.restitution.base import BaseEstimator, QCMixin
 
 
 @dataclass
@@ -20,19 +20,17 @@ class VerticalEdgeResult:
     sub_image: utils.SubImage
 
 
-class VerticalEdgesEstimator(FittedEstimator):
-    def __init__(
-        self,
-        background_threshold: int = 20,
-        width_fraction: float = 0.15,
-        stride: int = 10,
-    ):
-        self.background_threshold = background_threshold
-        self.width_fraction = width_fraction
-        self.stride = stride
-        self.left: VerticalEdgeResult | None = None
-        self.right: VerticalEdgeResult | None = None
-        self.raster_filepath_: Path | None = None
+@dataclass
+class VerticalEdgesEstimator(BaseEstimator, QCMixin):
+    background_threshold: int = 20
+    width_fraction: float = 0.15
+    stride: int = 10
+
+    def __post_init__(self) -> None:
+        super().__init__()
+
+        self.left_: VerticalEdgeResult | None = None
+        self.right_: VerticalEdgeResult | None = None
 
     def _fit(self, raster_filepath: str | Path) -> Self:
         with rasterio.open(raster_filepath) as src:
@@ -44,17 +42,25 @@ class VerticalEdgesEstimator(FittedEstimator):
                 "right": Window(src.width - window_width, 0, window_width, src.height),
             }.items():
                 sub_image = utils.SubImage(src, window, out_shape)
-                setattr(self, side, self._process_side(sub_image, side))
+                setattr(self, side + "_", self._process_side(sub_image, side))
 
-        self.raster_filepath_ = Path(raster_filepath)
         return self
 
-    @property
-    def edges(self) -> tuple[int, int]:
-        assert self.left is not None
-        assert self.right is not None
-
-        return self.left.position, self.right.position
+    def __str__(self) -> str:
+        base = super().__str__()
+        if not self.is_fitted:
+            return base
+        return (
+            base
+            + "\n"
+            + "\n".join(
+                [
+                    "Detected edges",
+                    f"  left : col={self.left.position} px",
+                    f"  right : col={self.right.position} px",
+                ]
+            )
+        )
 
     def _process_side(self, sub_image: utils.SubImage, side: str) -> VerticalEdgeResult:
         ruptures = utils.detect_ruptures(
@@ -67,55 +73,31 @@ class VerticalEdgesEstimator(FittedEstimator):
         return VerticalEdgeResult(position=position, rupture_local=rupture_local, sub_image=sub_image)
 
     @property
-    def is_fitted(self) -> bool:
-        return self.raster_filepath_ is not None
+    def left(self) -> VerticalEdgeResult:
+        if self.left_ is None:
+            raise RuntimeError("left edge not available — call fit() first")
+        return self.left_
 
-    def __str__(self) -> str:
-        params = [
-            "Parameters",
-            f"  background_threshold   : {self.background_threshold}",
-            f"  width_fraction         : {self.width_fraction}",
-            f"  stride                 : {self.stride}",
-        ]
+    @property
+    def right(self) -> VerticalEdgeResult:
+        if self.right_ is None:
+            raise RuntimeError("right edge not available — call fit() first")
+        return self.right_
 
-        if not self.is_fitted:
-            return "\n".join(["VerticalEdgesEstimator (not fitted)", ""] + params)
-
-        assert self.left is not None
-        assert self.right is not None
-        assert self.raster_filepath_ is not None
-
-        fitted = [
-            "VerticalEdgesEstimator",
-            "",
-            f"Image                    : {self.raster_filepath_.name}",
-            self._fitted_at_str(),
-            self._fitting_time_str(),
-            "",
-            "Detected edges",
-            f"  left                   : col={self.left.position} px",
-            f"  right                  : col={self.right.position} px",
-            "",
-        ]
-
-        return "\n".join(fitted + params)
+    @property
+    def edges(self) -> tuple[int, int]:
+        return self.left.position, self.right.position
 
     def get_qc_figures(self) -> list[Figure]:
         return [self.plot_ruptures(), self.plot_edges()]
 
-    def plot_edges(
-        self,
-        margin_fraction: float = 0.03,
-        plot_res: float = 0.05,
-    ) -> Figure:
-        assert self.raster_filepath_ is not None
-
+    def plot_edges(self, margin_fraction: float = 0.03, plot_res: float = 0.05) -> Figure:
         fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-        with rasterio.open(self.raster_filepath_) as src:
+        with rasterio.open(self.raster_filepath) as src:
             margin = int(src.width * margin_fraction)
 
-            for ax, (side, edge_col) in zip(axes, zip(["left", "right"], self.edges)):
+            for ax, side, edge_col in zip(axes, ["left", "right"], self.edges):
                 col_off = max(0, edge_col - margin)
                 col_end = min(src.width, edge_col + margin)
                 window = Window(col_off, 0, col_end - col_off, src.height)
@@ -132,8 +114,7 @@ class VerticalEdgesEstimator(FittedEstimator):
     def plot_ruptures(self) -> Figure:
         fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-        for ax, (side, result) in zip(axes, [("left", self.left), ("right", self.right)]):
-            assert result is not None
+        for ax, side, result in zip(axes, ["left", "right"], [self.left, self.right]):
             profile = result.sub_image.band.flatten()
             ax.plot(profile, color="gray")
             ax.axvline(x=result.rupture_local, color="red", label=f"rupture (local={result.rupture_local})")
