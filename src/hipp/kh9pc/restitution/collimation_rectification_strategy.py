@@ -13,7 +13,7 @@ import rasterio
 from sklearn.linear_model import RANSACRegressor
 
 from hipp.kh9pc.restitution.base import RectificationStrategy
-from hipp.kh9pc.utils import SubImage, detect_collimation_peak, fit_ransac_poly
+from hipp.kh9pc.utils import SubImage, detect_collimation_peak, fit_ransac_poly, make_summary_figure
 
 
 @dataclass
@@ -32,7 +32,6 @@ class CollimationRectificationStrategy(RectificationStrategy):
     polynomial_degree: int = 5
     ransac_residual_threshold: float = 80.0
     ransac_max_trials: int = 1000
-    img_height: int | None = None
     collimation_line_dist: int = 21770
     grid_shape: tuple[int, int] = (100, 50)
     stride: int = 10
@@ -90,17 +89,14 @@ class CollimationRectificationStrategy(RectificationStrategy):
 
     def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
         left, right = self.vertical_edges
-        output_width = right - left
-        output_height = self.img_height if self.img_height is not None else self.collimation_line_dist
-
-        # center the collimation lines vertically within the output
-        y_offset = (output_height - self.collimation_line_dist) / 2
+        detected_width = right - left
+        detected_height = self.collimation_line_dist
 
         x_src = np.linspace(left, right, self.grid_shape[0])
         y_top_src = self.top.model.predict(x_src.reshape(-1, 1)).ravel()
         y_bottom_src = self.bottom.model.predict(x_src.reshape(-1, 1)).ravel()
 
-        x_dst = np.linspace(0, output_width, self.grid_shape[0])
+        x_dst = np.linspace(0, detected_width, self.grid_shape[0])
 
         src_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
         dst_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
@@ -109,12 +105,12 @@ class CollimationRectificationStrategy(RectificationStrategy):
             src_points[i, :, 0] = xi_src
             src_points[i, :, 1] = np.linspace(yt, yb, self.grid_shape[1])
             dst_points[i, :, 0] = xi_dst
-            dst_points[i, :, 1] = np.linspace(y_offset, y_offset + self.collimation_line_dist, self.grid_shape[1])
+            dst_points[i, :, 1] = np.linspace(0, detected_height, self.grid_shape[1])
 
-        return src_points, dst_points, (output_width, output_height)
+        return src_points.reshape(-1, 2), dst_points.reshape(-1, 2), (detected_width, detected_height)
 
     def get_qc_figures(self) -> list[Figure]:
-        return [self._plot_horizontal_edges(), self._plot_distortions()]
+        return [make_summary_figure(str(self).splitlines()), self._plot_horizontal_edges(), self._plot_distortions()]
 
     def _process_side(self, side: str, sub_img: SubImage) -> CollimationResult:
         h, w = sub_img.band.shape

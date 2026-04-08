@@ -4,13 +4,10 @@ from pathlib import Path
 import time
 from typing import Any, Self
 
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.typing import NDArray
-
-from hipp.kh9pc.utils import make_summary_figure
 
 
 class BaseEstimator(ABC):
@@ -88,17 +85,12 @@ class QCMixin(ABC):
             Destination path for the PDF file. Parent directories are created
             if they do not exist.
         """
-        if not self.is_fitted:  # type: ignore[attr-defined]
-            raise RuntimeError("Call fit() before generate_qc_report()")
+        import matplotlib.pyplot as plt
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with PdfPages(output_path) as pdf:
-            summary_fig = make_summary_figure(str(self).splitlines())
-            pdf.savefig(summary_fig)
-            plt.close(summary_fig)
-
             for fig in self.get_qc_figures():
                 pdf.savefig(fig)
                 plt.close(fig)
@@ -119,13 +111,23 @@ class RectificationStrategy(BaseEstimator, QCMixin):
 
         Must be called after :meth:`fit`.
 
+        Returns the *detected* content dimensions — i.e. the natural size of the
+        rectified region as determined by the strategy. To place this content on a
+        differently-sized canvas (with margins, fixed dimensions, etc.) pass the
+        returned values to an :class:`~hipp.kh9pc.restitution.output_size.OutputSize`
+        instance::
+
+            src, dst, detected = strategy.compute_grid()
+            src, dst, final    = MarginSize(top=200, bottom=200).apply(src, dst, detected)
+            transformer.fit(src, dst, final)
+
         Returns
         -------
-        src_points : np.ndarray
-            Distorted source coordinates, shape ``(N, 2)`` or ``(grid_w, grid_h, 2)``.
-        dst_points : np.ndarray
-            Regular destination coordinates, same shape as *src_points*.
-        output_size : tuple[int, int]
-            Expected ``(width, height)`` of the rectified raster.
+        src_points : np.ndarray, shape (N, 2)
+            Distorted source coordinates.
+        dst_points : np.ndarray, shape (N, 2)
+            Regular destination coordinates normalised to ``[0, width] × [0, height]``.
+        detected_size : tuple[int, int]
+            ``(width, height)`` of the detected content region.
         """
         ...

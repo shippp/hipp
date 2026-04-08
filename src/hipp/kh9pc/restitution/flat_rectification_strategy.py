@@ -13,7 +13,7 @@ from matplotlib.figure import Figure
 from rasterio.windows import Window
 from rasterio.warp import Resampling
 
-from hipp.kh9pc.utils import SubImage, detect_ruptures
+from hipp.kh9pc.utils import SubImage, detect_ruptures, make_summary_figure
 
 
 @dataclass
@@ -29,7 +29,6 @@ class FlatRectificationStrategy(RectificationStrategy):
     background_threshold: int = 20
     height_fraction: float = 0.15
     stride: int = 10
-    img_height: int | None = None
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -67,8 +66,8 @@ class FlatRectificationStrategy(RectificationStrategy):
 
     def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
         left, right = self.vertical_edges
-        output_width = right - left
-        output_height = self.img_height if self.img_height is not None else self.bottom.position - self.top.position
+        detected_width = right - left
+        detected_height = self.bottom.position - self.top.position
 
         # 4-corner grid (2x2) — pure translation/crop, no distortion correction
         src_points = np.array(
@@ -83,16 +82,16 @@ class FlatRectificationStrategy(RectificationStrategy):
         dst_points = np.array(
             [
                 [0, 0],
-                [0, output_height],
-                [output_width, 0],
-                [output_width, output_height],
+                [0, detected_height],
+                [detected_width, 0],
+                [detected_width, detected_height],
             ],
             dtype=float,
         )
-        return src_points, dst_points, (output_width, output_height)
+        return src_points, dst_points, (detected_width, detected_height)
 
     def get_qc_figures(self) -> list[Figure]:
-        return [self._plot_horizontal_edges(), self._plot_ruptures()]
+        return [make_summary_figure(str(self).splitlines()), self._plot_horizontal_edges(), self._plot_ruptures()]
 
     def _fit(self, raster_filepath: str | Path) -> Self:
         with rasterio.open(raster_filepath) as src:
