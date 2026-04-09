@@ -4,10 +4,11 @@ from pathlib import Path
 import time
 from typing import Any, Self
 
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.typing import NDArray
+
+from hipp.kh9pc.utils import generate_qc_report
 
 
 class BaseEstimator(ABC):
@@ -85,15 +86,7 @@ class QCMixin(ABC):
             Destination path for the PDF file. Parent directories are created
             if they do not exist.
         """
-        import matplotlib.pyplot as plt
-
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with PdfPages(output_path) as pdf:
-            for fig in self.get_qc_figures():
-                pdf.savefig(fig)
-                plt.close(fig)
+        generate_qc_report(output_path, self.get_qc_figures())
 
 
 class RectificationStrategy(BaseEstimator, QCMixin):
@@ -106,7 +99,7 @@ class RectificationStrategy(BaseEstimator, QCMixin):
     """
 
     @abstractmethod
-    def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
+    def compute_grid(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
         """Return the control point grids for TPS rectification.
 
         Must be called after :meth:`fit`.

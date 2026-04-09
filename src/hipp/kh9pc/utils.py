@@ -68,6 +68,27 @@ def fit_ransac_poly(
     return ransac
 
 
+def generate_qc_report(output_path: str | Path, figures: list[Figure]) -> None:
+    """Save a list of matplotlib figures to a PDF QC report.
+
+    Parameters
+    ----------
+    output_path : str or Path
+        Destination path for the PDF file. Parent directories are created if they do not exist.
+    figures : list[Figure]
+        Figures to include in the report. Each figure becomes one page. All figures are closed after saving.
+    """
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with PdfPages(output_path) as pdf:
+        for fig in figures:
+            pdf.savefig(fig)
+            plt.close(fig)
+
+
 def make_summary_figure(lines: list[str]) -> Figure:
     fig = plt.figure(figsize=(8.27, 11.69))
     fig.patch.set_facecolor("white")

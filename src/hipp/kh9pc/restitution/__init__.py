@@ -4,7 +4,7 @@ from .poly_rectification_strategy import PolyRectificationStrategy
 from .collimation_rectification_strategy import CollimationRectificationStrategy
 from .vertical_edges_estimator import VerticalEdgesEstimator
 from .transformer import ImageTransformer, ImageTransformerTps, ImageTransformerAffine
-from .output_size import OutputSize, AutoSize, SameSize, FixedSize, MarginSize
+from .output_size import OutputSize, AutoSize, SameSize, FixedSize, FixedHeightSize, MarginSize
 
 
 __all__ = [
@@ -21,5 +21,6 @@ __all__ = [
     "AutoSize",
     "SameSize",
     "FixedSize",
+    "FixedHeightSize",
     "MarginSize",
 ]

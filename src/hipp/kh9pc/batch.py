@@ -61,7 +61,6 @@ def join_images(
     output_directory: str,
     overwrite: bool = False,
     verbose: bool = True,
-    max_workers: int = 5,
 ) -> None:
     """
     Groups and mosaics TIF image tiles from a directory by scene ID.
@@ -87,4 +86,4 @@ def join_images(
             print(f"Skipping {output_image_path}: output already exists")
         else:
             matrix = compute_sequential_alignment(image_paths, verbose=verbose)
-            mosaic_images(matrix, output_image_path, max_workers, verbose)
+            mosaic_images(matrix, output_image_path, verbose)

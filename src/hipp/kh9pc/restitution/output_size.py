@@ -124,6 +124,27 @@ class FixedSize(OutputSize):
 
 
 @dataclass(frozen=True)
+class FixedHeightSize(OutputSize):
+    """Fixed output height with detected width kept as-is. Content is centred vertically.
+
+    Useful when different rectification strategies produce variable detected heights
+    but the output must always be a consistent height (e.g. for photogrammetric
+    pipelines that expect a canonical image size).
+
+    Parameters
+    ----------
+    height : int
+        Desired output height in pixels.
+    """
+
+    height: int
+
+    def resolve(self, detected_width: int, detected_height: int) -> tuple[int, int, int, int]:
+        y_offset = (self.height - detected_height) // 2
+        return detected_width, self.height, 0, y_offset
+
+
+@dataclass(frozen=True)
 class MarginSize(OutputSize):
     """Add independent margins (in pixels) around the detected content on each side.
 

@@ -87,7 +87,7 @@ class CollimationRectificationStrategy(RectificationStrategy):
 
         return self
 
-    def compute_grid(self) -> tuple[NDArray[np.generic], NDArray[np.generic], tuple[int, int]]:
+    def compute_grid(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
         left, right = self.vertical_edges
         detected_width = right - left
         detected_height = self.collimation_line_dist

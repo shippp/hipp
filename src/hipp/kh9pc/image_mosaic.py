@@ -12,6 +12,7 @@ import numpy as np
 import rasterio
 import rasterio.transform
 import rasterio.warp
+from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
@@ -88,55 +89,42 @@ def compute_sequential_alignment(
 def mosaic_images(
     transformation_matrixs_dict: dict[str, cv2.typing.MatLike],
     output_tif: str,
-    max_worker: int = 5,
     verbose: bool = True,
+    pbar: bool = True,
     resampling: int = rasterio.warp.Resampling.cubic,
 ) -> None:
     """
-    Mosaic multiple images into a single output GeoTIFF using given pixel transformation matrices.
+    Mosaic multiple images into a single output GeoTIFF using WarpedVRT.
 
-    This function warps and mosaics a collection of images into one large raster. The pixel
-    transformation matrices are applied as inverse affine transforms to align each image
-    into the output raster. The mosaicing process is block-based and supports multithreading.
+    Each image is warped into the output pixel space using its transformation matrix,
+    then merged block-by-block with the existing output to avoid overwriting valid pixels.
+    The output file has no geotransform, preventing QGIS from flipping the image.
 
     Parameters
     ----------
     transformation_matrixs_dict : dict[str, cv2.typing.MatLike]
-        Dictionary mapping image file paths to their corresponding 2D transformation matrices
-        (affine-like, 3x3 matrices).
+        Dictionary mapping image file paths to their cumulative 3x3 pixel transformation matrices.
     output_tif : str
         Path where the final mosaiced GeoTIFF will be saved.
-    max_worker : int, optional
-        Number of worker threads to use during block reprojecting (default is 5).
     verbose : bool, optional
-        If True, prints progress information (default is True).
+        If True, prints one line per image being warped (default is True).
+    pbar : bool, optional
+        If True, shows a tqdm progress bar per image (default is True).
     resampling : int, optional
-        Resampling algorithm from `rasterio.warp.Resampling` to use for reprojection
-        (default is `cubic`).
-
-    Returns
-    -------
-    None
-        The mosaiced raster is written to `output_tif`.
-
-    Notes
-    -----
-    - The transforms applied here are purely pixel-based and ignore CRS/georeferencing information.
-    - The output raster is compressed (LZW), tiled (256x256), and saved as BigTIFF if required.
-    - At the end of processing, the transform metadata is reset to identity to avoid
-      incorrect geospatial metadata.
+        Resampling algorithm from ``rasterio.warp.Resampling`` (default is ``cubic``).
     """
-    # Get the last image path to determine the output size and metadata
     last_image_path = next(reversed(transformation_matrixs_dict))
 
-    # Open the last image to base the output profile on
     with rasterio.open(last_image_path) as src:
-        # Calculate output width by adding translation component from transformation matrix
         output_width = src.width + int(transformation_matrixs_dict[last_image_path][0, 2])
         output_height = src.height
 
-    # define the output image profile based on the previously computed width and height
-    # and add some tif optimization
+    n_images = len(transformation_matrixs_dict)
+
+    # Use a fake CRS as a proxy for pixel space (required by WarpedVRT)
+    fake_crs = rasterio.CRS.from_epsg(3857)
+    dst_transform = rasterio.Affine.identity()
+
     profile = {
         "width": output_width,
         "height": output_height,
@@ -147,38 +135,49 @@ def mosaic_images(
         "tiled": True,
         "blockxsize": 256,
         "blockysize": 256,
-        "nodata": 0,
+        # "nodata": 0,
         "dtype": "uint8",
     }
-    if verbose:
-        print("Start the mosaicing...")
 
     os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
 
-    with rasterio.open(output_tif, "w", **profile) as dst:
+    n_blocks = (output_width // 256 + 1) * (output_height // 256 + 1)
+
+    if verbose:
+        print(f"Mosaicing {n_images} images → {output_tif} ({output_width}x{output_height} px)")
+
+    with rasterio.open(output_tif, "w+", **profile) as dst:
         for i, (filepath, matrix) in enumerate(transformation_matrixs_dict.items()):
             if verbose:
-                print(f"Warping {filepath} with : \n{matrix}")
+                print(f"  [{i + 1}/{n_images}] {os.path.basename(filepath)}")
 
-            # open the coresponding image
             with rasterio.open(filepath) as src:
-                # here we set the dst transform to the inverse of the given matrix
-                # Note : the transform here is juste for pixels not for geographic stuffs
-                dst.transform = ~rasterio.Affine(*matrix.flatten())
-
-                # use the reproject of rasterio with NO_GEOTRANSFORM option to specify we don't care about CRS.
-                # here we use this method cause it support big images with block processing and work with multi-threads.
-                rasterio.warp.reproject(
-                    source=rasterio.band(src, 1),
-                    destination=rasterio.band(dst, 1),
+                with WarpedVRT(
+                    src,
+                    src_transform=rasterio.Affine(*matrix.flatten()[:6]),
+                    src_crs=fake_crs,
+                    dst_crs=fake_crs,
                     resampling=resampling,
-                    num_threads=max_worker,
-                    SRC_METHOD="NO_GEOTRANSFORM",  # important to avoid error of CRS
-                    init_dest_nodata=False,  # important to avoid rewriting all the images with no data
-                )
+                    width=output_width,
+                    height=output_height,
+                    transform=dst_transform,
+                ) as vrt:
+                    for _, window in tqdm(
+                        dst.block_windows(1),
+                        total=n_blocks,
+                        desc="    warping",
+                        unit="block",
+                        disable=not pbar,
+                    ):
+                        warped = vrt.read(1, window=window)
+                        mask = warped != 0
+                        if not mask.any():
+                            continue
+                        existing = dst.read(1, window=window)
+                        dst.write(np.where(mask, warped, existing), 1, window=window)
 
-        # we remove the transform metadata to avoid let a wrong transform
-        dst.transform = rasterio.Affine.identity()
+    if verbose:
+        print("Done.")
 
 
 def mosaic_images_streaming(
