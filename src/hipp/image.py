@@ -5,10 +5,11 @@ Description: some function for the image processing
 
 import warnings
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Any
 
 import cv2
 import numpy as np
+import pandas as pd
 import rasterio
 from numpy.typing import NDArray
 from rasterio.errors import NotGeoreferencedWarning
@@ -78,11 +79,19 @@ def resize_img(
 
 
 def generate_quickview(
-    raster_filepath: str,
-    output_path: str,
+    raster_filepath: str | Path,
+    output_path: str | Path | None = None,
     scale_factor: float = 0.2,
     interpolation: int = Resampling.average,
+    jpeg_quality: int = 95,
 ) -> None:
+    raster_filepath = Path(raster_filepath)
+
+    if output_path is None:
+        output_path = raster_filepath.parent / "quickviews" / raster_filepath.with_suffix(".jpg").name
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     with rasterio.open(raster_filepath) as src:
         width = int(src.width * scale_factor)
         height = int(src.height * scale_factor)
@@ -95,14 +104,17 @@ def generate_quickview(
     if count == 1:
         img_cv2 = qv_img[0]  # 2D array for single band
     else:
-        # transpose (b, H, W) -> (H, W, b) and transforme rgb to bgr
+        # transpose (b, H, W) -> (H, W, b) and convert rgb to bgr
         img_cv2 = cv2.cvtColor(np.transpose(qv_img, (1, 2, 0)), cv2.COLOR_RGB2BGR)
 
-    # If single band, make sure dtype is uint8
     if img_cv2.dtype != np.uint8:
         img_cv2 = img_cv2.astype(np.uint8)
 
-    cv2.imwrite(output_path, img_cv2)
+    encode_params = []
+    if output_path.suffix.lower() in (".jpg", ".jpeg"):
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+
+    cv2.imwrite(str(output_path), img_cv2, encode_params)
 
 
 def resize_raster_blockwise(
@@ -530,3 +542,111 @@ def apply_clahe_to_tif_blockwise(
 
                     # Write result block to destination
                     dst.write(clahe.apply(block), 1, window=window)
+
+
+def match_multi_templates(
+    images: cv2.typing.MatLike,
+    template_dict: dict[str, cv2.typing.MatLike],
+    merged_dist: float,
+    n_matches: int = 1,
+    return_centers: bool = True,
+    method: int = cv2.TM_CCOEFF_NORMED,
+) -> pd.DataFrame:
+    """Find top-N matches for each template, then merge detections that are spatially close.
+
+    Runs :func:`match_template` for every template in ``template_dict`` and
+    aggregates all detections into a single DataFrame.  Detections whose
+    centres are within ``merged_dist`` pixels of each other are collapsed into
+    a single row that keeps the highest score among the group.
+
+    Parameters
+    ----------
+    images : cv2.typing.MatLike
+        Grayscale or colour source image to search in.
+    template_dict : dict[str, cv2.typing.MatLike]
+        Mapping of template name → template patch.
+    merged_dist : float
+        Maximum distance (in pixels) between two detections for them to be
+        considered duplicates.  Detections closer than this threshold are merged
+        by keeping the one with the highest score.
+    n_matches : int, optional
+        Number of matches to return per template, by default 1.
+    return_centers : bool, optional
+        If ``True`` (default), coordinates refer to the centre of each match.
+        If ``False``, coordinates refer to the top-left corner.
+    method : int, optional
+        OpenCV template-matching metric, by default ``cv2.TM_CCOEFF_NORMED``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``template``, ``x``, ``y``, ``score``.
+        One row per merged detection, sorted by descending score.
+    """
+    all_rows = []
+    for name, template in template_dict.items():
+        df = match_template(images, template, n_matches=n_matches, return_centers=return_centers, method=method)
+        df.insert(0, "template", name)
+        all_rows.append(df)
+
+    if not all_rows:
+        return pd.DataFrame(columns=["template", "x", "y", "score"])
+
+    detections = pd.concat(all_rows, ignore_index=True).sort_values("score", ascending=False)
+
+    kept: list[dict[str, Any]] = []
+    for row in detections.itertuples(index=False):
+        x, y = row.x, row.y
+        if all(np.hypot(x - k["x"], y - k["y"]) >= merged_dist for k in kept):
+            kept.append({"template": row.template, "x": x, "y": y, "score": row.score})
+
+    return pd.DataFrame(kept, columns=["template", "x", "y", "score"])
+
+
+def match_template(
+    image: cv2.typing.MatLike,
+    template: cv2.typing.MatLike,
+    n_matches: int = 1,
+    return_centers: bool = True,
+    method: int = cv2.TM_CCOEFF_NORMED,
+) -> pd.DataFrame:
+    """Find the top-N occurrences of a template in an image.
+
+    Uses OpenCV's ``matchTemplate`` and iteratively suppresses already-found
+    regions so that each successive match is distinct.
+
+    Parameters
+    ----------
+    image : cv2.typing.MatLike
+        Grayscale or colour source image to search in.
+    template : cv2.typing.MatLike
+        Patch to search for. Must be smaller than ``image``.
+    n_matches : int, optional
+        Number of matches to return, by default 1.
+    return_centers : bool, optional
+        If ``True`` (default), return the centre pixel of each match.
+        If ``False``, return the top-left corner of the matched bounding box.
+    method : int, optional
+        OpenCV template-matching metric, by default ``cv2.TM_CCOEFF_NORMED``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``x``, ``y``, ``score``. Sorted by descending score.
+    """
+    h, w = template.shape[:2]
+    res = cv2.matchTemplate(image, template, method)
+
+    rows = []
+    for _ in range(n_matches):
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        x, y = max_loc
+
+        y0, x0 = max(0, y - h + 1), max(0, x - w + 1)
+        res[y0 : y + h, x0 : x + w] = -np.inf
+
+        if return_centers:
+            x, y = x + w // 2, y + h // 2
+        rows.append({"x": x, "y": y, "score": float(max_val)})
+
+    return pd.DataFrame(rows, columns=["x", "y", "score"])

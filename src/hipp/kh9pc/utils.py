@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import cv2
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
@@ -107,16 +108,62 @@ def make_summary_figure(lines: list[str]) -> Figure:
     return fig
 
 
+def measure_circularity(image: NDArray[np.uint8]) -> tuple[float, float]:
+    """Measure how circular the main shape in a binary or grayscale image is.
+
+    Thresholds the image (Otsu), finds the largest external contour, and
+    returns its circularity score and equivalent radius.
+
+    Parameters
+    ----------
+    image : NDArray[np.uint8], shape (H, W)
+        Grayscale image. Does not need to be pre-thresholded.
+
+    Returns
+    -------
+    circularity : float
+        Score in ``[0, 1]``, where ``1.0`` is a perfect circle.
+        Returns ``0.0`` if no contour is found or the perimeter is zero.
+    radius : float
+        Equivalent radius estimated from contour area: ``sqrt(area / pi)``.
+    """
+    _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return 0.0, 0.0
+
+    cnt = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(cnt)
+    perimeter = cv2.arcLength(cnt, True)
+
+    if perimeter == 0:
+        return 0.0, 0.0
+
+    circularity = float(4 * np.pi * area / (perimeter**2))
+    radius = float(np.sqrt(area / np.pi))
+    return circularity, radius
+
+
+def create_circle_template(radius: int, canvas_size: int | None = None) -> cv2.typing.MatLike:
+    if canvas_size is None:
+        canvas_size = 2 * radius + 1
+    img = np.zeros((canvas_size, canvas_size), dtype=np.uint8)
+    cx = cy = canvas_size // 2
+    y, x = np.ogrid[:canvas_size, :canvas_size]
+    img[(x - cx) ** 2 + (y - cy) ** 2 <= radius**2] = 255
+    return img
+
+
 class SubImage:
     def __init__(
         self,
         raster: str | Path | rasterio.DatasetReader,
         window: Window,
-        out_shape: tuple[int, int, int],
+        out_shape: tuple[int, int, int] | None = None,
         resampling: Resampling = Resampling.average,
     ):
         self.window = window
-        self.out_shape = out_shape
 
         if isinstance(raster, rasterio.DatasetReader):
             self.band = raster.read(1, window=window, out_shape=out_shape, resampling=resampling)
@@ -124,7 +171,9 @@ class SubImage:
             with rasterio.open(raster) as src:
                 self.band = src.read(1, window=window, out_shape=out_shape, resampling=resampling)
 
-        self._scale = np.array([window.width / out_shape[2], window.height / out_shape[1]], dtype=np.float64)
+        actual_shape = self.band.shape  # (height, width) after read
+        self.out_shape = (1, actual_shape[0], actual_shape[1])
+        self._scale = np.array([window.width / actual_shape[1], window.height / actual_shape[0]], dtype=np.float64)
         self._offset = np.array([window.col_off, window.row_off], dtype=np.float64)
 
     def to_global(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:

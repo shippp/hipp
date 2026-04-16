@@ -5,7 +5,10 @@ Description: Generic tools
 
 import os
 import subprocess
+import tarfile
+import zipfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -224,6 +227,71 @@ def optimize_geotif_file(geotif_file: str, overwrite: bool = False) -> None:
     # Replace or keep original
     os.remove(geotif_file)
     os.rename(tmp_tif, geotif_file)
+
+
+def extract_archive(archive_path: str | Path, output_dir: str | Path) -> list[Path]:
+    """Extract an archive file to a directory and return all extracted file paths sorted.
+
+    Supported formats:
+    - zip
+    - tar, tar.gz / tgz, tar.bz2, tar.xz, tar.zst
+    - 7z (requires ``py7zr``)
+    - rar (requires ``rarfile``)
+
+    Parameters
+    ----------
+    archive_path : str | Path
+        Path to the archive file.
+    output_dir : str | Path
+        Directory where the archive content will be extracted.
+
+    Returns
+    -------
+    list[Path]
+        Sorted list of all extracted file paths (files only, not directories).
+
+    Raises
+    ------
+    ValueError
+        If the archive format is not supported.
+    """
+    archive_path = Path(archive_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    name = archive_path.name.lower()
+
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as zf:
+            zf.extractall(output_dir)
+
+    elif tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path) as tf:
+            tf.extractall(output_dir, filter="data")
+
+    elif name.endswith(".7z"):
+        try:
+            import py7zr
+        except ImportError as e:
+            raise ImportError("Install 'py7zr' to extract .7z archives: pip install py7zr") from e
+        with py7zr.SevenZipFile(archive_path, mode="r") as zf:
+            zf.extractall(output_dir)
+
+    elif name.endswith(".rar"):
+        try:
+            import rarfile
+        except ImportError as e:
+            raise ImportError("Install 'rarfile' to extract .rar archives: pip install rarfile") from e
+        with rarfile.RarFile(archive_path) as rf:
+            rf.extractall(output_dir)
+
+    else:
+        raise ValueError(
+            f"Unsupported archive format: '{archive_path.suffix}'. "
+            "Supported: .zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .tar.zst, .7z, .rar"
+        )
+
+    return sorted(p for p in output_dir.rglob("*") if p.is_file())
 
 
 def generate_quickviews(

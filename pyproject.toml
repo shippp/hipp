@@ -58,7 +58,7 @@ dependencies = [
 [tool.hatch.envs.dev.scripts]
 check = [
   "ruff check .",
-  "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
+  "mypy src/ --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
 ]
 kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
 lab = "jupyter lab --no-browser --ip=127.0.0.1 --port=8333"

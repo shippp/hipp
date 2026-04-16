@@ -1,6 +1,6 @@
 from . import image_mosaic
 from . import quality_control as qc
-from .batch import join_images, join_images_asp
+from .batch import join_images
 
 from .restitution import (
     CollimationRectificationStrategy,
@@ -23,6 +23,5 @@ __all__ = [
     "CollimationRectificationStrategy",
     # legacy — still used by core.py
     "join_images",
-    "join_images_asp",
     "qc",
 ]

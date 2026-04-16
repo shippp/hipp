@@ -18,6 +18,7 @@ class VerticalEdgeResult:
     position: int
     rupture_local: int
     sub_image: utils.SubImage
+    profile: np.typing.NDArray[np.integer]
 
 
 @dataclass
@@ -63,14 +64,13 @@ class VerticalEdgesEstimator(BaseEstimator, QCMixin):
         )
 
     def _process_side(self, sub_image: utils.SubImage, side: str) -> VerticalEdgeResult:
-        ruptures = utils.detect_ruptures(
-            sub_image.band.flatten(), self.background_threshold, reverse_scan=(side == "left")
-        )
+        profile = sub_image.band.flatten()
+        ruptures = utils.detect_ruptures(profile, self.background_threshold, reverse_scan=(side == "left"))
         if len(ruptures) == 0:
             raise RuntimeError(f"No rupture detected on the {side} edge.")
         rupture_local = int(ruptures[0])
         position = int(sub_image.to_global(np.array([rupture_local, 0.0]))[0])
-        return VerticalEdgeResult(position=position, rupture_local=rupture_local, sub_image=sub_image)
+        return VerticalEdgeResult(position=position, rupture_local=rupture_local, sub_image=sub_image, profile=profile)
 
     @property
     def left(self) -> VerticalEdgeResult:
