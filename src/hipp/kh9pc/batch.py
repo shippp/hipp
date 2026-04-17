@@ -6,7 +6,7 @@ Description: Functions for applying core preprocessing functions to images batch
 import os
 from collections import defaultdict
 
-from hipp.kh9pc.image_mosaic import ImageMosaicker
+from hipp.kh9pc.image_mosaic import compute_sequential_alignments, write_mosaic
 
 
 def join_images(
@@ -38,4 +38,4 @@ def join_images(
         if os.path.exists(output_image_path) and not overwrite:
             print(f"Skipping {output_image_path}: output already exists")
         else:
-            ImageMosaicker(verbose=verbose).fit_write(image_paths, output_image_path)
+            write_mosaic(compute_sequential_alignments(image_paths), output_image_path)

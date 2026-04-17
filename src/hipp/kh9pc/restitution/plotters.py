@@ -1,25 +1,16 @@
-from pathlib import Path
+import dataclasses
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from matplotlib.figure import Figure
 import numpy as np
 import rasterio
 from rasterio.windows import Window
 from rasterio.warp import Resampling
 
-from hipp.kh9pc.restitution.detectors import CollimationDetector, FlatDetector, PolyDetector, VerticalDetector
-from hipp.kh9pc.utils import generate_qc_report, make_summary_figure
-
-
-# ---------------------------------------------------------------------------
-# Generic
-# ---------------------------------------------------------------------------
-
-
-def plot_summary(detector: object) -> Figure:
-    """Render the str() representation of any detector as a figure."""
-    return make_summary_figure(str(detector).splitlines())
-
+from hipp.kh9pc.restitution.strategy import CollimationStrategy, FlatStrategy, PolyStrategy, RectificationStrategy
+from hipp.kh9pc.restitution.types import StepResult, StrategyAttempt
+from hipp.kh9pc.restitution.vertical import VerticalDetector
 
 # ---------------------------------------------------------------------------
 # VerticalDetector
@@ -69,11 +60,11 @@ def plot_vertical_edges(
 
 
 # ---------------------------------------------------------------------------
-# FlatDetector
+# FlatStrategy
 # ---------------------------------------------------------------------------
 
 
-def plot_flat_ruptures(detector: FlatDetector) -> Figure:
+def plot_flat_ruptures(detector: FlatStrategy) -> Figure:
     """Band profiles (collapsed horizontally) with detected rupture row for top and bottom."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
@@ -89,7 +80,7 @@ def plot_flat_ruptures(detector: FlatDetector) -> Figure:
     return fig
 
 
-def plot_flat_edges(detector: FlatDetector, margin_fraction: float = 0.03) -> Figure:
+def plot_flat_edges(detector: FlatStrategy, margin_fraction: float = 0.03) -> Figure:
     """Thumbnails around the top and bottom edge positions with detected line overlaid."""
     left, right = detector.vertical_edges
     roi_w = right - left
@@ -119,11 +110,11 @@ def plot_flat_edges(detector: FlatDetector, margin_fraction: float = 0.03) -> Fi
 
 
 # ---------------------------------------------------------------------------
-# PolyDetector
+# PolyStrategy
 # ---------------------------------------------------------------------------
 
 
-def plot_poly_edges(detector: PolyDetector) -> Figure:
+def plot_poly_edges(detector: PolyStrategy) -> Figure:
     """Subimage thumbnails with RANSAC inliers/outliers and polynomial model for top and bottom edges."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
@@ -148,7 +139,7 @@ def plot_poly_edges(detector: PolyDetector) -> Figure:
     return fig
 
 
-def plot_poly_distortions(detector: PolyDetector) -> Figure:
+def plot_poly_distortions(detector: PolyStrategy) -> Figure:
     """Residual distortion curves (deviation from mean) for top and bottom polynomial fits."""
     fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
 
@@ -164,11 +155,11 @@ def plot_poly_distortions(detector: PolyDetector) -> Figure:
 
 
 # ---------------------------------------------------------------------------
-# CollimationDetector
+# CollimationStrategy
 # ---------------------------------------------------------------------------
 
 
-def plot_collimation_edges(detector: CollimationDetector) -> Figure:
+def plot_collimation_edges(detector: CollimationStrategy) -> Figure:
     """Subimage thumbnails with RANSAC inliers/outliers and polynomial model for top and bottom collimation lines."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
@@ -192,7 +183,7 @@ def plot_collimation_edges(detector: CollimationDetector) -> Figure:
     return fig
 
 
-def plot_collimation_distortions(detector: CollimationDetector) -> Figure:
+def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
     """Residual distortion curves for top and bottom collimation line fits."""
     fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
 
@@ -208,53 +199,136 @@ def plot_collimation_distortions(detector: CollimationDetector) -> Figure:
 
 
 # ---------------------------------------------------------------------------
-# QC report
+# Report figure builders
 # ---------------------------------------------------------------------------
 
+_STATUS_COLOR = {"ran": "#2ecc71", "skipped": "#95a5a6", "failed": "#e74c3c"}
+_STRATEGY_DESCRIPTIONS = {
+    "CollimationStrategy": (
+        "Détecte les lignes de collimation (bandes noires horizontales) par recherche de pics d'intensité "
+        "dans chaque colonne, puis ajuste un polynôme RANSAC sur les points détectés."
+    ),
+    "PolyStrategy": (
+        "Détecte les bords film par détection de ruptures d'intensité (transition fond noir → image), "
+        "puis ajuste un polynôme RANSAC sur les ruptures détectées."
+    ),
+    "FlatStrategy": (
+        "Détecte les bords film comme des lignes horizontales plates via une rupture d'intensité "
+        "globale. Applique une transformation affine (4 points)."
+    ),
+}
 
-def qc_report_vertical(detector: VerticalDetector, output_path: str | Path) -> None:
-    """Save a PDF QC report for a :class:`~hipp.kh9pc.restitution.detectors.VerticalDetector`."""
-    generate_qc_report(
-        output_path,
-        [
-            plot_summary(detector),
-            plot_vertical_ruptures(detector),
-            plot_vertical_edges(detector),
-        ],
+
+def plot_pipeline_summary(step_results: list[StepResult]) -> Figure:
+    """Pipeline step summary table."""
+    fig, ax = plt.subplots(figsize=(11, max(3.5, len(step_results) * 0.55 + 1.5)))
+    ax.axis("off")
+    ax.set_title("Pipeline Summary", fontsize=14, fontweight="bold", pad=16)
+
+    headers = ["Step", "Status", "Started at", "Duration"]
+    rows = []
+    cell_colors: list[list[str | tuple[float, float, float, float]]] = []
+    for r in step_results:
+        duration = f"{r.duration:.1f} s" if r.status != "skipped" else "—"
+        started = r.started_at.strftime("%H:%M:%S")
+        error_suffix = f"  ✗ {r.error}" if r.error else ""
+        rows.append([r.name, r.status + error_suffix, started, duration])
+        color = mcolors.to_rgba(_STATUS_COLOR.get(r.status, "#ffffff"), alpha=0.25)
+        cell_colors.append(["white", color, "white", "white"])
+
+    table = ax.table(
+        cellText=rows,
+        colLabels=headers,
+        cellColours=cell_colors,
+        loc="center",
+        cellLoc="left",
     )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.auto_set_column_width([0, 1, 2, 3])
+    fig.tight_layout()
+    return fig
 
 
-def qc_report_flat(detector: FlatDetector, output_path: str | Path) -> None:
-    """Save a PDF QC report for a :class:`~hipp.kh9pc.restitution.detectors.FlatDetector`."""
-    generate_qc_report(
-        output_path,
-        [
-            plot_summary(detector),
-            plot_flat_edges(detector),
-            plot_flat_ruptures(detector),
-        ],
+def plot_strategy_header(attempt: StrategyAttempt) -> Figure:
+    """Text page describing a strategy attempt (success or failure)."""
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.axis("off")
+
+    name = attempt.strategy.__class__.__name__ if attempt.strategy is not None else "Unknown"
+    description = _STRATEGY_DESCRIPTIONS.get(name, "")
+
+    if attempt.success:
+        status_txt, status_color = "✓  Stratégie retenue", "#27ae60"
+    else:
+        status_txt, status_color = "✗  Stratégie échouée", "#c0392b"
+
+    ax.text(0.5, 0.88, name, transform=ax.transAxes, fontsize=18, fontweight="bold", ha="center", va="top")
+    ax.text(0.5, 0.72, status_txt, transform=ax.transAxes, fontsize=13, ha="center", va="top", color=status_color)
+
+    if description:
+        ax.text(
+            0.5,
+            0.55,
+            description,
+            transform=ax.transAxes,
+            fontsize=10,
+            ha="center",
+            va="top",
+            wrap=True,
+            style="italic",
+            color="#555555",
+        )
+
+    if attempt.failure_reason:
+        ax.text(
+            0.5,
+            0.25,
+            f"Raison : {attempt.failure_reason}",
+            transform=ax.transAxes,
+            fontsize=10,
+            ha="center",
+            va="top",
+            color="#c0392b",
+        )
+
+    fig.tight_layout()
+    return fig
+
+
+def plot_strategy_params(strategy: RectificationStrategy) -> Figure:
+    """Two-column table of strategy parameters."""
+    params = {f.name: getattr(strategy, f.name) for f in dataclasses.fields(strategy)}  # type: ignore[arg-type]
+
+    fig, ax = plt.subplots(figsize=(8, max(3, len(params) * 0.45 + 1.5)))
+    ax.axis("off")
+    ax.set_title("Paramètres", fontsize=12, fontweight="bold", pad=12)
+
+    rows = [[k, str(v)] for k, v in params.items()]
+    table = ax.table(
+        cellText=rows,
+        colLabels=["Paramètre", "Valeur"],
+        loc="center",
+        cellLoc="left",
     )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.auto_set_column_width([0, 1])
+    fig.tight_layout()
+    return fig
 
 
-def qc_report_poly(detector: PolyDetector, output_path: str | Path) -> None:
-    """Save a PDF QC report for a :class:`~hipp.kh9pc.restitution.detectors.PolyDetector`."""
-    generate_qc_report(
-        output_path,
-        [
-            plot_summary(detector),
-            plot_poly_edges(detector),
-            plot_poly_distortions(detector),
-        ],
-    )
+def vertical_figures(detector: VerticalDetector) -> list[Figure]:
+    """All QC figures for a VerticalDetector."""
+    return [plot_vertical_ruptures(detector), plot_vertical_edges(detector)]
 
 
-def qc_report_collimation(detector: CollimationDetector, output_path: str | Path) -> None:
-    """Save a PDF QC report for a :class:`~hipp.kh9pc.restitution.detectors.CollimationDetector`."""
-    generate_qc_report(
-        output_path,
-        [
-            plot_summary(detector),
-            plot_collimation_edges(detector),
-            plot_collimation_distortions(detector),
-        ],
-    )
+def strategy_figures(strategy: RectificationStrategy) -> list[Figure]:
+    """All QC figures for a fitted RectificationStrategy."""
+    if isinstance(strategy, CollimationStrategy):
+        return [plot_collimation_edges(strategy), plot_collimation_distortions(strategy)]
+    if isinstance(strategy, PolyStrategy):
+        return [plot_poly_edges(strategy), plot_poly_distortions(strategy)]
+    if isinstance(strategy, FlatStrategy):
+        return [plot_flat_edges(strategy), plot_flat_ruptures(strategy)]
+    return []

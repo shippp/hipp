@@ -16,6 +16,7 @@ from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import Resampling, reproject
 from rasterio.windows import Window
 from scipy.interpolate import RectBivariateSpline
+from skimage.transform import AffineTransform, ThinPlateSplineTransform
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
@@ -412,6 +413,73 @@ def remap_tif_blockwise(
                 # Write destination block
                 dst_window = Window(col_off=dst_x0, row_off=dst_y0, width=dst_x1 - dst_x0, height=dst_y1 - dst_y0)
                 dst.write(remapped_block, 1, window=dst_window)
+
+
+def remap_tif_blockwise_from_points(
+    input_path: str | Path,
+    output_path: str | Path,
+    src_points: NDArray[np.float32],
+    dst_points: NDArray[np.float32],
+    output_size: tuple[int, int] | None = None,
+    transformation: str = "tps",
+    interpolation: int = cv2.INTER_CUBIC,
+    pbar: bool = True,
+    pbar_desc: str = "Remapping tif",
+) -> None:
+    """
+    Apply a geometric remapping defined by control point correspondences to a GeoTIFF.
+
+    Wraps :func:`remap_tif_blockwise` with a higher-level interface: fits either a
+    Thin Plate Spline (TPS) or affine transform from ``dst_points`` → ``src_points``
+    (inverse mapping direction), then delegates remapping. Block size and
+    ``lowres_step`` are set automatically per transform type.
+
+    Parameters
+    ----------
+    input_path : str or Path
+        Path to the input GeoTIFF file.
+    output_path : str or Path
+        Destination path for the remapped output GeoTIFF.
+    src_points : NDArray[np.float32], shape (N, 2)
+        Control points in the source (input) image, as (x, y) columns.
+    dst_points : NDArray[np.float32], shape (N, 2)
+        Corresponding control points in the destination (output) image.
+    output_size : tuple[int, int] or None, optional
+        Output dimensions as (width, height). If None, uses input dimensions.
+    transformation : {"tps", "affine"}, default "tps"
+        Transform type. ``"tps"`` uses a Thin Plate Spline (flexible, suited for
+        distorted imagery); ``"affine"`` uses a global affine fit (fast, suited for
+        nearly-flat imagery).
+    interpolation : int, default cv2.INTER_CUBIC
+        OpenCV interpolation flag passed to :func:`remap_tif_blockwise`.
+    pbar : bool, default True
+        Whether to display a progress bar.
+    pbar_desc : str, default "Remapping tif"
+        Progress bar description.
+    """
+    inverse_remap: Callable[[NDArray[np.float32]], NDArray[np.float32]]
+    if transformation == "tps":
+        inverse_remap = ThinPlateSplineTransform.from_estimate(dst_points, src_points)
+        block_size = 2**13
+        lowres_step = 100
+    elif transformation == "affine":
+        inverse_remap = AffineTransform.from_estimate(dst_points, src_points)
+        block_size = 256
+        lowres_step = None
+    else:
+        raise ValueError(f"{transformation!r} not supported, use 'tps' or 'affine'")
+
+    remap_tif_blockwise(
+        input_path=input_path,
+        output_path=output_path,
+        inverse_remap_function=inverse_remap,
+        output_size=output_size,
+        block_size=block_size,
+        interpolation=interpolation,
+        pbar=pbar,
+        pbar_desc=pbar_desc,
+        lowres_step=lowres_step,
+    )
 
 
 def warp_raster_pixels(

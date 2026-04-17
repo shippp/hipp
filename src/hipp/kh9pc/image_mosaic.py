@@ -5,6 +5,7 @@ Description: Functions to recreate in python the image_mosaic function from ASP
 
 from dataclasses import dataclass
 from glob import glob
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,8 @@ from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,296 +54,179 @@ class ImageAlignment:
 
 
 ####################################################################################################################################
-#                                                   MAIN CLASSES
+#                                                   MAIN FUNCTIONS
 ####################################################################################################################################
 
 
-class ImageMosaicker:
-    """
-    Pipeline for sequential keypoint-based image mosaicking.
+def compute_sequential_alignments(
+    image_paths: list[str],
+    overlap_width: int = 3000,
+    bloc_height: int = 256,
+    nfeature_per_block: int = 500,
+    ransac_max_trials: int = 1000,
+    ransac_residual_threshold: float = 3.0,
+) -> list[ImageAlignment]:
+    """Compute sequential alignments between images.
 
-    Follows a sklearn-style fit/write interface:
-
-    - ``fit(image_paths)``: detects ORB keypoints between consecutive images,
-      estimates RANSAC Euclidean transforms, and accumulates absolute transformations.
-    - ``write(output_tif)``: warps and merges all images into a single output GeoTIFF,
-      block-by-block to stay memory-efficient.
-
-    The output canvas size is automatically computed from the bounding box of all
-    transformed image corners, so no image is clipped regardless of vertical drift.
+    Detects ORB keypoints between consecutive images, estimates RANSAC Euclidean
+    transforms, and accumulates absolute transformations from the reference image.
 
     Parameters
     ----------
-    overlap_width : int
-        Width in pixels of the overlapping region used for keypoint matching
-        between consecutive images. Default is 3000.
-    bloc_height : int
-        Height of blocks (in pixels) used for local keypoint detection in the
-        overlap region. Default is 256.
-    nfeature_per_block : int
-        Number of ORB features to detect per block. Default is 500.
-    ransac_max_trials : int
-        Maximum number of RANSAC iterations for robust transform estimation. Default is 1000.
-    ransac_residual_threshold : float
-        Maximum inlier residual for RANSAC. Default is 3.0.
-    resampling : int
-        Resampling method from ``rasterio.warp.Resampling``. Default is ``cubic``.
-    verbose : bool
-        Print progress information. Default is True.
+    image_paths : list[str]
+        Ordered list of image file paths to align. The first image is the reference
+        (identity transform). Each subsequent image is aligned to the previous one.
+    overlap_width : int, default 3000
+        Width in pixels of the overlapping region used for keypoint matching.
+    bloc_height : int, default 256
+        Height of blocks (in pixels) used for local keypoint detection.
+    nfeature_per_block : int, default 500
+        Number of ORB features to detect per block.
+    ransac_max_trials : int, default 1000
+        Maximum number of RANSAC iterations for robust transform estimation.
+    ransac_residual_threshold : float, default 3.0
+        Maximum inlier residual for RANSAC.
 
-    Attributes
-    ----------
-    alignments_ : list[ImageAlignment]
-        Set after calling ``fit()``. One entry per input image, holding relative and
-        absolute 3x3 homogeneous transformation matrices plus match statistics.
-
-    Examples
-    --------
-    >>> mosaicker = ImageMosaicker(overlap_width=3000)
-    >>> mosaicker.fit(["img_a.tif", "img_b.tif", "img_c.tif"])
-    >>> mosaicker.write("mosaic.tif")
-
-    Or in one call:
-
-    >>> ImageMosaicker().fit_write(["img_a.tif", "img_b.tif"], "mosaic.tif")
+    Returns
+    -------
+    list[ImageAlignment]
+        One entry per input image, holding relative and absolute 3x3 homogeneous
+        transformation matrices plus match statistics.
     """
+    identity = np.eye(3)
+    alignments: list[ImageAlignment] = [
+        ImageAlignment(
+            image_path=Path(image_paths[0]),
+            relative_transform=identity,
+            absolute_transform=identity,
+            n_matches=0,
+            n_inliers=0,
+        )
+    ]
 
-    def __init__(
-        self,
-        overlap_width: int = 3000,
-        bloc_height: int = 256,
-        nfeature_per_block: int = 500,
-        ransac_max_trials: int = 1000,
-        ransac_residual_threshold: float = 3.0,
-        resampling: int = rasterio.warp.Resampling.cubic,
-        verbose: bool = True,
-    ) -> None:
-        self.overlap_width = overlap_width
-        self.bloc_height = bloc_height
-        self.nfeature_per_block = nfeature_per_block
-        self.ransac_max_trials = ransac_max_trials
-        self.ransac_residual_threshold = ransac_residual_threshold
-        self.resampling = resampling
-        self.verbose = verbose
+    for i in range(len(image_paths) - 1):
+        logger.info("Matching '%s' with '%s'", image_paths[i], image_paths[i + 1])
 
-        self.alignments_: list[ImageAlignment] = []
+        points_a, points_b = _extract_global_matches_from_overlap(
+            image_paths[i],
+            image_paths[i + 1],
+            overlap_width,
+            bloc_height,
+            nfeature_per_block,
+        )
 
-    def fit(self, image_paths: list[str]) -> "ImageMosaicker":
-        """Compute sequential alignments between images.
+        model_robust, inliers = ransac(
+            (np.array(points_b, dtype=np.float32), np.array(points_a, dtype=np.float32)),
+            EuclideanTransform,
+            min_samples=3,
+            residual_threshold=ransac_residual_threshold,
+            max_trials=ransac_max_trials,
+        )
 
-        Parameters
-        ----------
-        image_paths : list[str]
-            Ordered list of image file paths to align. The first image is the reference
-            (identity transform). Each subsequent image is aligned to the previous one.
+        n_inliers = int(np.sum(inliers))
+        logger.info("Inliers after RANSAC: %d/%d", n_inliers, len(points_a))
 
-        Returns
-        -------
-        self : ImageMosaicker
-            Returns self to allow method chaining (e.g. ``fit(...).write(...)``).
-        """
-        identity = np.eye(3)
-        self.alignments_ = [
+        relative_transform: np.ndarray = model_robust.params
+        absolute_transform: np.ndarray = alignments[i].absolute_transform @ relative_transform
+
+        alignments.append(
             ImageAlignment(
-                image_path=Path(image_paths[0]),
-                relative_transform=identity,
-                absolute_transform=identity,
-                n_matches=0,
-                n_inliers=0,
+                image_path=Path(image_paths[i + 1]),
+                relative_transform=relative_transform,
+                absolute_transform=absolute_transform,
+                n_matches=len(points_a),
+                n_inliers=n_inliers,
             )
-        ]
+        )
 
-        for i in range(len(image_paths) - 1):
-            if self.verbose:
-                print(f"Matching '{image_paths[i]}' with '{image_paths[i + 1]}' ...")
+    return alignments
 
-            points_a, points_b = _extract_global_matches_from_overlap(
-                image_paths[i],
-                image_paths[i + 1],
-                self.overlap_width,
-                self.bloc_height,
-                self.nfeature_per_block,
-            )
 
-            model_robust, inliers = ransac(
-                (np.array(points_b, dtype=np.float32), np.array(points_a, dtype=np.float32)),
-                EuclideanTransform,
-                min_samples=3,
-                residual_threshold=self.ransac_residual_threshold,
-                max_trials=self.ransac_max_trials,
-            )
+def write_mosaic(
+    alignments: list[ImageAlignment],
+    output_tif: str,
+    resampling: int = rasterio.warp.Resampling.cubic,
+    pbar: bool = True,
+) -> None:
+    """Warp and merge all aligned images into a single output GeoTIFF.
 
-            n_inliers = int(np.sum(inliers))
-            if self.verbose:
-                print(f"\t- Inliers after RANSAC: {n_inliers}/{len(points_a)}")
+    Images are warped into the output pixel space using WarpedVRT and merged
+    block-by-block. Valid pixels from later images do not overwrite valid pixels
+    already written from earlier images.
 
-            relative_transform: np.ndarray = model_robust.params
-            absolute_transform: np.ndarray = self.alignments_[i].absolute_transform @ relative_transform
+    If any image extends above or to the left of the first image (negative coordinates
+    after transformation), an offset is automatically applied to all transforms so that
+    the full mosaic fits within the canvas without clipping.
 
-            self.alignments_.append(
-                ImageAlignment(
-                    image_path=Path(image_paths[i + 1]),
-                    relative_transform=relative_transform,
-                    absolute_transform=absolute_transform,
-                    n_matches=len(points_a),
-                    n_inliers=n_inliers,
-                )
-            )
+    Parameters
+    ----------
+    alignments : list[ImageAlignment]
+        Alignments as returned by :func:`compute_sequential_alignments`.
+    output_tif : str
+        Path to the output GeoTIFF file.
+    resampling : int, default rasterio.warp.Resampling.cubic
+        Resampling method from ``rasterio.warp.Resampling``.
+    pbar : bool, default True
+        Show a tqdm progress bar per image.
+    """
+    output_width, output_height, offset_x, offset_y = _compute_canvas(alignments)
+    n_images = len(alignments)
 
-        return self
+    T_offset = np.array([[1, 0, -offset_x], [0, 1, -offset_y], [0, 0, 1]], dtype=float)
 
-    def _compute_canvas(self) -> tuple[int, int, float, float]:
-        """Compute output canvas dimensions and the offset needed to shift all images into positive coordinates.
+    fake_crs = rasterio.CRS.from_epsg(3857)
+    dst_transform = rasterio.Affine.identity()
 
-        Returns
-        -------
-        width : int
-        height : int
-        offset_x : float
-            Horizontal shift to apply so the leftmost pixel lands at x=0.
-        offset_y : float
-            Vertical shift to apply so the topmost pixel lands at y=0.
-        """
-        all_corners: list[np.ndarray] = []
-        for alignment in self.alignments_:
+    profile = {
+        "width": output_width,
+        "height": output_height,
+        "compress": "lzw",
+        "driver": "GTiff",
+        "BIGTIFF": "YES",
+        "count": 1,
+        "tiled": True,
+        "blockxsize": 256,
+        "blockysize": 256,
+        "dtype": "uint8",
+    }
+
+    os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
+    n_blocks = (output_width // 256 + 1) * (output_height // 256 + 1)
+
+    logger.info("Mosaicing %d images → %s (%d×%d px)", n_images, output_tif, output_width, output_height)
+
+    with rasterio.open(output_tif, "w+", **profile) as dst:
+        for i, alignment in enumerate(alignments):
+            logger.info("[%d/%d] %s", i + 1, n_images, alignment.image_path.name)
+
+            adjusted_transform = T_offset @ alignment.absolute_transform
+
             with rasterio.open(alignment.image_path) as src:
-                w, h = src.width, src.height
-            corners = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]], dtype=float).T
-            transformed = (alignment.absolute_transform @ corners)[:2]  # shape (2, 4)
-            all_corners.append(transformed)
+                with WarpedVRT(
+                    src,
+                    src_transform=rasterio.Affine(*adjusted_transform.flatten()[:6]),
+                    src_crs=fake_crs,
+                    dst_crs=fake_crs,
+                    resampling=resampling,
+                    width=output_width,
+                    height=output_height,
+                    transform=dst_transform,
+                ) as vrt:
+                    for _, window in tqdm(
+                        dst.block_windows(1),
+                        total=n_blocks,
+                        desc="    warping",
+                        unit="block",
+                        disable=not pbar,
+                    ):
+                        warped = vrt.read(1, window=window)
+                        mask = warped != 0
+                        if not mask.any():
+                            continue
+                        existing = dst.read(1, window=window)
+                        dst.write(np.where(mask, warped, existing), 1, window=window)
 
-        stacked = np.hstack(all_corners)
-        min_x, min_y = stacked[0].min(), stacked[1].min()
-        width = int(np.ceil(stacked[0].max() - min_x))
-        height = int(np.ceil(stacked[1].max() - min_y))
-        return width, height, min_x, min_y
-
-    @property
-    def output_size(self) -> tuple[int, int]:
-        """Compute the output canvas size that fits all transformed images.
-
-        Transforms the four corners of each image using its absolute transform,
-        then returns the bounding box over all corners.
-
-        Returns
-        -------
-        width : int
-        height : int
-
-        Raises
-        ------
-        RuntimeError
-            If called before ``fit()``.
-        """
-        if not self.alignments_:
-            raise RuntimeError("Call fit() before accessing output_size.")
-        width, height, _, _ = self._compute_canvas()
-        return width, height
-
-    def write(self, output_tif: str, pbar: bool = True) -> None:
-        """Warp and merge all aligned images into a single output GeoTIFF.
-
-        Images are warped into the output pixel space using WarpedVRT and merged
-        block-by-block. Valid pixels from later images do not overwrite valid pixels
-        already written from earlier images.
-
-        If any image extends above or to the left of the first image (negative coordinates
-        after transformation), an offset is automatically applied to all transforms so that
-        the full mosaic fits within the canvas without clipping.
-
-        Parameters
-        ----------
-        output_tif : str
-            Path to the output GeoTIFF file.
-        pbar : bool, optional
-            Show a tqdm progress bar per image. Default is True.
-
-        Raises
-        ------
-        RuntimeError
-            If called before ``fit()``.
-        """
-        if not self.alignments_:
-            raise RuntimeError("Call fit() before write().")
-
-        output_width, output_height, offset_x, offset_y = self._compute_canvas()
-        n_images = len(self.alignments_)
-
-        # Translation matrix to shift all images into positive canvas coordinates
-        # (identity when no image overflows to the top or left)
-        T_offset = np.array([[1, 0, -offset_x], [0, 1, -offset_y], [0, 0, 1]], dtype=float)
-
-        # Use a fake CRS as a proxy for pixel space (required by WarpedVRT)
-        fake_crs = rasterio.CRS.from_epsg(3857)
-        dst_transform = rasterio.Affine.identity()
-
-        profile = {
-            "width": output_width,
-            "height": output_height,
-            "compress": "lzw",
-            "driver": "GTiff",
-            "BIGTIFF": "YES",
-            "count": 1,
-            "tiled": True,
-            "blockxsize": 256,
-            "blockysize": 256,
-            "dtype": "uint8",
-        }
-
-        os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
-        n_blocks = (output_width // 256 + 1) * (output_height // 256 + 1)
-
-        if self.verbose:
-            print(f"Mosaicing {n_images} images → {output_tif} ({output_width}×{output_height} px)")
-
-        with rasterio.open(output_tif, "w+", **profile) as dst:
-            for i, alignment in enumerate(self.alignments_):
-                if self.verbose:
-                    print(f"  [{i + 1}/{n_images}] {alignment.image_path.name}")
-
-                adjusted_transform = T_offset @ alignment.absolute_transform
-
-                with rasterio.open(alignment.image_path) as src:
-                    with WarpedVRT(
-                        src,
-                        src_transform=rasterio.Affine(*adjusted_transform.flatten()[:6]),
-                        src_crs=fake_crs,
-                        dst_crs=fake_crs,
-                        resampling=self.resampling,
-                        width=output_width,
-                        height=output_height,
-                        transform=dst_transform,
-                    ) as vrt:
-                        for _, window in tqdm(
-                            dst.block_windows(1),
-                            total=n_blocks,
-                            desc="    warping",
-                            unit="block",
-                            disable=not pbar,
-                        ):
-                            warped = vrt.read(1, window=window)
-                            mask = warped != 0
-                            if not mask.any():
-                                continue
-                            existing = dst.read(1, window=window)
-                            dst.write(np.where(mask, warped, existing), 1, window=window)
-
-        if self.verbose:
-            print("Done.")
-
-    def fit_write(self, image_paths: list[str], output_tif: str, pbar: bool = True) -> None:
-        """Convenience method: fit then write in a single call.
-
-        Parameters
-        ----------
-        image_paths : list[str]
-            Ordered list of image file paths to align and mosaic.
-        output_tif : str
-            Path to the output GeoTIFF file.
-        pbar : bool, optional
-            Show a tqdm progress bar per image. Default is True.
-        """
-        self.fit(image_paths).write(output_tif, pbar=pbar)
+    logger.info("Mosaic written to %s", output_tif)
 
 
 ####################################################################################################################################
@@ -411,6 +297,33 @@ def image_mosaic_asp(
 ####################################################################################################################################
 #                                                   PRIVATE FUNCTIONS
 ####################################################################################################################################
+
+
+def _compute_canvas(alignments: list[ImageAlignment]) -> tuple[int, int, float, float]:
+    """Compute output canvas dimensions and the offset needed to shift all images into positive coordinates.
+
+    Returns
+    -------
+    width : int
+    height : int
+    offset_x : float
+        Horizontal shift to apply so the leftmost pixel lands at x=0.
+    offset_y : float
+        Vertical shift to apply so the topmost pixel lands at y=0.
+    """
+    all_corners: list[np.ndarray] = []
+    for alignment in alignments:
+        with rasterio.open(alignment.image_path) as src:
+            w, h = src.width, src.height
+        corners = np.array([[0, 0, 1], [w, 0, 1], [0, h, 1], [w, h, 1]], dtype=float).T
+        transformed = (alignment.absolute_transform @ corners)[:2]
+        all_corners.append(transformed)
+
+    stacked = np.hstack(all_corners)
+    min_x, min_y = stacked[0].min(), stacked[1].min()
+    width = int(np.ceil(stacked[0].max() - min_x))
+    height = int(np.ceil(stacked[1].max() - min_y))
+    return width, height, min_x, min_y
 
 
 def _extract_global_matches_from_overlap(

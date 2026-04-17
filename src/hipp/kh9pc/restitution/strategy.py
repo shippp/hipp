@@ -1,22 +1,27 @@
+"""
+Copyright (c) 2025 HIPP developers
+Description: RectificationStrategy — combined detection + control-point + transform ABC.
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
-import time
 from pathlib import Path
-from typing import Any, Self
+from typing import Self
 import warnings
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
-import pandas as pd
 import rasterio
 from rasterio.windows import Window
 from rasterio.warp import Resampling
 from sklearn.linear_model import RANSACRegressor
 from sklearn.pipeline import Pipeline
 
-from hipp.image import match_multi_templates
+import cv2
+import pandas as pd
+
+from hipp.image import match_multi_templates, remap_tif_blockwise_from_points
+from hipp.kh9pc.restitution.output_size import OutputSize
 from hipp.kh9pc.utils import (
     SubImage,
     create_circle_template,
@@ -27,66 +32,75 @@ from hipp.kh9pc.utils import (
 )
 
 
-class Detector(ABC):
+class RectificationStrategy(ABC):
+    """ABC for horizontal-edge detection + geometric rectification.
+
+    Subclasses implement :meth:`_fit` (detection) and :meth:`_control_points`
+    (grid generation). The concrete :meth:`transform` method chains both together
+    with an :class:`~hipp.kh9pc.restitution.output_size.OutputSize` to produce the
+    final rectified raster.
+    """
+
     def __init__(self) -> None:
         self.raster_filepath_: Path | None = None
-        self.fitting_time_: float | None = None
-        self.fitted_at_: datetime | None = None
 
     def fit(self, raster_filepath: str | Path) -> Self:
-        t0 = time.perf_counter()
-        self.fitted_at_ = datetime.now()
         result = self._fit(raster_filepath)
-
         self.raster_filepath_ = Path(raster_filepath)
-        self.fitting_time_ = time.perf_counter() - t0
-
         return result
 
     @abstractmethod
     def _fit(self, raster_filepath: str | Path) -> Self: ...
 
-    def _get_params(self) -> dict[str, Any]:
-        return {k: v for k, v in self.__dict__.items() if not (k.startswith("_") or k.endswith("_"))}
+    @abstractmethod
+    def _control_points(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
+        """Return ``(src_points, dst_points, detected_size)``."""
+        ...
 
-    def __str__(self) -> str:
-        if self.raster_filepath_ is None or self.fitting_time_ is None or self.fitted_at_ is None:
-            return f"{self.__class__.__name__} (not fitted)"
+    @property
+    @abstractmethod
+    def transformation(self) -> str:
+        """Interpolation type passed to ``remap_tif_blockwise_from_points``."""
+        ...
 
-        return "\n".join(
-            [
-                self.__class__.__name__,
-                "",
-                f"Image : {self.raster_filepath_.name}",
-                f"Fitted at : {self.fitted_at_.strftime('%Y-%m-%d %H:%M:%S')}",
-                f"Fitting time : {self.fitting_time_:.2f} s",
-                "",
-                "Parameters",
-                *[f"  {k:25}: {v}" for k, v in self._get_params().items()],
-            ]
+    def transform(self, input_path: str | Path, output_path: str | Path, output_size: OutputSize) -> None:
+        """Apply the full rectification transform.
+
+        Parameters
+        ----------
+        input_path : str | Path
+            Source mosaic raster.
+        output_path : str | Path
+            Destination rectified raster.
+        output_size : OutputSize
+            Canvas-sizing strategy applied on top of the detected content region.
+        """
+        src_pts, dst_pts, detected_size = self._control_points()
+        src_pts, dst_pts, out_size = output_size.apply(src_pts, dst_pts, detected_size)
+        remap_tif_blockwise_from_points(
+            input_path=input_path,
+            output_path=output_path,
+            src_points=src_pts,
+            dst_points=dst_pts,
+            output_size=out_size,
+            transformation=self.transformation,
+            pbar=False,
         )
 
     @property
     def raster_filepath(self) -> Path:
         if self.raster_filepath_ is None:
-            raise RuntimeError("need to call the fit() method before")
+            raise RuntimeError("need to call fit() first")
         return self.raster_filepath_
 
     @property
     def is_fitted(self) -> bool:
         return self.raster_filepath_ is not None
 
-    @property
-    def fitted_at(self) -> datetime:
-        if self.fitted_at_ is None:
-            raise RuntimeError("need to call the fit() method before")
-        return self.fitted_at_
 
-    @property
-    def fitting_time(self) -> float:
-        if self.fitting_time_ is None:
-            raise RuntimeError("need to call the fit() method before")
-        return self.fitting_time_
+# ---------------------------------------------------------------------------
+# Shared result types
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -104,7 +118,31 @@ class EdgeResult:
 
 
 @dataclass
-class PolyDetector(Detector):
+class CollimationResult:
+    peaks_local: NDArray[np.integer]
+    peaks_global: NDArray[np.integer]
+    distortion: NDArray[np.floating]
+    inlier_ratio: float
+    model: RANSACRegressor
+    sub_img: SubImage
+
+
+@dataclass
+class FlatResult:
+    position: int
+    rupture_local: int
+    sub_image: SubImage
+
+
+# ---------------------------------------------------------------------------
+# PolyStrategy
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PolyStrategy(RectificationStrategy):
+    """Detect top/bottom edges via rupture detection + polynomial RANSAC fit."""
+
     vertical_edges: tuple[int, int]
     background_threshold: int = 20
     height_fraction: float = 0.15
@@ -119,21 +157,9 @@ class PolyDetector(Detector):
         self.top_: EdgeResult | None = None
         self.bottom_: EdgeResult | None = None
 
-    def __str__(self) -> str:
-        base = super().__str__()
-        if not self.is_fitted:
-            return base
-        return (
-            base
-            + "\n"
-            + "\n".join(
-                [
-                    "RANSAC fit",
-                    f"  top edge               : {self.top.inlier_ratio:.1%}",
-                    f"  bottom edge            : {self.bottom.inlier_ratio:.1%}",
-                ]
-            )
-        )
+    @property
+    def transformation(self) -> str:
+        return "tps"
 
     @property
     def top(self) -> EdgeResult:
@@ -208,180 +234,37 @@ class PolyDetector(Detector):
             sub_image=sub_image,
         )
 
+    def _control_points(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
+        left, right = self.vertical_edges
+        detected_width = right - left
 
-# ---------------------------------------------------------------------------
-# VerticalDetector
-# ---------------------------------------------------------------------------
+        x_src = np.linspace(left, right, self.grid_shape[0])
+        y_top_src = self.top.poly.predict(x_src.reshape(-1, 1)).ravel()
+        y_bottom_src = self.bottom.poly.predict(x_src.reshape(-1, 1)).ravel()
+        detected_height = int(np.abs(np.mean(y_bottom_src - y_top_src)))
 
+        x_dst = np.linspace(0, detected_width, self.grid_shape[0])
 
-@dataclass
-class VerticalEdgeResult:
-    position: int
-    rupture_local: int
-    sub_image: SubImage
-    profile: NDArray[np.integer]
+        src_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
+        dst_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
+        for i, (xi_src, xi_dst, yt, yb) in enumerate(zip(x_src, x_dst, y_top_src, y_bottom_src)):
+            src_points[i, :, 0] = xi_src
+            src_points[i, :, 1] = np.linspace(yt, yb, self.grid_shape[1])
+            dst_points[i, :, 0] = xi_dst
+            dst_points[i, :, 1] = np.linspace(0, detected_height, self.grid_shape[1])
 
-
-@dataclass
-class VerticalDetector(Detector):
-    background_threshold: int = 20
-    width_fraction: float = 0.15
-    stride: int = 10
-
-    def __post_init__(self) -> None:
-        super().__init__()
-        self.left_: VerticalEdgeResult | None = None
-        self.right_: VerticalEdgeResult | None = None
-
-    def __str__(self) -> str:
-        base = super().__str__()
-        if not self.is_fitted:
-            return base
-        return (
-            base
-            + "\n"
-            + "\n".join(
-                [
-                    "Detected edges",
-                    f"  left : col={self.left.position} px",
-                    f"  right : col={self.right.position} px",
-                ]
-            )
-        )
-
-    @property
-    def left(self) -> VerticalEdgeResult:
-        if self.left_ is None:
-            raise RuntimeError("left edge not available — call fit() first")
-        return self.left_
-
-    @property
-    def right(self) -> VerticalEdgeResult:
-        if self.right_ is None:
-            raise RuntimeError("right edge not available — call fit() first")
-        return self.right_
-
-    @property
-    def edges(self) -> tuple[int, int]:
-        return self.left.position, self.right.position
-
-    def _fit(self, raster_filepath: str | Path) -> Self:
-        with rasterio.open(raster_filepath) as src:
-            window_width = int(src.width * self.width_fraction)
-            out_shape = (1, 1, window_width // self.stride)
-
-            for side, window in {
-                "left": Window(0, 0, window_width, src.height),
-                "right": Window(src.width - window_width, 0, window_width, src.height),
-            }.items():
-                sub_image = SubImage(src, window, out_shape)
-                setattr(self, side + "_", self._process_side(sub_image, side))
-
-        return self
-
-    def _process_side(self, sub_image: SubImage, side: str) -> VerticalEdgeResult:
-        profile = sub_image.band.flatten()
-        ruptures = detect_ruptures(profile, self.background_threshold, reverse_scan=(side == "left"))
-        if len(ruptures) == 0:
-            raise RuntimeError(f"No rupture detected on the {side} edge.")
-        rupture_local = int(ruptures[0])
-        position = int(sub_image.to_global(np.array([rupture_local, 0.0]))[0])
-        return VerticalEdgeResult(position=position, rupture_local=rupture_local, sub_image=sub_image, profile=profile)
+        return src_points.reshape(-1, 2), dst_points.reshape(-1, 2), (detected_width, detected_height)
 
 
 # ---------------------------------------------------------------------------
-# FlatDetector
+# CollimationStrategy
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class FlatResult:
-    position: int
-    rupture_local: int
-    sub_image: SubImage
+class CollimationStrategy(RectificationStrategy):
+    """Detect top/bottom collimation lines via peak detection + polynomial RANSAC fit."""
 
-
-@dataclass
-class FlatDetector(Detector):
-    vertical_edges: tuple[int, int]
-    background_threshold: int = 20
-    height_fraction: float = 0.15
-    stride: int = 10
-
-    def __post_init__(self) -> None:
-        super().__init__()
-        self.top_: FlatResult | None = None
-        self.bottom_: FlatResult | None = None
-
-    def __str__(self) -> str:
-        base = super().__str__()
-        if not self.is_fitted:
-            return base
-        return (
-            base
-            + "\n"
-            + "\n".join(
-                [
-                    "Detected edges",
-                    f"  top    : row={self.top.position} px",
-                    f"  bottom : row={self.bottom.position} px",
-                ]
-            )
-        )
-
-    @property
-    def top(self) -> FlatResult:
-        if self.top_ is None:
-            raise RuntimeError("top edge not available — call fit() first")
-        return self.top_
-
-    @property
-    def bottom(self) -> FlatResult:
-        if self.bottom_ is None:
-            raise RuntimeError("bottom edge not available — call fit() first")
-        return self.bottom_
-
-    def _fit(self, raster_filepath: str | Path) -> Self:
-        with rasterio.open(raster_filepath) as src:
-            window_width = self.vertical_edges[1] - self.vertical_edges[0]
-            window_height = int(src.height * self.height_fraction)
-            out_shape = (1, window_height // self.stride, 1)
-
-            for side, window in {
-                "top": Window(self.vertical_edges[0], 0, window_width, window_height),
-                "bottom": Window(self.vertical_edges[0], src.height - window_height, window_width, window_height),
-            }.items():
-                sub_image = SubImage(src, window, out_shape)
-                setattr(self, side + "_", self._process_side(sub_image, side))
-
-        return self
-
-    def _process_side(self, sub_image: SubImage, side: str) -> FlatResult:
-        ruptures = detect_ruptures(sub_image.band.flatten(), self.background_threshold, reverse_scan=(side == "top"))
-        if len(ruptures) == 0:
-            raise RuntimeError(f"No rupture detected on the {side} edge.")
-        rupture_local = int(ruptures[0])
-        position = int(sub_image.to_global(np.array([0.0, rupture_local]))[1])
-        return FlatResult(position=position, rupture_local=rupture_local, sub_image=sub_image)
-
-
-# ---------------------------------------------------------------------------
-# CollimationDetector
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class CollimationResult:
-    peaks_local: NDArray[np.integer]
-    peaks_global: NDArray[np.integer]
-    distortion: NDArray[np.floating]
-    inlier_ratio: float
-    model: RANSACRegressor
-    sub_img: SubImage
-
-
-@dataclass
-class CollimationDetector(Detector):
     vertical_edges: tuple[int, int]
     polynomial_degree: int = 5
     ransac_residual_threshold: float = 80.0
@@ -390,27 +273,16 @@ class CollimationDetector(Detector):
     stride: int = 10
     height_fraction: float = 0.15
     max_width_peak: int = 200
+    collimation_line_dist: int = 21770
 
     def __post_init__(self) -> None:
         super().__init__()
         self.top_: CollimationResult | None = None
         self.bottom_: CollimationResult | None = None
 
-    def __str__(self) -> str:
-        base = super().__str__()
-        if not self.is_fitted:
-            return base
-        return (
-            base
-            + "\n"
-            + "\n".join(
-                [
-                    "RANSAC fit",
-                    f"  top collimation line   : {self.top.inlier_ratio:.1%}",
-                    f"  bottom collimation line: {self.bottom.inlier_ratio:.1%}",
-                ]
-            )
-        )
+    @property
+    def transformation(self) -> str:
+        return "tps"
 
     @property
     def top(self) -> CollimationResult:
@@ -480,20 +352,126 @@ class CollimationDetector(Detector):
             sub_img=sub_img,
         )
 
+    def _control_points(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
+        left, right = self.vertical_edges
+        detected_width = right - left
+        detected_height = self.collimation_line_dist
+
+        x_src = np.linspace(left, right, self.grid_shape[0])
+        y_top_src = self.top.model.predict(x_src.reshape(-1, 1)).ravel()
+        y_bottom_src = self.bottom.model.predict(x_src.reshape(-1, 1)).ravel()
+        x_dst = np.linspace(0, detected_width, self.grid_shape[0])
+
+        src_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
+        dst_points = np.zeros((self.grid_shape[0], self.grid_shape[1], 2), dtype=float)
+        for i, (xi_src, xi_dst, yt, yb) in enumerate(zip(x_src, x_dst, y_top_src, y_bottom_src)):
+            src_points[i, :, 0] = xi_src
+            src_points[i, :, 1] = np.linspace(yt, yb, self.grid_shape[1])
+            dst_points[i, :, 0] = xi_dst
+            dst_points[i, :, 1] = np.linspace(0, detected_height, self.grid_shape[1])
+
+        return src_points.reshape(-1, 2), dst_points.reshape(-1, 2), (detected_width, detected_height)
+
 
 # ---------------------------------------------------------------------------
-# FiducialDetector
+# FlatStrategy
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FlatStrategy(RectificationStrategy):
+    """Detect top/bottom edges as flat horizontal lines (affine rectification)."""
+
+    vertical_edges: tuple[int, int]
+    background_threshold: int = 20
+    height_fraction: float = 0.15
+    stride: int = 10
+
+    def __post_init__(self) -> None:
+        super().__init__()
+        self.top_: FlatResult | None = None
+        self.bottom_: FlatResult | None = None
+
+    @property
+    def transformation(self) -> str:
+        return "affine"
+
+    @property
+    def top(self) -> FlatResult:
+        if self.top_ is None:
+            raise RuntimeError("top edge not available — call fit() first")
+        return self.top_
+
+    @property
+    def bottom(self) -> FlatResult:
+        if self.bottom_ is None:
+            raise RuntimeError("bottom edge not available — call fit() first")
+        return self.bottom_
+
+    def _fit(self, raster_filepath: str | Path) -> Self:
+        with rasterio.open(raster_filepath) as src:
+            window_width = self.vertical_edges[1] - self.vertical_edges[0]
+            window_height = int(src.height * self.height_fraction)
+            out_shape = (1, window_height // self.stride, 1)
+
+            for side, window in {
+                "top": Window(self.vertical_edges[0], 0, window_width, window_height),
+                "bottom": Window(self.vertical_edges[0], src.height - window_height, window_width, window_height),
+            }.items():
+                sub_image = SubImage(src, window, out_shape)
+                setattr(self, side + "_", self._process_side(sub_image, side))
+
+        return self
+
+    def _process_side(self, sub_image: SubImage, side: str) -> FlatResult:
+        ruptures = detect_ruptures(sub_image.band.flatten(), self.background_threshold, reverse_scan=(side == "top"))
+        if len(ruptures) == 0:
+            raise RuntimeError(f"No rupture detected on the {side} edge.")
+        rupture_local = int(ruptures[0])
+        position = int(sub_image.to_global(np.array([0.0, rupture_local]))[1])
+        return FlatResult(position=position, rupture_local=rupture_local, sub_image=sub_image)
+
+    def _control_points(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
+        left, right = self.vertical_edges
+        detected_width = right - left
+        detected_height = self.bottom.position - self.top.position
+
+        src_points = np.array(
+            [
+                [left, self.top.position],
+                [left, self.bottom.position],
+                [right, self.top.position],
+                [right, self.bottom.position],
+            ],
+            dtype=float,
+        )
+        dst_points = np.array(
+            [
+                [0, 0],
+                [0, detected_height],
+                [detected_width, 0],
+                [detected_width, detected_height],
+            ],
+            dtype=float,
+        )
+        return src_points, dst_points, (detected_width, detected_height)
+
+
+# ---------------------------------------------------------------------------
+# FiducialStrategy
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class FiducialResult:
     candidates: pd.DataFrame
-    # Columns: template, x, y, score, circularity, radius, inlier
+    # Columns: template, x, y, score, circularity, radius
 
 
 @dataclass
-class FiducialDetector(Detector):
+class FiducialStrategy(RectificationStrategy):
+    """Detect fiducial marks (circular dots) along top/bottom film edges."""
+
     vertical_edges: tuple[int, int]
     height_fraction: float = 0.15
     block_width: int = 512
@@ -506,6 +484,10 @@ class FiducialDetector(Detector):
         super().__init__()
         self.top_: FiducialResult | None = None
         self.bottom_: FiducialResult | None = None
+
+    @property
+    def transformation(self) -> str:
+        raise NotImplementedError
 
     @property
     def top(self) -> FiducialResult:
@@ -564,6 +546,9 @@ class FiducialDetector(Detector):
                 setattr(self, side + "_", FiducialResult(all_candidates))
 
         return self
+
+    def _control_points(self) -> tuple[NDArray[np.floating], NDArray[np.floating], tuple[int, int]]:
+        raise NotImplementedError
 
     def _nms(self, df: pd.DataFrame, radius: int) -> pd.DataFrame:
         """Remove duplicate detections within `radius` pixels, keeping the highest score."""
