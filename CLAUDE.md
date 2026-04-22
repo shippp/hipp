@@ -26,6 +26,7 @@ pytest                            # All tests
 pytest tests/aerial/test_core.py  # Single test file
 ruff check .                      # Lint
 mypy src/ --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls
+pre-commit install                # Install git hooks (run once after cloning)
 ```
 
 Line length is 120 characters. Pre-commit hooks run ruff + mypy on every commit.
@@ -77,14 +78,26 @@ hipp/
    - Apply TPS or affine transform based on strategy success
 4. Generate QC reports
 
+Valid `PipelineConfig.steps` names (in order): `extract`, `align`, `mosaic`, `quickview_mosaic`, `vertical`, `horizontal`, `transform`, `quickview_final`, `qc_report`.
+
+**CLI** (`python -m hipp.kh9pc`):
+```bash
+python -m hipp.kh9pc --input scan.tgz --output-dir /out/images --qc-dir /out/qc
+python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output-dir /out --qc-dir /out/qc
+python -m hipp.kh9pc --input scan.tgz --output-dir /out --qc-dir /out/qc --config cfg.toml
+```
+`PipelineConfig.from_toml()` accepts keys: `overwrite`, `cleanup`, `steps`, and `[output_size]` with `type` in `{auto, fixed_height, fixed_size, same_size, margin}`.
+
 ### Key Patterns
 
 - **`PipelineStep`**: declarative step class with `inputs`/`outputs`/`overwrite` — enables skip-if-done logic
-- **Strategy pattern** in `kh9pc/restitution/strategy.py`: multiple fallback strategies for edge detection
+- **Strategy pattern** in `kh9pc/restitution/strategy.py`: multiple fallback strategies for edge detection; all inherit `RectificationStrategy` ABC which chains `_fit()` + `_control_points()` + `OutputSize.apply()` into `transform()`
+- **`OutputSize` hierarchy** in `kh9pc/restitution/output_size.py`: `AutoSize` / `FixedHeightSize` (default, height=22064) / `FixedSize` / `SameSize` / `MarginSize` — controls canvas padding around the rectified content without touching the detection logic
 - **Pandas Series for fiducials**: coordinate data stored with named keys like `corner_top_left_x`, `midside_left_x`
 - **`Intrinsics` class**: wraps focal length, pixel pitch, true fiducial coordinates in mm, principal point
 - **3×3 homogeneous matrices** throughout for image transforms
 - **Rasterio** for all geospatial raster I/O; **OpenCV** for image operations; **scikit-image** for TPS transforms
+- **Intermediate files persisted as `.joblib`**: `vertical.joblib`, `horizontal.joblib`, `alignments.joblib` — individual steps can be re-run by loading these directly
 
 ### Notebooks
 

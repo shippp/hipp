@@ -47,11 +47,14 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%H:%M:%S")
+    handler = logging.StreamHandler()
+    handler.setFormatter(fmt)
+
+    # Only hipp logs at the requested level; silence noisy third-party loggers.
+    logging.root.addHandler(handler)
+    logging.root.setLevel(logging.WARNING)
+    logging.getLogger("hipp").setLevel(getattr(logging, args.log_level))
 
     config = PipelineConfig.from_toml(Path(args.config)) if args.config else PipelineConfig()
 
