@@ -188,6 +188,7 @@ def write_mosaic(
 
     os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
     n_blocks = (output_width // 256 + 1) * (output_height // 256 + 1)
+    log_every = max(1, n_blocks // 5)
 
     logger.info("Mosaicing %d images → %s (%d×%d px)", n_images, output_tif, output_width, output_height)
 
@@ -208,16 +209,15 @@ def write_mosaic(
                     height=output_height,
                     transform=dst_transform,
                 ) as vrt:
-                    log_every = max(1, n_blocks // 50)
                     for block_idx, (_, window) in enumerate(dst.block_windows(1)):
+                        if block_idx % log_every == 0:
+                            logger.debug("  %d%%", block_idx * 100 // n_blocks)
                         warped = vrt.read(1, window=window)
                         mask = warped != 0
                         if not mask.any():
                             continue
                         existing = dst.read(1, window=window)
                         dst.write(np.where(mask, warped, existing), 1, window=window)
-                        if block_idx % log_every == 0:
-                            logger.debug("  warping block %d/%d", block_idx, n_blocks)
 
     logger.info("Mosaic written to %s", output_tif)
 
