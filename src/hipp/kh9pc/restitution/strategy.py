@@ -84,7 +84,6 @@ class RectificationStrategy(ABC):
             dst_points=dst_pts,
             output_size=out_size,
             transformation=self.transformation,
-            pbar=False,
         )
 
     @property

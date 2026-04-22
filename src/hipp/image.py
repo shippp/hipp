@@ -3,6 +3,7 @@ Copyright (c) 2025 HIPP developers
 Description: some function for the image processing
 """
 
+import logging
 import warnings
 from pathlib import Path
 from typing import Callable, Any
@@ -20,6 +21,8 @@ from skimage.transform import AffineTransform, ThinPlateSplineTransform
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
+
+logger = logging.getLogger(__name__)
 
 
 def apply_clahe(
@@ -256,8 +259,6 @@ def remap_tif_blockwise(
     output_size: tuple[int, int] | None = None,
     block_size: int = 256,
     interpolation: int = cv2.INTER_CUBIC,
-    pbar: bool = True,
-    pbar_desc: str = "Remaping tif",
     padding: int = 2,
     lowres_step: int | None = None,
 ) -> None:
@@ -289,10 +290,6 @@ def remap_tif_blockwise(
     interpolation : int, default=cv2.INTER_CUBIC
         OpenCV interpolation flag (e.g., `cv2.INTER_LINEAR`, `cv2.INTER_CUBIC`, `cv2.INTER_NEAREST`).
         Defines how pixel values are interpolated during remapping.
-    pbar : bool, default=True
-        Whether to display a tqdm progress bar during processing.
-    pbar_desc : str, default="Remaping tif"
-        Description text displayed in the tqdm progress bar.
     padding : int, default=2
         Number of extra pixels to read around the computed source window, to reduce
         border artifacts caused by bicubic interpolation.
@@ -346,10 +343,12 @@ def remap_tif_blockwise(
                 for dst_x0 in range(0, output_size[0], block_size)
                 for dst_y0 in range(0, output_size[1], block_size)
             ]
-            # Wrap block iterator with a tqdm progress bar if enabled
-            iterator = tqdm(blocks, desc=pbar_desc, unit="block") if pbar else blocks
+            n_blocks = len(blocks)
+            log_every = max(1, n_blocks // 50)
 
-            for dst_x0, dst_y0 in iterator:
+            for block_idx, (dst_x0, dst_y0) in enumerate(blocks):
+                if block_idx % log_every == 0:
+                    logger.debug("remap block %d/%d", block_idx, n_blocks)
                 dst_x1 = min(dst_x0 + block_size, output_size[0])
                 dst_y1 = min(dst_y0 + block_size, output_size[1])
 
@@ -423,8 +422,6 @@ def remap_tif_blockwise_from_points(
     output_size: tuple[int, int] | None = None,
     transformation: str = "tps",
     interpolation: int = cv2.INTER_CUBIC,
-    pbar: bool = True,
-    pbar_desc: str = "Remapping tif",
 ) -> None:
     """
     Apply a geometric remapping defined by control point correspondences to a GeoTIFF.
@@ -452,10 +449,6 @@ def remap_tif_blockwise_from_points(
         nearly-flat imagery).
     interpolation : int, default cv2.INTER_CUBIC
         OpenCV interpolation flag passed to :func:`remap_tif_blockwise`.
-    pbar : bool, default True
-        Whether to display a progress bar.
-    pbar_desc : str, default "Remapping tif"
-        Progress bar description.
     """
     inverse_remap: Callable[[NDArray[np.float32]], NDArray[np.float32]]
     if transformation == "tps":
@@ -476,8 +469,6 @@ def remap_tif_blockwise_from_points(
         output_size=output_size,
         block_size=block_size,
         interpolation=interpolation,
-        pbar=pbar,
-        pbar_desc=pbar_desc,
         lowres_step=lowres_step,
     )
 

@@ -33,7 +33,7 @@ dependencies = [
   "rasterio",
   "scikit-image",
   "scikit-learn",
-  "requests"
+  "requests",
 ]
 
 [project.urls]
@@ -53,7 +53,7 @@ dependencies = [
   "pre-commit",
   "usgsxplore",
   "ipykernel",
-  "jupyter"
+  "jupyter",
 ]
 [tool.hatch.envs.dev.scripts]
 check = [

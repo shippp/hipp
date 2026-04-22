@@ -19,7 +19,6 @@ from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +145,6 @@ def write_mosaic(
     alignments: list[ImageAlignment],
     output_tif: str,
     resampling: int = rasterio.warp.Resampling.cubic,
-    pbar: bool = True,
 ) -> None:
     """Warp and merge all aligned images into a single output GeoTIFF.
 
@@ -166,8 +164,6 @@ def write_mosaic(
         Path to the output GeoTIFF file.
     resampling : int, default rasterio.warp.Resampling.cubic
         Resampling method from ``rasterio.warp.Resampling``.
-    pbar : bool, default True
-        Show a tqdm progress bar per image.
     """
     output_width, output_height, offset_x, offset_y = _compute_canvas(alignments)
     n_images = len(alignments)
@@ -212,19 +208,16 @@ def write_mosaic(
                     height=output_height,
                     transform=dst_transform,
                 ) as vrt:
-                    for _, window in tqdm(
-                        dst.block_windows(1),
-                        total=n_blocks,
-                        desc="    warping",
-                        unit="block",
-                        disable=not pbar,
-                    ):
+                    log_every = max(1, n_blocks // 50)
+                    for block_idx, (_, window) in enumerate(dst.block_windows(1)):
                         warped = vrt.read(1, window=window)
                         mask = warped != 0
                         if not mask.any():
                             continue
                         existing = dst.read(1, window=window)
                         dst.write(np.where(mask, warped, existing), 1, window=window)
+                        if block_idx % log_every == 0:
+                            logger.debug("  warping block %d/%d", block_idx, n_blocks)
 
     logger.info("Mosaic written to %s", output_tif)
 

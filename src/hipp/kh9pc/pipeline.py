@@ -9,6 +9,7 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import joblib
 from hipp.image import generate_quickview
@@ -16,7 +17,7 @@ from hipp.tools import extract_archive
 from hipp.kh9pc.image_mosaic import ImageAlignment, compute_sequential_alignments, write_mosaic
 from hipp.kh9pc.restitution.types import StepResult, StrategyAttempt
 from hipp.kh9pc.restitution.vertical import VerticalDetector
-from hipp.kh9pc.restitution.output_size import FixedHeightSize, OutputSize
+from hipp.kh9pc.restitution.output_size import AutoSize, FixedHeightSize, FixedSize, MarginSize, OutputSize, SameSize
 from hipp.kh9pc.restitution.strategy import (
     CollimationStrategy,
     FlatStrategy,
@@ -387,6 +388,36 @@ class PipelineConfig:
         self.steps = steps
         self.cleanup = cleanup
 
+    @classmethod
+    def from_toml(cls, path: Path) -> "PipelineConfig":
+        """Load a :class:`PipelineConfig` from a TOML file.
+
+        CLI flags take precedence — callers should override individual attributes
+        after construction when command-line arguments are provided.
+
+        Expected TOML keys (all optional):
+
+        .. code-block:: toml
+
+            overwrite = false
+            cleanup = false
+            steps = ["extract", "align", "mosaic", "vertical", "horizontal", "transform", "quickview_final", "qc_report"]
+
+            [output_size]
+            type = "fixed_height"   # auto | fixed_height | fixed_size | same_size | margin
+            height = 22064
+        """
+        import tomllib
+
+        with path.open("rb") as f:
+            raw: dict[str, Any] = tomllib.load(f)
+        return cls(
+            overwrite=raw.get("overwrite", False),
+            output_size=_parse_output_size(raw.get("output_size")),
+            steps=raw.get("steps"),
+            cleanup=raw.get("cleanup", False),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestrator
@@ -576,3 +607,25 @@ def _save_json(data: object, path: Path) -> None:
 
 def _load_json(path: Path) -> object:
     return json.loads(path.read_text())
+
+
+def _parse_output_size(cfg: dict[str, Any] | None) -> OutputSize | None:
+    if cfg is None:
+        return None
+    type_ = cfg.get("type", "fixed_height")
+    if type_ == "auto":
+        return AutoSize()
+    if type_ == "fixed_height":
+        return FixedHeightSize(height=int(cfg["height"]))
+    if type_ == "fixed_size":
+        return FixedSize(width=int(cfg["width"]), height=int(cfg["height"]))
+    if type_ == "same_size":
+        return SameSize(width=int(cfg["width"]), height=int(cfg["height"]))
+    if type_ == "margin":
+        return MarginSize(
+            top=int(cfg.get("top", 0)),
+            right=int(cfg.get("right", 0)),
+            bottom=int(cfg.get("bottom", 0)),
+            left=int(cfg.get("left", 0)),
+        )
+    raise ValueError(f"Unknown output_size type: {type_!r}. Valid: auto, fixed_height, fixed_size, same_size, margin")
