@@ -205,16 +205,16 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
 _STATUS_COLOR = {"ran": "#2ecc71", "skipped": "#95a5a6", "failed": "#e74c3c"}
 _STRATEGY_DESCRIPTIONS = {
     "CollimationStrategy": (
-        "Détecte les lignes de collimation (bandes noires horizontales) par recherche de pics d'intensité "
-        "dans chaque colonne, puis ajuste un polynôme RANSAC sur les points détectés."
+        "Detects collimation lines (horizontal black bands) by searching for intensity peaks in each column, "
+        "then fits a RANSAC polynomial through the detected points."
     ),
     "PolyStrategy": (
-        "Détecte les bords film par détection de ruptures d'intensité (transition fond noir → image), "
-        "puis ajuste un polynôme RANSAC sur les ruptures détectées."
+        "Detects film edges via intensity rupture detection (black background → image transition), "
+        "then fits a RANSAC polynomial through the detected ruptures."
     ),
     "FlatStrategy": (
-        "Détecte les bords film comme des lignes horizontales plates via une rupture d'intensité "
-        "globale. Applique une transformation affine (4 points)."
+        "Detects film edges as flat horizontal lines via a global intensity rupture. "
+        "Applies an affine transform (4 control points)."
     ),
 }
 
@@ -259,9 +259,9 @@ def plot_strategy_header(attempt: StrategyAttempt) -> Figure:
     description = _STRATEGY_DESCRIPTIONS.get(name, "")
 
     if attempt.success:
-        status_txt, status_color = "✓  Stratégie retenue", "#27ae60"
+        status_txt, status_color = "✓  Strategy selected", "#27ae60"
     else:
-        status_txt, status_color = "✗  Stratégie échouée", "#c0392b"
+        status_txt, status_color = "✗  Strategy rejected", "#c0392b"
 
     ax.text(0.5, 0.88, name, transform=ax.transAxes, fontsize=18, fontweight="bold", ha="center", va="top")
     ax.text(0.5, 0.72, status_txt, transform=ax.transAxes, fontsize=13, ha="center", va="top", color=status_color)
@@ -284,7 +284,7 @@ def plot_strategy_header(attempt: StrategyAttempt) -> Figure:
         ax.text(
             0.5,
             0.25,
-            f"Raison : {attempt.failure_reason}",
+            f"Reason: {attempt.failure_reason}",
             transform=ax.transAxes,
             fontsize=10,
             ha="center",
@@ -302,12 +302,12 @@ def plot_strategy_params(strategy: RectificationStrategy) -> Figure:
 
     fig, ax = plt.subplots(figsize=(8, max(3, len(params) * 0.45 + 1.5)))
     ax.axis("off")
-    ax.set_title("Paramètres", fontsize=12, fontweight="bold", pad=12)
+    ax.set_title("Parameters", fontsize=12, fontweight="bold", pad=12)
 
     rows = [[k, str(v)] for k, v in params.items()]
     table = ax.table(
         cellText=rows,
-        colLabels=["Paramètre", "Valeur"],
+        colLabels=["Parameter", "Value"],
         loc="center",
         cellLoc="left",
     )

@@ -147,7 +147,7 @@ class PolyStrategy(RectificationStrategy):
     background_threshold: int = 20
     height_fraction: float = 0.15
     stride: int = 10
-    polynomial_degree: int = 5
+    polynomial_degree: int = 2
     ransac_residual_threshold: float = 80.0
     ransac_max_trials: int = 1000
     grid_shape: tuple[int, int] = (100, 50)

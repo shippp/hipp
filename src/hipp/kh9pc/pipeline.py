@@ -282,32 +282,54 @@ class ApplyRestitutionStep(PipelineStep):
         logger.info("ApplyRestitutionStep: written to %s", self.outputs[0])
 
 
-class MergeQCReportStep(PipelineStep):
-    """Merge per-step QC PDFs into a single report.
+class GenerateQCReportStep(PipelineStep):
+    """Generate the full QC PDF report for a single scene.
 
-    Inputs that do not exist on disk are silently skipped (partial reports are allowed).
+    Combines a pipeline summary page, vertical edge QC figures, and horizontal
+    strategy QC figures (all attempts) into a single PDF.
 
-    inputs     : list of QC PDFs
-    outputs[0] : merged report PDF
+    inputs[0]    : vertical.joblib
+    inputs[1]    : horizontal_attempts.joblib
+    outputs[0]   : report PDF
+    step_results : pipeline step results used to build the summary page (passed by reference)
     """
 
-    def check_inputs(self) -> None:
-        # QC PDFs are optional — no hard failure if some are missing
-        pass
+    def __init__(
+        self,
+        inputs: list[Path],
+        outputs: list[Path],
+        step_results: list[StepResult],
+        overwrite: bool = False,
+    ) -> None:
+        super().__init__(inputs, outputs, overwrite)
+        self.step_results = step_results
 
     def execute(self) -> None:
-        from pypdf import PdfMerger
+        from hipp.kh9pc.restitution.plotters import (
+            plot_pipeline_summary,
+            plot_strategy_header,
+            plot_strategy_params,
+            strategy_figures,
+            vertical_figures,
+        )
+        from hipp.kh9pc.utils import generate_qc_report
 
-        available = [p for p in self.inputs if p.exists()]
-        if not available:
-            raise RuntimeError("MergeQCReportStep: no QC PDFs found — run detection steps first.")
+        figures = []
 
-        merger = PdfMerger()
-        for pdf in available:
-            merger.append(str(pdf))
-        merger.write(str(self.outputs[0]))
-        merger.close()
-        logger.info("MergeQCReportStep: merged %d PDFs → %s", len(available), self.outputs[0])
+        figures.append(plot_pipeline_summary(self.step_results))
+
+        detector: VerticalDetector = joblib.load(self.inputs[0])
+        figures.extend(vertical_figures(detector))
+
+        attempts: list[StrategyAttempt] = joblib.load(self.inputs[1])
+        for attempt in attempts:
+            figures.append(plot_strategy_header(attempt))
+            if attempt.strategy is not None:
+                figures.append(plot_strategy_params(attempt.strategy))
+                figures.extend(strategy_figures(attempt.strategy))
+
+        generate_qc_report(self.outputs[0], figures)
+        logger.info("GenerateQCReportStep: %s", self.outputs[0])
 
 
 class CleanupWorkDirStep(PipelineStep):
@@ -358,10 +380,12 @@ class PipelineConfig:
         overwrite: bool = False,
         output_size: OutputSize | None = None,
         steps: list[str] | None = None,
+        cleanup: bool = False,
     ) -> None:
         self.overwrite = overwrite
         self.output_size: OutputSize = output_size or FixedHeightSize(height=22064)
         self.steps = steps
+        self.cleanup = cleanup
 
 
 # ---------------------------------------------------------------------------
@@ -517,11 +541,12 @@ class KH9Pipeline:
                 outputs=[self._qc("final_qv", "jpg")],
                 overwrite=ow,
             ),
-            # "qc_report": MergeQCReportStep(
-            #     inputs=[self._qc("vertical", "pdf"), self._qc("horizontal", "pdf")],
-            #     outputs=[self._qc("report", "pdf")],
-            #     overwrite=ow,
-            # ),
+            "qc_report": GenerateQCReportStep(
+                inputs=[self._tmp("vertical.joblib"), self._tmp("horizontal_attempts.joblib")],
+                outputs=[self._qc("report", "pdf")],
+                step_results=self.results_,
+                overwrite=ow,
+            ),
             # "cleanup": CleanupWorkDirStep(work_dir=self._work_dir),
         }
 
@@ -535,6 +560,9 @@ class KH9Pipeline:
             logger.info("[%s] Running %s", self.entity_id, name)
             steps[name].run()
             self.results_.append(steps[name].result_)
+
+        if self.config.cleanup:
+            CleanupWorkDirStep(work_dir=self._work_dir).run()
 
 
 # ---------------------------------------------------------------------------

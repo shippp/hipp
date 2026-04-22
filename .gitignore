@@ -186,6 +186,5 @@ notebooks/data/*/*
 tests/aerial/data
 
 dev/
-CLAUDE.md
 *.local*
 .claude
