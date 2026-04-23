@@ -11,7 +11,13 @@ import argparse
 import logging
 from pathlib import Path
 
-from hipp.kh9pc.pipeline import KH9Pipeline, PipelineConfig
+from hipp.kh9pc.pipeline import KH9Pipeline, PipelineConfig, _entity_id_ctx
+
+
+class _EntityIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.entity_id = _entity_id_ctx.get()  # type: ignore[attr-defined]
+        return True
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -34,6 +40,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overwrite", action="store_true", default=False, help="re-run steps even when outputs already exist")
     p.add_argument("--steps", nargs="+", metavar="STEP", default=None, help="subset of steps to run (default: all)")
     p.add_argument("--cleanup", action="store_true", default=False, help="delete the work directory after completion")
+    p.add_argument("--dry-run", action="store_true", default=False, help="show what would run without executing")
+    p.add_argument("--max-retries", type=int, default=None, metavar="N", help="retry a step up to N times on OSError (default: 0)")
     p.add_argument(
         "--log-level",
         default="INFO",
@@ -47,9 +55,10 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s — %(message)s", datefmt="%H:%M:%S")
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] [%(entity_id)s] %(name)s — %(message)s", datefmt="%H:%M:%S")
     handler = logging.StreamHandler()
     handler.setFormatter(fmt)
+    handler.addFilter(_EntityIdFilter())
 
     # Only hipp logs at the requested level; silence noisy third-party loggers.
     logging.root.addHandler(handler)
@@ -65,6 +74,10 @@ def main() -> None:
         config.steps = args.steps
     if args.cleanup:
         config.cleanup = True
+    if args.dry_run:
+        config.dry_run = True
+    if args.max_retries is not None:
+        config.max_retries = args.max_retries
 
     inputs = [Path(p) for p in args.input]
     pipeline_input: Path | list[Path] = inputs[0] if len(inputs) == 1 else inputs

@@ -78,7 +78,7 @@ hipp/
    - Apply TPS or affine transform based on strategy success
 4. Generate QC reports
 
-Valid `PipelineConfig.steps` names (in order): `extract`, `align`, `mosaic`, `quickview_mosaic`, `vertical`, `horizontal`, `transform`, `quickview_final`, `qc_report`.
+Valid `PipelineConfig.steps` names (in order): `extract`, `join_images`, `quickview_mosaic`, `restitution`, `quickview_final`, `qc_report`.
 
 **CLI** (`python -m hipp.kh9pc`):
 ```bash

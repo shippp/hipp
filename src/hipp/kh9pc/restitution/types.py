@@ -5,6 +5,7 @@ Description: Shared result types for the KH-9 PC pipeline and QC report.
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from hipp.kh9pc.restitution.strategy import RectificationStrategy
 
@@ -16,6 +17,7 @@ class StepResult:
     started_at: datetime
     duration: float  # seconds
     error: str | None = None
+    metrics: dict[str, Any] | None = None
 
 
 @dataclass

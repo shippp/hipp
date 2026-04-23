@@ -1,4 +1,5 @@
 import dataclasses
+from typing import Any
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -9,7 +10,7 @@ from rasterio.windows import Window
 from rasterio.warp import Resampling
 
 from hipp.kh9pc.restitution.strategy import CollimationStrategy, FlatStrategy, PolyStrategy, RectificationStrategy
-from hipp.kh9pc.restitution.types import StepResult, StrategyAttempt
+from hipp.kh9pc.restitution.types import StrategyAttempt
 from hipp.kh9pc.restitution.vertical import VerticalDetector
 
 # ---------------------------------------------------------------------------
@@ -219,21 +220,37 @@ _STRATEGY_DESCRIPTIONS = {
 }
 
 
-def plot_pipeline_summary(step_results: list[StepResult]) -> Figure:
-    """Pipeline step summary table."""
-    fig, ax = plt.subplots(figsize=(11, max(3.5, len(step_results) * 0.55 + 1.5)))
+def plot_pipeline_summary(
+    step_results: list[dict[str, Any]],
+    meta: dict[str, Any] | None = None,
+) -> Figure:
+    """Pipeline step summary table with optional provenance metadata."""
+    fig, ax = plt.subplots(figsize=(11, max(3.5, len(step_results) * 0.55 + 2.0)))
     ax.axis("off")
     ax.set_title("Pipeline Summary", fontsize=14, fontweight="bold", pad=16)
+
+    if meta:
+        parts = []
+        if meta.get("entity_id"):
+            parts.append(f"Scene: {meta['entity_id']}")
+        if meta.get("hipp_version"):
+            parts.append(f"hipp {meta['hipp_version']}")
+        if meta.get("git_hash"):
+            parts.append(f"git {meta['git_hash']}")
+        if parts:
+            ax.text(
+                0.5, 0.97, "  |  ".join(parts),
+                transform=ax.transAxes, fontsize=9, ha="center", va="top", color="#666666",
+            )
 
     headers = ["Step", "Status", "Started at", "Duration"]
     rows = []
     cell_colors: list[list[str | tuple[float, float, float, float]]] = []
     for r in step_results:
-        duration = f"{r.duration:.1f} s" if r.status != "skipped" else "—"
-        started = r.started_at.strftime("%H:%M:%S")
-        error_suffix = f"  ✗ {r.error}" if r.error else ""
-        rows.append([r.name, r.status + error_suffix, started, duration])
-        color = mcolors.to_rgba(_STATUS_COLOR.get(r.status, "#ffffff"), alpha=0.25)
+        duration = f"{r['duration']:.1f} s" if r["status"] != "skipped" else "—"
+        error_suffix = f"  ✗ {r['error']}" if r["error"] else ""
+        rows.append([r["name"], r["status"] + error_suffix, r["started_at"], duration])
+        color = mcolors.to_rgba(_STATUS_COLOR.get(r["status"], "#ffffff"), alpha=0.25)
         cell_colors.append(["white", color, "white", "white"])
 
     table = ax.table(

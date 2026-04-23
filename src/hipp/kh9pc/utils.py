@@ -1,18 +1,17 @@
 from pathlib import Path
 
 import cv2
+import numpy as np
+import rasterio
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
-import numpy as np
 from numpy.typing import NDArray
+from rasterio.warp import Resampling
+from rasterio.windows import Window
+from scipy.ndimage import gaussian_filter1d
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.pipeline import make_pipeline
-from scipy.ndimage import gaussian_filter1d
-
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
-from rasterio.windows import Window
-import rasterio
-from rasterio.warp import Resampling
 
 
 def detect_ruptures(vec: NDArray[np.number], threshold: float, reverse_scan: bool = False) -> NDArray[np.integer]:
@@ -153,6 +152,43 @@ def create_circle_template(radius: int, canvas_size: int | None = None) -> cv2.t
     y, x = np.ogrid[:canvas_size, :canvas_size]
     img[(x - cx) ** 2 + (y - cy) ** 2 <= radius**2] = 255
     return img
+
+
+def build_inverse_map(f_top, f_bot, f_top_ref, f_bot_ref):
+    """
+    Build inverse remap function based on two curves.
+    """
+
+    def inverse_map(coords: np.ndarray, eps: float = 0.2) -> np.ndarray:
+        """
+        coords: (N, 2) array of (x', y') in output space
+        returns: (N, 2) array of (x, y) in source space
+        """
+        x = coords[:, 0]
+        y = coords[:, 1]
+
+        # evaluate curves
+        top_ref = f_top_ref(x)
+        bot_ref = f_bot_ref(x)
+
+        # avoid division by zero
+        denom = bot_ref - top_ref
+        denom[denom == 0] = 1e-6
+
+        t = (y - top_ref) / denom
+
+        # optional clamp (important)
+        t = np.clip(t, 0, 1)
+
+        # source curves
+        top = f_top(x)
+        bot = f_bot(x)
+
+        y_src = top + t * (bot - top)
+
+        return np.column_stack((x, y_src)).astype(np.float32)
+
+    return inverse_map
 
 
 class SubImage:
