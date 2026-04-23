@@ -82,9 +82,9 @@ Valid `PipelineConfig.steps` names (in order): `extract`, `align`, `mosaic`, `qu
 
 **CLI** (`python -m hipp.kh9pc`):
 ```bash
-python -m hipp.kh9pc --input scan.tgz --output-dir /out/images --qc-dir /out/qc
-python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output-dir /out --qc-dir /out/qc
-python -m hipp.kh9pc --input scan.tgz --output-dir /out --qc-dir /out/qc --config cfg.toml
+python -m hipp.kh9pc --input scan.tgz --output /out/images/DZB1215.tif --qc-dir /out/qc
+python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output /out/DZB1215.tif --qc-dir /out/qc
+python -m hipp.kh9pc --input scan.tgz --output /out/DZB1215.tif --qc-dir /out/qc --config cfg.toml
 ```
 `PipelineConfig.from_toml()` accepts keys: `overwrite`, `cleanup`, `steps`, and `[output_size]` with `type` in `{auto, fixed_height, fixed_size, same_size, margin}`.
 

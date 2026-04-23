@@ -435,14 +435,11 @@ class KH9Pipeline:
     ----------------
     ::
 
-        output_dir/
-            {entity_id}.tif                   ← final rectified image
+        <output>                              ← final rectified image (exact path)
 
         qc_dir/
             mosaic_qv/{entity_id}.jpg
             final_qv/{entity_id}.jpg
-            vertical/{entity_id}.pdf
-            horizontal/{entity_id}.pdf
             report/{entity_id}.pdf
 
         work_dir/                             ← intermediate files, cleaned at step cleanup
@@ -457,12 +454,12 @@ class KH9Pipeline:
     ----------
     input : Path | list[Path]
         Either a ``.tgz`` archive or an explicit ordered list of ``.tif`` tiles.
-    output_dir : Path
-        Directory where the final rectified ``.tif`` is written.
+    output : Path
+        Exact path for the final rectified ``.tif``. ``entity_id`` is derived from its stem.
     qc_dir : Path
         Root directory for QC outputs.
     work_dir : Path | None
-        Root directory for intermediate files. Defaults to ``output_dir / "_work"``.
+        Root directory for intermediate files. Defaults to ``output.parent / "_work"``.
     config : PipelineConfig | None
         Runtime options. Defaults to :class:`PipelineConfig` with all defaults.
 
@@ -472,7 +469,7 @@ class KH9Pipeline:
 
         pipeline = KH9Pipeline(
             input=Path("DZB1215-500587L002001.tgz"),
-            output_dir=Path("outputs/images/"),
+            output=Path("outputs/images/DZB1215-500587L002001.tif"),
             qc_dir=Path("outputs/qc/"),
         )
         pipeline.run()
@@ -496,20 +493,20 @@ class KH9Pipeline:
     def __init__(
         self,
         input: Path | list[Path],
-        output_dir: Path,
+        output: Path,
         qc_dir: Path,
         work_dir: Path | None = None,
         config: PipelineConfig | None = None,
     ) -> None:
         self.input = input
-        self.entity_id = self._derive_entity_id(input)
-        self.output_dir = Path(output_dir)
+        self.output = Path(output)
+        self.entity_id = self.output.stem
         self.qc_dir = Path(qc_dir)
-        self._work_base = Path(work_dir) if work_dir is not None else self.output_dir / "_work"
+        self._work_base = Path(work_dir) if work_dir is not None else self.output.parent / "_work"
         self.config = config or PipelineConfig()
         self.results_: list[StepResult] = []
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output.parent.mkdir(parents=True, exist_ok=True)
         self._work_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -524,7 +521,6 @@ class KH9Pipeline:
 
     def _build_steps(self) -> dict[str, PipelineStep]:
         ow = self.config.overwrite
-        eid = self.entity_id
 
         extract_inputs: list[Path] = (
             [Path(p) for p in self.input] if isinstance(self.input, list) else [Path(self.input)]
@@ -563,12 +559,12 @@ class KH9Pipeline:
             ),
             "transform": ApplyRestitutionStep(
                 inputs=[self._tmp("mosaic.tif"), self._tmp("horizontal.joblib")],
-                outputs=[self.output_dir / f"{eid}.tif"],
+                outputs=[self.output],
                 output_size=self.config.output_size,
                 overwrite=ow,
             ),
             "quickview_final": QuickviewStep(
-                inputs=[self.output_dir / f"{eid}.tif"],
+                inputs=[self.output],
                 outputs=[self._qc("final_qv", "jpg")],
                 overwrite=ow,
             ),

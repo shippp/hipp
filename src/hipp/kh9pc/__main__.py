@@ -2,9 +2,9 @@
 
 Usage
 -----
-    python -m hipp.kh9pc --input scan.tgz --output-dir /out/images --qc-dir /out/qc
-    python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output-dir /out --qc-dir /out/qc
-    python -m hipp.kh9pc --input scan.tgz --output-dir /out --qc-dir /out/qc --config cfg.toml
+    python -m hipp.kh9pc --input scan.tgz --output /out/images/DZB1215.tif --qc-dir /out/qc
+    python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output /out/DZB1215.tif --qc-dir /out/qc
+    python -m hipp.kh9pc --input scan.tgz --output /out/DZB1215.tif --qc-dir /out/qc --config cfg.toml
 """
 
 import argparse
@@ -27,9 +27,9 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="path to a .tgz archive, or an ordered list of .tif tiles",
     )
-    p.add_argument("--output-dir", required=True, metavar="DIR", help="directory for the final rectified .tif")
+    p.add_argument("--output", required=True, metavar="FILE", help="path for the final rectified .tif")
     p.add_argument("--qc-dir", required=True, metavar="DIR", help="root directory for QC outputs")
-    p.add_argument("--work-dir", metavar="DIR", default=None, help="directory for intermediate files (default: output-dir/_work)")
+    p.add_argument("--work-dir", metavar="DIR", default=None, help="directory for intermediate files (default: <output parent>/_work)")
     p.add_argument("--config", metavar="TOML", default=None, help="TOML config file; CLI flags override it")
     p.add_argument("--overwrite", action="store_true", default=False, help="re-run steps even when outputs already exist")
     p.add_argument("--steps", nargs="+", metavar="STEP", default=None, help="subset of steps to run (default: all)")
@@ -71,7 +71,7 @@ def main() -> None:
 
     pipeline = KH9Pipeline(
         input=pipeline_input,
-        output_dir=Path(args.output_dir),
+        output=Path(args.output),
         qc_dir=Path(args.qc_dir),
         work_dir=Path(args.work_dir) if args.work_dir else None,
         config=config,
