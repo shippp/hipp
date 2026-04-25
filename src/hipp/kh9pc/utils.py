@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -66,6 +67,16 @@ def fit_ransac_poly(
     )
     ransac.fit(x.reshape(-1, 1), y)
     return ransac
+
+
+def wrap_ransac_model_1d(model: RANSACRegressor) -> Callable[[NDArray[np.float32]], NDArray[np.float32]]:
+    est = model.estimator_
+
+    def f(x: NDArray[np.float32]) -> NDArray[np.float32]:
+        x = np.asarray(x).reshape(-1, 1)
+        return est.predict(x).astype(np.float32, copy=False)
+
+    return f
 
 
 def generate_qc_report(output_path: str | Path, figures: list[Figure]) -> None:
@@ -154,39 +165,55 @@ def create_circle_template(radius: int, canvas_size: int | None = None) -> cv2.t
     return img
 
 
-def build_inverse_map(f_top, f_bot, f_top_ref, f_bot_ref):
-    """
-    Build inverse remap function based on two curves.
+def build_inverse_map(
+    f_top_src: Callable[[NDArray[np.float32]], NDArray[np.float32]],
+    f_bot_src: Callable[[NDArray[np.float32]], NDArray[np.float32]],
+    f_top_ref: Callable[[NDArray[np.float32]], NDArray[np.float32]],
+    f_bot_ref: Callable[[NDArray[np.float32]], NDArray[np.float32]],
+) -> Callable[[NDArray[np.float32]], NDArray[np.float32]]:
+    """Build an inverse remap function from two pairs of curves.
+
+    Maps coordinates ``(x, y)`` to ``(x, y_src)`` via parametric interpolation
+    between ``f_top_src`` and ``f_bot_src``. The x coordinate is passed through
+    unchanged — callers are responsible for any x-axis translation.
+
+    Parameters
+    ----------
+    f_top_src, f_bot_src:
+        Top/bottom curves in source space, callable with a float64 x array.
+    f_top_ref, f_bot_ref:
+        Top/bottom reference curves in output space, typically
+        ``lambda x: np.zeros(len(x))`` and ``lambda x: np.full(len(x), h)``.
     """
 
-    def inverse_map(coords: np.ndarray, eps: float = 0.2) -> np.ndarray:
-        """
-        coords: (N, 2) array of (x', y') in output space
-        returns: (N, 2) array of (x, y) in source space
-        """
+    def inverse_map(coords: NDArray[np.float32]) -> NDArray[np.float32]:
         x = coords[:, 0]
         y = coords[:, 1]
 
-        # evaluate curves
+        # Reference space (output domain)
         top_ref = f_top_ref(x)
         bot_ref = f_bot_ref(x)
 
-        # avoid division by zero
+        # Safe normalization (avoid division by zero)
         denom = bot_ref - top_ref
-        denom[denom == 0] = 1e-6
+        np.maximum(np.abs(denom), 1e-6, out=denom)
 
+        # Parametric coordinate in [0, 1]
         t = (y - top_ref) / denom
+        np.clip(t, 0.0, 1.0, out=t)
 
-        # optional clamp (important)
-        t = np.clip(t, 0, 1)
+        # Source interpolation
+        top_src = f_top_src(x)
+        bot_src = f_bot_src(x)
 
-        # source curves
-        top = f_top(x)
-        bot = f_bot(x)
+        y_src = top_src + t * (bot_src - top_src)
 
-        y_src = top + t * (bot - top)
+        # Output
+        out = np.empty_like(coords, dtype=np.float32)
+        out[:, 0] = x
+        out[:, 1] = y_src
 
-        return np.column_stack((x, y_src)).astype(np.float32)
+        return out
 
     return inverse_map
 

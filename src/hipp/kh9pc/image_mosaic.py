@@ -3,12 +3,12 @@ Copyright (c) 2025 HIPP developers
 Description: Functions to recreate in python the image_mosaic function from ASP
 """
 
-from dataclasses import dataclass
-from glob import glob
 import logging
 import os
-from pathlib import Path
 import subprocess
+from dataclasses import dataclass
+from glob import glob
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -55,8 +55,6 @@ class ImageAlignment:
 ####################################################################################################################################
 #                                                   MAIN FUNCTIONS
 ####################################################################################################################################
-
-
 def compute_sequential_alignments(
     image_paths: list[str],
     overlap_width: int = 3000,

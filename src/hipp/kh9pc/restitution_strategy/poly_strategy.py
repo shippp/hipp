@@ -1,0 +1,148 @@
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Self
+
+import numpy as np
+import rasterio
+from rasterio.windows import Window
+
+from hipp.image import remap_tif_blockwise
+from hipp.kh9pc.types import PolyResult, RestitutionStrategy, Transformation
+from hipp.kh9pc.utils import SubImage, build_inverse_map, detect_ruptures, fit_ransac_poly, wrap_ransac_model_1d
+from hipp.kh9pc.vertical_detector import VerticalDetector
+
+
+@dataclass
+class PolyStrategy(RestitutionStrategy):
+    vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
+    background_threshold: int = 20
+    height_fraction: float = 0.15
+    stride: int = 10
+    polynomial_degree: int = 2
+    ransac_residual_threshold: float = 80.0
+    ransac_max_trials: int = 1000
+    grid_shape: tuple[int, int] = (100, 50)
+    min_inliers_treshold: float = 0.5
+
+    def __post_init__(self) -> None:
+        super().__init__()
+        self.__top_: PolyResult | None = None
+        self.__bottom_: PolyResult | None = None
+
+    @property
+    def is_failed(self):
+        return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_treshold
+
+    @property
+    def top_(self) -> PolyResult:
+        if self.__top_ is None:
+            raise RuntimeError("Call fit() before")
+        return self.__top_
+
+    @property
+    def bottom_(self) -> PolyResult:
+        if self.__bottom_ is None:
+            raise RuntimeError("Call fit() before")
+        return self.__bottom_
+
+    def _fit(self, raster_filepath: Path) -> Self:
+        if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
+            self.vertical_detector.fit(raster_filepath)
+
+        col_off, col_end = self.vertical_detector.edges_
+        window_width = col_end - col_off
+
+        with rasterio.open(raster_filepath) as src:
+            window_height = int(src.height * self.height_fraction)
+            out_shape = (1, window_height // self.stride, self.grid_shape[0])
+
+            for side, window in {
+                "top": Window(col_off, 0, window_width, window_height),
+                "bottom": Window(col_off, src.height - window_height, window_width, window_height),
+            }.items():
+                sub_image = SubImage(src, window, out_shape)
+                setattr(self, f"_PolyStrategy__{side}_", self._process_side(sub_image, side))
+
+        return self
+
+    def _process_side(self, sub_image: SubImage, side: str) -> PolyResult:
+        res = []
+        for i in range(sub_image.band.shape[1]):
+            ruptures = detect_ruptures(sub_image.band[:, i], self.background_threshold, reverse_scan=(side == "top"))
+            if len(ruptures) > 0:
+                res.append((i, ruptures[0]))
+
+        if not res:
+            raise RuntimeError(f"No rupture detected on the {side} edge.")
+
+        ruptures_local = np.array(res)
+        ruptures_global = sub_image.to_global(ruptures_local)
+
+        model = fit_ransac_poly(
+            ruptures_global[:, 0],
+            ruptures_global[:, 1],
+            degree=self.polynomial_degree,
+            residual_threshold=self.ransac_residual_threshold,
+            max_trials=self.ransac_max_trials,
+        )
+
+        inlier_ratio = float(model.inlier_mask_.mean())
+
+        x_sample = np.linspace(
+            sub_image.window.col_off, sub_image.window.col_off + sub_image.window.width, self.grid_shape[0]
+        )
+        y_global_pred = model.predict(x_sample.reshape(-1, 1)).ravel()
+        y_distortion = y_global_pred - y_global_pred.mean()
+        distortion = np.column_stack([x_sample, y_distortion])
+
+        return PolyResult(
+            ruptures_local=ruptures_local,
+            ruptures_global=ruptures_global.astype(int),
+            distortion=distortion,
+            inlier_ratio=inlier_ratio,
+            model=model,
+            sub_image=sub_image,
+        )
+
+    def get_transformation(self, output_width=None, output_height=22064):
+        left, right = self.vertical_detector.edges_
+        detected_width = right - left
+        output_width = output_width or detected_width
+
+        x = np.linspace(left, right, self.grid_shape[0])
+
+        f_top_src = wrap_ransac_model_1d(self.top_.model)
+        f_bot_src = wrap_ransac_model_1d(self.bottom_.model)
+
+        top, bot = int(np.median(f_top_src(x))), int(np.median(f_bot_src(x)))
+        detected_height = bot - top
+        output_height = output_height or detected_height
+
+        def f_top_ref(x):
+            return np.full_like(x, top, dtype=np.float32)
+
+        def f_bot_ref(x):
+            return np.full_like(x, bot, dtype=np.float32)
+
+        deformation = build_inverse_map(f_top_src, f_bot_src, f_top_ref, f_bot_ref)
+
+        # ---- CENTERING TO OUTPUT ----
+        pad_x = (output_width - detected_width) / 2
+        pad_y = (output_height - detected_height) / 2
+
+        crop_offset = (
+            int(left - pad_x),
+            int(top - pad_y),
+        )
+
+        return Transformation(
+            self.raster_filepath_,
+            deformation,
+            crop_offset=crop_offset,
+            output_size=(output_width, output_height),
+        )
+
+    def transform(self, output_path: str | Path) -> None:
+        tf = self.get_transformation()
+
+        remap_tif_blockwise(tf.raster_filepath, output_path, tf.inverse_remap, tf.output_size)

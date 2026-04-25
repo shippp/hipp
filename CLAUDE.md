@@ -55,7 +55,6 @@ hipp/
 │       ├── types.py      # StepResult, StrategyAttempt data classes
 │       ├── strategy.py   # RectificationStrategy + Collimation/Poly/Flat strategies
 │       ├── vertical.py   # VerticalDetector (collimation line detection)
-│       ├── output_size.py
 │       └── plotters.py
 └── dataquery/       # USGS/NAGAP data download
 ```
@@ -75,7 +74,7 @@ hipp/
 3. Restitute (rectify):
    - Detect vertical collimation edges (`VerticalDetector`)
    - Detect horizontal edges with strategy fallback: `CollimationStrategy` → `PolyStrategy` → `FlatStrategy`
-   - Apply TPS or affine transform based on strategy success
+   - Apply analytical inverse-map transform (bilinear interpolation between fitted polynomial curves via `build_inverse_map`)
 4. Generate QC reports
 
 Valid `PipelineConfig.steps` names (in order): `extract`, `join_images`, `quickview_mosaic`, `restitution`, `quickview_final`, `qc_report`.
@@ -86,17 +85,16 @@ python -m hipp.kh9pc --input scan.tgz --output /out/images/DZB1215.tif --qc-dir 
 python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output /out/DZB1215.tif --qc-dir /out/qc
 python -m hipp.kh9pc --input scan.tgz --output /out/DZB1215.tif --qc-dir /out/qc --config cfg.toml
 ```
-`PipelineConfig.from_toml()` accepts keys: `overwrite`, `cleanup`, `steps`, and `[output_size]` with `type` in `{auto, fixed_height, fixed_size, same_size, margin}`.
+`PipelineConfig.from_toml()` accepts keys: `overwrite`, `cleanup`, `steps`, and `output_height` (integer, default `22064`).
 
 ### Key Patterns
 
 - **`PipelineStep`**: declarative step class with `inputs`/`outputs`/`overwrite` — enables skip-if-done logic
-- **Strategy pattern** in `kh9pc/restitution/strategy.py`: multiple fallback strategies for edge detection; all inherit `RectificationStrategy` ABC which chains `_fit()` + `_control_points()` + `OutputSize.apply()` into `transform()`
-- **`OutputSize` hierarchy** in `kh9pc/restitution/output_size.py`: `AutoSize` / `FixedHeightSize` (default, height=22064) / `FixedSize` / `SameSize` / `MarginSize` — controls canvas padding around the rectified content without touching the detection logic
+- **Strategy pattern** in `kh9pc/restitution/strategy.py`: multiple fallback strategies for edge detection; all inherit `RectificationStrategy` ABC which chains `_fit()` + `make_inverse_map()` + centering translation into `transform(output_height)`; strategies expose `detected_region() → ((col_off, row_top), (width, height))`
 - **Pandas Series for fiducials**: coordinate data stored with named keys like `corner_top_left_x`, `midside_left_x`
 - **`Intrinsics` class**: wraps focal length, pixel pitch, true fiducial coordinates in mm, principal point
 - **3×3 homogeneous matrices** throughout for image transforms
-- **Rasterio** for all geospatial raster I/O; **OpenCV** for image operations; **scikit-image** for TPS transforms
+- **Rasterio** for all geospatial raster I/O; **OpenCV** for image operations; `build_inverse_map` in `utils.py` for the analytical curve-interpolation warp
 - **Intermediate files persisted as `.joblib`**: `vertical.joblib`, `horizontal.joblib`, `alignments.joblib` — individual steps can be re-run by loading these directly
 
 ### Notebooks

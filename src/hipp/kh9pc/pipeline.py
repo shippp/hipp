@@ -3,173 +3,23 @@ Copyright (c) 2025 HIPP developers
 Description: End-to-end preprocessing pipeline for KH-9 Panoramic Camera imagery.
 """
 
-import contextvars
-import importlib.metadata
 import json
 import logging
-import subprocess
-import time
 import warnings
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import joblib
+
 from hipp.image import generate_quickview
+from hipp.kh9pc.types import StepResult
 from hipp.tools import extract_archive
-from hipp.kh9pc.image_mosaic import ImageAlignment, compute_sequential_alignments, write_mosaic
-from hipp.kh9pc.restitution.types import StepResult, StrategyAttempt
-from hipp.kh9pc.restitution.vertical import VerticalDetector
-from hipp.kh9pc.restitution.output_size import AutoSize, FixedHeightSize, FixedSize, MarginSize, OutputSize, SameSize
-from hipp.kh9pc.restitution.strategy import (
-    CollimationStrategy,
-    FlatStrategy,
-    PolyStrategy,
-    RectificationStrategy,
-)
 
 logger = logging.getLogger(__name__)
-
-_entity_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("entity_id", default="")
-
-
-def _get_git_hash() -> str | None:
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.stdout.strip() if r.returncode == 0 else None
-    except Exception:
-        return None
-
-
-def _get_hipp_version() -> str | None:
-    try:
-        return importlib.metadata.version("hipp")
-    except Exception:
-        return None
-
-
-def _validate_tif(path: Path) -> None:
-    import rasterio
-
-    try:
-        with rasterio.open(path) as ds:
-            if ds.width == 0 or ds.height == 0 or ds.count == 0:
-                raise ValueError(f"TIF appears empty: {path}")
-    except Exception as exc:
-        raise ValueError(f"Invalid TIF file {path}: {exc}") from exc
-
 
 # ---------------------------------------------------------------------------
 # Base step
 # ---------------------------------------------------------------------------
-
-
-class PipelineStep:
-    """A single pipeline step with declared file inputs and outputs.
-
-    Parameters
-    ----------
-    inputs : list[Path]
-        Files that must exist before this step can run.
-    outputs : list[Path]
-        Files produced by this step. If all exist and *overwrite* is False,
-        the step is skipped.
-    overwrite : bool
-        Force re-execution even when outputs already exist.
-    """
-
-    def __init__(
-        self,
-        inputs: list[Path],
-        outputs: list[Path],
-        overwrite: bool = False,
-        max_retries: int = 0,
-        retry_delay: float = 2.0,
-    ) -> None:
-        self.inputs = inputs
-        self.outputs = outputs
-        self.overwrite = overwrite
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
-        self._metrics: dict[str, Any] = {}
-        self.__result_: StepResult | None = None
-
-    @property
-    def result_(self) -> StepResult:
-        if self.__result_ is None:
-            raise RuntimeError("call run() before result_.")
-        return self.__result_
-
-    def is_done(self) -> bool:
-        return bool(self.outputs) and all(p.exists() for p in self.outputs)
-
-    def check_inputs(self) -> None:
-        missing = [p for p in self.inputs if not p.exists()]
-        if missing:
-            raise FileNotFoundError(f"{self.__class__.__name__}: missing inputs: {missing}")
-        for p in self.inputs:
-            if p.suffix == ".tif":
-                _validate_tif(p)
-
-    def _validate_outputs(self) -> None:
-        for p in self.outputs:
-            if p.suffix == ".tif" and p.exists():
-                _validate_tif(p)
-
-    def run(self) -> None:
-        started_at = datetime.now()
-        t0 = time.perf_counter()
-
-        if self.is_done() and not self.overwrite:
-            logger.info("%s: already done, skipping", self.__class__.__name__)
-            self.__result_ = StepResult(
-                name=self.__class__.__name__,
-                status="skipped",
-                started_at=started_at,
-                duration=0.0,
-            )
-            return
-
-        self.check_inputs()
-        for p in self.outputs:
-            p.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            for attempt in range(self.max_retries + 1):
-                try:
-                    self.execute()
-                    break
-                except OSError as exc:
-                    if attempt == self.max_retries:
-                        raise
-                    logger.warning(
-                        "%s: OSError (%s), retry %d/%d in %.0fs",
-                        self.__class__.__name__, exc, attempt + 1, self.max_retries, self.retry_delay,
-                    )
-                    time.sleep(self.retry_delay)
-            self._validate_outputs()
-            self.__result_ = StepResult(
-                name=self.__class__.__name__,
-                status="ran",
-                started_at=started_at,
-                duration=time.perf_counter() - t0,
-                metrics=self._metrics or None,
-            )
-        except Exception as exc:
-            self.__result_ = StepResult(
-                name=self.__class__.__name__,
-                status="failed",
-                started_at=started_at,
-                duration=time.perf_counter() - t0,
-                error=str(exc),
-            )
-            raise
-
-    def execute(self) -> None:
-        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
@@ -214,67 +64,6 @@ class ExtractArchiveStep(PipelineStep):
         (tiles_dir / self._SENTINEL).touch()
 
 
-class ComputeAlignmentsStep(PipelineStep):
-    """Compute sequential ORB+RANSAC alignments between image tiles.
-
-    inputs      : ordered list of .tif tile paths
-    outputs[0]  : alignments.joblib
-    """
-
-    def execute(self) -> None:
-        alignments = compute_sequential_alignments([str(t) for t in self.inputs])
-        joblib.dump(alignments, self.outputs[0])
-        logger.info("ComputeAlignmentsStep: %d alignments → %s", len(alignments), self.outputs[0])
-
-
-class BuildMosaicStep(PipelineStep):
-    """Composite aligned tiles into a single mosaic GeoTIFF.
-
-    inputs[0]  : alignments.joblib
-    outputs[0] : mosaic.tif
-    """
-
-    def execute(self) -> None:
-        alignments: list[ImageAlignment] = joblib.load(self.inputs[0])
-        write_mosaic(alignments, str(self.outputs[0]))
-        logger.info("BuildMosaicStep: mosaic written to %s", self.outputs[0])
-
-
-class JoinImagesStep(PipelineStep):
-    """Align tiles and build a mosaic — combines alignment and compositing.
-
-    inputs[0]  : tiles/ directory produced by ExtractArchiveStep
-    outputs[0] : mosaic.tif
-
-    ``alignments.joblib`` is written to ``outputs[0].parent`` and reused on
-    re-runs (sub-steps are skip-if-done individually).
-    """
-
-    def execute(self) -> None:
-        tiles_dir = self.inputs[0]
-        tiles = sorted(tiles_dir.glob("*.tif"))
-        if not tiles:
-            raise RuntimeError(f"No .tif tiles found in {tiles_dir}")
-
-        alignments_path = self.outputs[0].parent / "alignments.joblib"
-
-        ComputeAlignmentsStep(
-            inputs=tiles,
-            outputs=[alignments_path],
-            overwrite=self.overwrite,
-            max_retries=self.max_retries,
-            retry_delay=self.retry_delay,
-        ).run()
-
-        BuildMosaicStep(
-            inputs=[alignments_path],
-            outputs=self.outputs,
-            overwrite=self.overwrite,
-            max_retries=self.max_retries,
-            retry_delay=self.retry_delay,
-        ).run()
-
-
 class QuickviewStep(PipelineStep):
     """Generate a downsampled JPEG preview of a raster.
 
@@ -297,7 +86,7 @@ class DetectVerticalEdgesStep(PipelineStep):
     """
 
     def execute(self) -> None:
-        from hipp.kh9pc.restitution.plotters import vertical_figures
+        from hipp.kh9pc.quality_control import vertical_figures
 
         detector = VerticalDetector().fit(self.inputs[0])
         joblib.dump(detector, self.outputs[0])
@@ -325,7 +114,7 @@ class DetectHorizontalEdgesStep(PipelineStep):
     """
 
     def execute(self) -> None:
-        from hipp.kh9pc.restitution.plotters import plot_strategy_header, plot_strategy_params, strategy_figures
+        from hipp.kh9pc.quality_control import plot_strategy_header, plot_strategy_params, strategy_figures
 
         vertical: VerticalDetector = joblib.load(self.inputs[1])
         edges = vertical.edges
@@ -397,25 +186,26 @@ class ApplyRestitutionStep(PipelineStep):
 
     Parameters
     ----------
-    output_size : OutputSize
-        Strategy controlling the canvas size of the rectified image.
+    output_height : int
+        Fixed height of the output canvas in pixels. The detected region is
+        centred vertically within this canvas.
     """
 
     def __init__(
         self,
         inputs: list[Path],
         outputs: list[Path],
-        output_size: OutputSize,
+        output_height: int,
         overwrite: bool = False,
         max_retries: int = 0,
         retry_delay: float = 2.0,
     ) -> None:
         super().__init__(inputs, outputs, overwrite, max_retries, retry_delay)
-        self.output_size = output_size
+        self.output_height = output_height
 
     def execute(self) -> None:
         strategy: RectificationStrategy = joblib.load(self.inputs[1])
-        strategy.transform(self.inputs[0], self.outputs[0], self.output_size)
+        strategy.transform(self.inputs[0], self.outputs[0], self.output_height)
         logger.info("ApplyRestitutionStep: written to %s", self.outputs[0])
 
 
@@ -431,21 +221,21 @@ class RestitutionStep(PipelineStep):
 
     Parameters
     ----------
-    output_size : OutputSize
-        Canvas-sizing strategy for the rectified image.
+    output_height : int
+        Fixed height of the output canvas in pixels.
     """
 
     def __init__(
         self,
         inputs: list[Path],
         outputs: list[Path],
-        output_size: OutputSize,
+        output_height: int,
         overwrite: bool = False,
         max_retries: int = 0,
         retry_delay: float = 2.0,
     ) -> None:
         super().__init__(inputs, outputs, overwrite, max_retries, retry_delay)
-        self.output_size = output_size
+        self.output_height = output_height
 
     @property
     def vertical_qc_dir(self) -> Path:
@@ -477,7 +267,7 @@ class RestitutionStep(PipelineStep):
         ApplyRestitutionStep(
             inputs=[self.inputs[0], work_dir / "horizontal.joblib"],
             outputs=self.outputs,
-            output_size=self.output_size,
+            output_height=self.output_height,
             overwrite=self.overwrite,
             max_retries=self.max_retries,
             retry_delay=self.retry_delay,
@@ -496,7 +286,8 @@ class GenerateQCReportStep(PipelineStep):
     def execute(self) -> None:
         import matplotlib.image as mpimg
         import matplotlib.pyplot as plt
-        from hipp.kh9pc.restitution.plotters import plot_pipeline_summary
+
+        from hipp.kh9pc.quality_control import plot_pipeline_summary
         from hipp.kh9pc.utils import generate_qc_report
 
         raw: Any = json.loads(self.inputs[0].read_text())
@@ -557,9 +348,9 @@ class PipelineConfig:
     ----------
     overwrite : bool
         Re-run a step even when its output already exists on disk.
-    output_size : OutputSize | None
-        Strategy controlling the canvas size of the rectified image.
-        Defaults to :class:`FixedHeightSize` with ``height=22064``.
+    output_height : int
+        Fixed height of the output canvas in pixels. The detected image region
+        is centred vertically within this canvas. Defaults to ``22064``.
     steps : list[str] | None
         Subset of step names to execute. ``None`` runs every step in order.
     """
@@ -567,7 +358,7 @@ class PipelineConfig:
     def __init__(
         self,
         overwrite: bool = False,
-        output_size: OutputSize | None = None,
+        output_height: int = 22064,
         steps: list[str] | None = None,
         cleanup: bool = False,
         dry_run: bool = False,
@@ -575,7 +366,7 @@ class PipelineConfig:
         retry_delay: float = 2.0,
     ) -> None:
         self.overwrite = overwrite
-        self.output_size: OutputSize = output_size or FixedHeightSize(height=22064)
+        self.output_height = output_height
         self.steps = steps
         self.cleanup = cleanup
         self.dry_run = dry_run
@@ -595,11 +386,8 @@ class PipelineConfig:
 
             overwrite = false
             cleanup = false
+            output_height = 22064
             steps = ["extract", "join_images", "quickview_mosaic", "restitution", "quickview_final", "qc_report"]
-
-            [output_size]
-            type = "fixed_height"   # auto | fixed_height | fixed_size | same_size | margin
-            height = 22064
         """
         import tomllib
 
@@ -607,7 +395,7 @@ class PipelineConfig:
             raw: dict[str, Any] = tomllib.load(f)
         return cls(
             overwrite=raw.get("overwrite", False),
-            output_size=_parse_output_size(raw.get("output_size")),
+            output_height=int(raw.get("output_height", 22064)),
             steps=raw.get("steps"),
             cleanup=raw.get("cleanup", False),
             dry_run=raw.get("dry_run", False),
@@ -724,7 +512,7 @@ class KH9Pipeline:
         restitution = RestitutionStep(
             inputs=[self._tmp("mosaic.tif")],
             outputs=[self.output],
-            output_size=self.config.output_size,
+            output_height=self.config.output_height,
             overwrite=ow,
             max_retries=mr,
             retry_delay=rd,
@@ -818,28 +606,6 @@ class KH9Pipeline:
 
         if self.config.cleanup:
             CleanupWorkDirStep(work_dir=self._work_dir).run()
-
-
-def _parse_output_size(cfg: dict[str, Any] | None) -> OutputSize | None:
-    if cfg is None:
-        return None
-    type_ = cfg.get("type", "fixed_height")
-    if type_ == "auto":
-        return AutoSize()
-    if type_ == "fixed_height":
-        return FixedHeightSize(height=int(cfg["height"]))
-    if type_ == "fixed_size":
-        return FixedSize(width=int(cfg["width"]), height=int(cfg["height"]))
-    if type_ == "same_size":
-        return SameSize(width=int(cfg["width"]), height=int(cfg["height"]))
-    if type_ == "margin":
-        return MarginSize(
-            top=int(cfg.get("top", 0)),
-            right=int(cfg.get("right", 0)),
-            bottom=int(cfg.get("bottom", 0)),
-            left=int(cfg.get("left", 0)),
-        )
-    raise ValueError(f"Unknown output_size type: {type_!r}. Valid: auto, fixed_height, fixed_size, same_size, margin")
 
 
 def _save_qc_figures(figures: list[Any], directory: Path) -> None:
