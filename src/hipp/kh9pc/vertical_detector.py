@@ -26,7 +26,7 @@ class VerticalDetector(FittingClass):
         self.__right_: VerticalEdgeResult | None = None
 
     @property
-    def is_failed(self):
+    def is_failed(self) -> bool:
         return False
 
     @property

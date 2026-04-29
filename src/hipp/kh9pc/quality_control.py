@@ -406,23 +406,23 @@ def get_figures(fitting_class: FittingClass) -> list[Figure]:
             *get_figures(fitting_class.vertical_detector),
             plot_flat_edges(fitting_class),
             plot_flat_ruptures(fitting_class),
-            plot_crop_area(fitting_class.get_transformation()),
+            plot_crop_area(fitting_class.transformation_),
         ]
     if isinstance(fitting_class, PolyStrategy):
         return [
             *get_figures(fitting_class.vertical_detector),
             plot_poly_edges(fitting_class),
             plot_poly_distortions(fitting_class),
-            plot_deformation_grid(fitting_class.get_transformation()),
-            plot_crop_area(fitting_class.get_transformation()),
+            plot_deformation_grid(fitting_class.transformation_),
+            plot_crop_area(fitting_class.transformation_),
         ]
     if isinstance(fitting_class, CollimationStrategy):
         return [
             *get_figures(fitting_class.vertical_detector),
             plot_collimation_edges(fitting_class),
             plot_collimation_distortions(fitting_class),
-            plot_deformation_grid(fitting_class.get_transformation()),
-            plot_crop_area(fitting_class.get_transformation()),
+            plot_deformation_grid(fitting_class.transformation_),
+            plot_crop_area(fitting_class.transformation_),
         ]
     if isinstance(fitting_class, MixedStrategy):
         return get_figures(fitting_class.selected_strategy_)

@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from hipp.kh9pc.restitution_strategy.collimation_strategy import CollimationStrategy
 from hipp.kh9pc.restitution_strategy.flat_strategy import FlatStrategy
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
-from hipp.kh9pc.types import RestitutionStrategy
+from hipp.kh9pc.types import RestitutionStrategy, Transformation
 from hipp.kh9pc.vertical_detector import VerticalDetector
 
 
@@ -24,7 +25,7 @@ class MixedStrategy(RestitutionStrategy):
                 setattr(strat, "vertical_detector", self.vertical_detector)
 
     @property
-    def is_failed(self):
+    def is_failed(self) -> bool:
         if not self.is_fitted:
             raise RuntimeError("call fit() before")
         return self.__selected_strategy_ is None
@@ -50,13 +51,14 @@ class MixedStrategy(RestitutionStrategy):
         idx = self.strategies.index(self.__selected_strategy_)
         return self.strategies[:idx]
 
-    def get_transformation(self, output_width=None, output_height=22064):
-        return self.selected_strategy_.get_transformation(output_width, output_height)
+    @property
+    def transformation_(self) -> Transformation:
+        return self.selected_strategy_.transformation_
 
-    def transform(self, output_path):
+    def transform(self, output_path: str | Path) -> None:
         self.selected_strategy_.transform(output_path)
 
-    def _fit(self, raster_filepath):
+    def _fit(self, raster_filepath: Path) -> "MixedStrategy":
         self.__selected_strategy_ = None
 
         # fit the vertical detector if is not already fitted.

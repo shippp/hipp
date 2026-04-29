@@ -1,10 +1,6 @@
-import functools
-import inspect
 import logging
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Self
 
@@ -61,119 +57,9 @@ class RestitutionStrategy(FittingClass):
     @abstractmethod
     def transform(self, output_path: str | Path) -> None: ...
 
+    @property
     @abstractmethod
-    def get_transformation(
-        self, output_width: int | None = None, output_height: int | None = 22064
-    ) -> "Transformation": ...
-
-
-@dataclass
-class TaskResult:
-    func_name: str
-    args: dict[str, Any]
-    status: str  # "ran" | "skipped" | "error"
-    started_at: datetime
-    duration: float  # seconds
-    error: str | None = None
-
-
-@dataclass
-class StepResult:
-    name: str
-    status: str  # "ran" | "skipped" | "failed"
-    started_at: datetime
-    duration: float  # seconds
-    error: str | None = None
-    metrics: dict[str, Any] = field(default_factory=dict)
-
-
-class Task:
-    registry: list[TaskResult] = []
-
-    def __init__(self, input: list[str] | str | None = None, output: list[str] | str | None = None) -> None:
-        self.inputs = Task._normalize_io(input)
-        self.outputs = Task._normalize_io(output)
-
-    @classmethod
-    def clear_registry(cls) -> None:
-        cls.registry.clear()
-
-    def __call__(self, func: Callable[..., Any]) -> Callable[..., Any]:
-        sig = inspect.signature(func)
-        param_names = list(sig.parameters.keys())
-
-        for arg in self.inputs:
-            if arg not in param_names:
-                raise ValueError(f"[{func.__name__}] input '{arg}' not in function signature")
-        for arg in self.outputs:
-            if arg not in param_names:
-                raise ValueError(f"[{func.__name__}] output '{arg}' not in function signature")
-
-        @functools.wraps(func)
-        def wrapper(*args: Any, overwrite: bool = False, **kwargs: Any) -> Any:
-            started_at = datetime.now()
-            t0 = time.perf_counter()
-
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            bound_args = dict(bound.arguments)
-
-            outputs_exist = bool(self.outputs) and all(Path(bound_args[arg]).exists() for arg in self.outputs)
-
-            if outputs_exist and not overwrite:
-                logger.info("%s: already done, skipping", func.__name__)
-                Task.registry.append(
-                    TaskResult(
-                        func_name=func.__name__,
-                        args={**bound_args, "overwrite": overwrite},
-                        status="skipped",
-                        started_at=started_at,
-                        duration=0.0,
-                    )
-                )
-                return None
-
-            missing = [str(bound_args[arg]) for arg in self.inputs if not Path(bound_args[arg]).exists()]
-            if missing:
-                raise FileNotFoundError(f"[{func.__name__}] missing inputs: {missing}")
-
-            for arg in self.outputs:
-                Path(bound_args[arg]).parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                result = func(*args, **kwargs)
-                Task.registry.append(
-                    TaskResult(
-                        func_name=func.__name__,
-                        args={**bound_args, "overwrite": overwrite},
-                        status="ran",
-                        started_at=started_at,
-                        duration=time.perf_counter() - t0,
-                    )
-                )
-                return result
-            except Exception as exc:
-                Task.registry.append(
-                    TaskResult(
-                        func_name=func.__name__,
-                        args={**bound_args, "overwrite": overwrite},
-                        status="error",
-                        started_at=started_at,
-                        duration=time.perf_counter() - t0,
-                        error=f"{exc.__class__.__name__} : {str(exc)}",
-                    )
-                )
-                raise
-
-        return wrapper
-
-    @staticmethod
-    def _normalize_io(value: list[str] | str | None) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        return list(value)
+    def transformation_(self) -> "Transformation": ...
 
 
 ########################################################################
@@ -232,4 +118,30 @@ class FiducialResult:
     candidates: pd.DataFrame
 
 
+@dataclass
+class ImageAlignment:
+    """Alignment result for a single image in a sequential alignment chain.
 
+    Attributes
+    ----------
+    image_path : Path
+        Path to the image file.
+    relative_transform : np.ndarray
+        3x3 homogeneous transformation matrix relative to the previous image
+        (identity for the first/reference image).
+    absolute_transform : np.ndarray
+        3x3 homogeneous transformation matrix in the global/mosaic coordinate system,
+        accumulated from the reference image.
+    n_matches : int
+        Total number of ORB keypoint matches found before RANSAC filtering
+        (0 for the reference image).
+    n_inliers : int
+        Number of inlier matches kept after RANSAC filtering
+        (0 for the reference image).
+    """
+
+    image_path: Path
+    relative_transform: np.ndarray
+    absolute_transform: np.ndarray
+    n_matches: int
+    n_inliers: int

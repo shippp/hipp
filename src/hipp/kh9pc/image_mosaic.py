@@ -6,57 +6,60 @@ Description: Functions to recreate in python the image_mosaic function from ASP
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Sequence
 from glob import glob
 from pathlib import Path
 
 import cv2
 import numpy as np
 import rasterio
-import rasterio.transform
-import rasterio.warp
 from rasterio.vrt import WarpedVRT
+from rasterio.warp import Resampling
 from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
 
+from hipp.kh9pc.types import ImageAlignment
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ImageAlignment:
-    """Alignment result for a single image in a sequential alignment chain.
-
-    Attributes
-    ----------
-    image_path : Path
-        Path to the image file.
-    relative_transform : np.ndarray
-        3x3 homogeneous transformation matrix relative to the previous image
-        (identity for the first/reference image).
-    absolute_transform : np.ndarray
-        3x3 homogeneous transformation matrix in the global/mosaic coordinate system,
-        accumulated from the reference image.
-    n_matches : int
-        Total number of ORB keypoint matches found before RANSAC filtering
-        (0 for the reference image).
-    n_inliers : int
-        Number of inlier matches kept after RANSAC filtering
-        (0 for the reference image).
-    """
-
-    image_path: Path
-    relative_transform: np.ndarray
-    absolute_transform: np.ndarray
-    n_matches: int
-    n_inliers: int
 
 
 ####################################################################################################################################
 #                                                   MAIN FUNCTIONS
 ####################################################################################################################################
+def image_mosaic(
+    image_paths: Sequence[str | Path],
+    output_tif: str | Path,
+    overwrite: bool = False,
+    resampling: int = Resampling.cubic,
+    overlap_width: int = 3000,
+    bloc_height: int = 256,
+    nfeature_per_block: int = 500,
+    ransac_max_trials: int = 1000,
+    ransac_residual_threshold: float = 3.0,
+) -> None:
+    # standardize paths
+    output_tif = Path(output_tif)
+
+    # manage overwrite
+    if output_tif.exists() and not overwrite:
+        logger.info("Skipping image_mosaic: %s (already exists, overwrite=False)", str(output_tif))
+        return
+
+    aligments = compute_sequential_alignments(
+        image_paths,
+        overlap_width=overlap_width,
+        bloc_height=bloc_height,
+        nfeature_per_block=nfeature_per_block,
+        ransac_max_trials=ransac_max_trials,
+        ransac_residual_threshold=ransac_residual_threshold,
+    )
+
+    write_mosaic(aligments, output_tif, resampling=resampling)
+
+
 def compute_sequential_alignments(
-    image_paths: list[str],
+    image_paths: Sequence[str | Path],
     overlap_width: int = 3000,
     bloc_height: int = 256,
     nfeature_per_block: int = 500,
@@ -67,33 +70,14 @@ def compute_sequential_alignments(
 
     Detects ORB keypoints between consecutive images, estimates RANSAC Euclidean
     transforms, and accumulates absolute transformations from the reference image.
-
-    Parameters
-    ----------
-    image_paths : list[str]
-        Ordered list of image file paths to align. The first image is the reference
-        (identity transform). Each subsequent image is aligned to the previous one.
-    overlap_width : int, default 3000
-        Width in pixels of the overlapping region used for keypoint matching.
-    bloc_height : int, default 256
-        Height of blocks (in pixels) used for local keypoint detection.
-    nfeature_per_block : int, default 500
-        Number of ORB features to detect per block.
-    ransac_max_trials : int, default 1000
-        Maximum number of RANSAC iterations for robust transform estimation.
-    ransac_residual_threshold : float, default 3.0
-        Maximum inlier residual for RANSAC.
-
-    Returns
-    -------
-    list[ImageAlignment]
-        One entry per input image, holding relative and absolute 3x3 homogeneous
-        transformation matrices plus match statistics.
     """
+    # standardize path
+    paths: list[Path] = [Path(f) for f in image_paths]
+
     identity = np.eye(3)
     alignments: list[ImageAlignment] = [
         ImageAlignment(
-            image_path=Path(image_paths[0]),
+            image_path=paths[0],
             relative_transform=identity,
             absolute_transform=identity,
             n_matches=0,
@@ -101,12 +85,12 @@ def compute_sequential_alignments(
         )
     ]
 
-    for i in range(len(image_paths) - 1):
-        logger.info("Matching '%s' with '%s'", image_paths[i], image_paths[i + 1])
+    for i in range(len(paths) - 1):
+        logger.info("Matching '%s' with '%s'", str(paths[i]), str(paths[i + 1]))
 
         points_a, points_b = _extract_global_matches_from_overlap(
-            image_paths[i],
-            image_paths[i + 1],
+            paths[i],
+            paths[i + 1],
             overlap_width,
             bloc_height,
             nfeature_per_block,
@@ -128,7 +112,7 @@ def compute_sequential_alignments(
 
         alignments.append(
             ImageAlignment(
-                image_path=Path(image_paths[i + 1]),
+                image_path=Path(paths[i + 1]),
                 relative_transform=relative_transform,
                 absolute_transform=absolute_transform,
                 n_matches=len(points_a),
@@ -141,8 +125,8 @@ def compute_sequential_alignments(
 
 def write_mosaic(
     alignments: list[ImageAlignment],
-    output_tif: str,
-    resampling: int = rasterio.warp.Resampling.cubic,
+    output_tif: str | Path,
+    resampling: int = Resampling.cubic,
 ) -> None:
     """Warp and merge all aligned images into a single output GeoTIFF.
 
@@ -154,17 +138,12 @@ def write_mosaic(
     after transformation), an offset is automatically applied to all transforms so that
     the full mosaic fits within the canvas without clipping.
 
-    Parameters
-    ----------
-    alignments : list[ImageAlignment]
-        Alignments as returned by :func:`compute_sequential_alignments`.
-    output_tif : str
-        Path to the output GeoTIFF file.
-    resampling : int, default rasterio.warp.Resampling.cubic
-        Resampling method from ``rasterio.warp.Resampling``.
     """
+    # normalize path
+    output_tif = Path(output_tif)
+    output_tif.parent.mkdir(exist_ok=True, parents=True)
+
     output_width, output_height, offset_x, offset_y = _compute_canvas(alignments)
-    n_images = len(alignments)
 
     T_offset = np.array([[1, 0, -offset_x], [0, 1, -offset_y], [0, 0, 1]], dtype=float)
 
@@ -184,15 +163,14 @@ def write_mosaic(
         "dtype": "uint8",
     }
 
-    os.makedirs(os.path.dirname(output_tif) or ".", exist_ok=True)
     n_blocks = (output_width // 256 + 1) * (output_height // 256 + 1)
     log_every = max(1, n_blocks // 5)
 
-    logger.info("Mosaicing %d images → %s (%d×%d px)", n_images, output_tif, output_width, output_height)
+    logger.info("Mosaicing %d images → %s (%d×%d px)", len(alignments), str(output_tif), output_width, output_height)
 
     with rasterio.open(output_tif, "w+", **profile) as dst:
         for i, alignment in enumerate(alignments):
-            logger.info("[%d/%d] %s", i + 1, n_images, alignment.image_path.name)
+            logger.info("[%d/%d] %s", i + 1, len(alignments), alignment.image_path.name)
 
             adjusted_transform = T_offset @ alignment.absolute_transform
 
@@ -217,7 +195,7 @@ def write_mosaic(
                         existing = dst.read(1, window=window)
                         dst.write(np.where(mask, warped, existing), 1, window=window)
 
-    logger.info("Mosaic written to %s", output_tif)
+    logger.info("Mosaic written to %s", str(output_tif))
 
 
 ####################################################################################################################################
@@ -318,8 +296,8 @@ def _compute_canvas(alignments: list[ImageAlignment]) -> tuple[int, int, float, 
 
 
 def _extract_global_matches_from_overlap(
-    image_a_path: str,
-    image_b_path: str,
+    image_a_path: str | Path,
+    image_b_path: str | Path,
     overlap_width: int = 3000,
     bloc_height: int = 1024,
     nfeature_per_block: int = 500,

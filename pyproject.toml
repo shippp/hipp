@@ -36,6 +36,9 @@ dependencies = [
   "requests",
 ]
 
+[project.scripts]
+hipp-kh9pc = "hipp.kh9pc.cli:main"
+
 [project.urls]
 Documentation = "https://github.com/godinlu/hipp#readme"
 Issues = "https://github.com/godinlu/hipp/issues"

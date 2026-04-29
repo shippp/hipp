@@ -18,14 +18,17 @@ class FlatStrategy(RestitutionStrategy):
     background_threshold: int = 20
     height_fraction: float = 0.15
     stride: int = 10
+    output_width: int | None = None
+    output_height: int | None = 22064
 
     def __post_init__(self) -> None:
         super().__init__()
         self.__top_: FlatResult | None = None
         self.__bottom_: FlatResult | None = None
+        self.__transform_: Transformation | None = None
 
     @property
-    def is_failed(self):
+    def is_failed(self) -> bool:
         return False
 
     @property
@@ -39,6 +42,12 @@ class FlatStrategy(RestitutionStrategy):
         if self.__bottom_ is None:
             raise RuntimeError("Call fit() before")
         return self.__bottom_
+
+    @property
+    def transformation_(self) -> Transformation:
+        if self.__transform_ is None:
+            self.__transform_ = self._compute_transformation()
+        return self.__transform_
 
     def _fit(self, raster_filepath: Path) -> Self:
         if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
@@ -68,23 +77,20 @@ class FlatStrategy(RestitutionStrategy):
         position = int(sub_image.to_global(np.array([0.0, rupture_local]))[1])
         return FlatResult(position=position, rupture_local=rupture_local, sub_image=sub_image)
 
-    def get_transformation(self, output_width: int | None = None, output_height: int | None = 22064) -> Transformation:
+    def _compute_transformation(self) -> Transformation:
         left, right = self.vertical_detector.edges_
         detected_width = right - left
-        output_width = output_width or detected_width
+        output_width = self.output_width or detected_width
 
         top = self.top_.position
         bot = self.bottom_.position
         detected_height = bot - top
-        output_height = output_height or detected_height
+        output_height = self.output_height or detected_height
 
         pad_x = (output_width - detected_width) / 2
         pad_y = (output_height - detected_height) / 2
 
-        crop_offset = (
-            int(left - pad_x),
-            int(top - pad_y),
-        )
+        crop_offset = (int(left - pad_x), int(top - pad_y))
 
         return Transformation(
             self.raster_filepath_,
@@ -94,5 +100,5 @@ class FlatStrategy(RestitutionStrategy):
         )
 
     def transform(self, output_path: str | Path) -> None:
-        tf = self.get_transformation()
+        tf = self.transformation_
         remap_tif_blockwise(tf.raster_filepath, output_path, tf.inverse_remap, tf.output_size)

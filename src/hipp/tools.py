@@ -3,6 +3,7 @@ Copyright (c) 2025 HIPP developers
 Description: Generic tools
 """
 
+import logging
 import os
 import subprocess
 import tarfile
@@ -17,6 +18,8 @@ from rasterio.shutil import copy as rio_copy
 from tqdm import tqdm
 
 from hipp.image import apply_clahe, generate_quickview
+
+logger = logging.getLogger(__name__)
 
 
 def points_picker(
@@ -229,7 +232,7 @@ def optimize_geotif_file(geotif_file: str, overwrite: bool = False) -> None:
     os.rename(tmp_tif, geotif_file)
 
 
-def extract_archive(archive_path: str | Path, output_dir: str | Path) -> list[Path]:
+def extract_archive(archive_path: str | Path, output_dir: str | Path, overwrite: bool = False) -> list[Path]:
     """Extract an archive file to a directory and return all extracted file paths sorted.
 
     Supported formats:
@@ -238,29 +241,23 @@ def extract_archive(archive_path: str | Path, output_dir: str | Path) -> list[Pa
     - 7z (requires ``py7zr``)
     - rar (requires ``rarfile``)
 
-    Parameters
-    ----------
-    archive_path : str | Path
-        Path to the archive file.
-    output_dir : str | Path
-        Directory where the archive content will be extracted.
-
-    Returns
-    -------
-    list[Path]
-        Sorted list of all extracted file paths (files only, not directories).
-
-    Raises
-    ------
-    ValueError
-        If the archive format is not supported.
+    A sentinel file ``.extracted`` is written inside ``output_dir`` upon successful extraction.
+    If the sentinel exists and ``overwrite`` is False, extraction is skipped.
     """
     archive_path = Path(archive_path)
     output_dir = Path(output_dir)
+    sentinel = output_dir / ".extracted"
+
+    if sentinel.exists() and not overwrite:
+        logger.info("Skipping extract_archive: %s (already exists, overwrite=False)", str(output_dir))
+        return sorted(p for p in output_dir.rglob("*") if p.is_file() and p != sentinel)
+
     output_dir.mkdir(parents=True, exist_ok=True)
+    sentinel.unlink(missing_ok=True)
 
     name = archive_path.name.lower()
 
+    logger.info("Start extracting %s in %s", str(archive_path), str(output_dir))
     if name.endswith(".zip"):
         with zipfile.ZipFile(archive_path) as zf:
             zf.extractall(output_dir)
@@ -291,7 +288,9 @@ def extract_archive(archive_path: str | Path, output_dir: str | Path) -> list[Pa
             "Supported: .zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .tar.zst, .7z, .rar"
         )
 
-    return sorted(p for p in output_dir.rglob("*") if p.is_file())
+    sentinel.touch()
+    logger.info("Extraction of %s finish !", str(archive_path))
+    return sorted(p for p in output_dir.rglob("*") if p.is_file() and p != sentinel)
 
 
 def generate_quickviews(

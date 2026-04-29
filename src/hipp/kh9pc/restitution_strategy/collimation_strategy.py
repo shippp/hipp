@@ -6,10 +6,11 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling
 from rasterio.windows import Window
+from skimage.transform import ThinPlateSplineTransform
 
 from hipp.image import remap_tif_blockwise
 from hipp.kh9pc.types import CollimationResult, RestitutionStrategy, Transformation
-from hipp.kh9pc.utils import SubImage, build_inverse_map, detect_collimation_peak, fit_ransac_poly, wrap_ransac_model_1d
+from hipp.kh9pc.utils import SubImage, detect_collimation_peak, fit_ransac_poly
 from hipp.kh9pc.vertical_detector import VerticalDetector
 
 
@@ -25,14 +26,17 @@ class CollimationStrategy(RestitutionStrategy):
     max_width_peak: int = 200
     collimation_line_dist: int = 21770
     min_inliers_treshold: float = 0.5
+    output_width: int | None = None
+    output_height: int | None = 22064
 
     def __post_init__(self) -> None:
         super().__init__()
         self.__top_: CollimationResult | None = None
         self.__bottom_: CollimationResult | None = None
+        self.__transformation_: Transformation | None = None
 
     @property
-    def is_failed(self):
+    def is_failed(self) -> bool:
         return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_treshold
 
     @property
@@ -46,6 +50,12 @@ class CollimationStrategy(RestitutionStrategy):
         if self.__bottom_ is None:
             raise RuntimeError("Call fit() before")
         return self.__bottom_
+
+    @property
+    def transformation_(self) -> Transformation:
+        if self.__transformation_ is None:
+            self.__transformation_ = self._compute_transformation()
+        return self.__transformation_
 
     def _fit(self, raster_filepath: Path) -> Self:
         if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
@@ -102,35 +112,35 @@ class CollimationStrategy(RestitutionStrategy):
             sub_img=sub_img,
         )
 
-    def get_transformation(self, output_width: int | None = None, output_height: int | None = 22064) -> Transformation:
+    def _compute_transformation(self) -> Transformation:
         left, right = self.vertical_detector.edges_
         detected_width = right - left
-        output_width = output_width or detected_width
+        output_width = self.output_width or detected_width
 
         x = np.linspace(left, right, self.grid_shape[0])
 
-        f_top_src = wrap_ransac_model_1d(self.top_.model)
-        f_bot_src = wrap_ransac_model_1d(self.bottom_.model)
+        y_top_src = self.top_.model.predict(x.reshape(-1, 1))
+        y_bot_src = self.bottom_.model.predict(x.reshape(-1, 1))
 
-        top, bot = int(np.median(f_top_src(x))), int(np.median(f_bot_src(x)))
+        top = int(np.median(y_top_src))
+        bot = top + self.collimation_line_dist
         detected_height = bot - top
-        output_height = output_height or detected_height
+        output_height = self.output_height or detected_height
 
-        def f_top_ref(x):
-            return np.full_like(x, top, dtype=np.float32)
+        y_top_dst = np.full_like(x, top)
+        y_bot_dst = np.full_like(x, bot)
 
-        def f_bot_ref(x):
-            return np.full_like(x, bot, dtype=np.float32)
+        src = np.column_stack((np.concat((x, x)), np.concat((y_top_src, y_bot_src))))
+        dst = np.column_stack((np.concat((x, x)), np.concat((y_top_dst, y_bot_dst))))
 
-        deformation = build_inverse_map(f_top_src, f_bot_src, f_top_ref, f_bot_ref)
+        # inverse source destination (important)
+        deformation = ThinPlateSplineTransform().from_estimate(dst, src)
 
+        # ---- CENTERING TO OUTPUT ----
         pad_x = (output_width - detected_width) / 2
         pad_y = (output_height - detected_height) / 2
 
-        crop_offset = (
-            int(left - pad_x),
-            int(top - pad_y),
-        )
+        crop_offset = (int(left - pad_x), int(top - pad_y))
 
         return Transformation(
             self.raster_filepath_,
@@ -140,5 +150,13 @@ class CollimationStrategy(RestitutionStrategy):
         )
 
     def transform(self, output_path: str | Path) -> None:
-        tf = self.get_transformation()
-        remap_tif_blockwise(tf.raster_filepath, output_path, tf.inverse_remap, tf.output_size)
+        tf = self.transformation_
+
+        remap_tif_blockwise(
+            tf.raster_filepath,
+            output_path,
+            tf.inverse_remap,
+            tf.output_size,
+            block_size=2**13,
+            lowres_step=100,
+        )

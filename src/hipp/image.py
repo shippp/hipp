@@ -6,7 +6,7 @@ Description: some function for the image processing
 import logging
 import warnings
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -88,6 +88,7 @@ def generate_quickview(
     scale_factor: float = 0.2,
     interpolation: int = Resampling.average,
     jpeg_quality: int = 95,
+    overwrite: bool = False,
 ) -> None:
     raster_filepath = Path(raster_filepath)
 
@@ -95,6 +96,10 @@ def generate_quickview(
         output_path = raster_filepath.parent / "quickviews" / raster_filepath.with_suffix(".jpg").name
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_path.exists() and not overwrite:
+        logger.info("Skipping generate_quickview: %s (already exists, overwrite=False)", str(output_path))
+        return
 
     with rasterio.open(raster_filepath) as src:
         width = int(src.width * scale_factor)
@@ -344,7 +349,7 @@ def remap_tif_blockwise(
                 for dst_y0 in range(0, output_size[1], block_size)
             ]
             n_blocks = len(blocks)
-            log_every = max(1, n_blocks // 10)
+            log_every = max(1, n_blocks // 100000)
 
             for block_idx, (dst_x0, dst_y0) in enumerate(blocks):
                 if block_idx % log_every == 0:

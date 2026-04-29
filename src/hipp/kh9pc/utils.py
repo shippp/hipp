@@ -69,16 +69,6 @@ def fit_ransac_poly(
     return ransac
 
 
-def wrap_ransac_model_1d(model: RANSACRegressor) -> Callable[[NDArray[np.float32]], NDArray[np.float32]]:
-    est = model.estimator_
-
-    def f(x: NDArray[np.float32]) -> NDArray[np.float32]:
-        x = np.asarray(x).reshape(-1, 1)
-        return est.predict(x).astype(np.float32, copy=False)
-
-    return f
-
-
 def generate_qc_report(output_path: str | Path, figures: list[Figure]) -> None:
     """Save a list of matplotlib figures to a PDF QC report.
 
