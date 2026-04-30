@@ -1,31 +1,31 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Self
+from typing import Self, Sequence
 
 import cv2
 import numpy as np
-import pandas as pd
 import rasterio
 from rasterio.windows import Window
 
-from hipp.image import match_multi_templates
-from hipp.kh9pc.types import FiducialResult, RestitutionStrategy
-from hipp.kh9pc.utils import SubImage, create_circle_template, measure_circularity
-from hipp.kh9pc.vertical_detector import VerticalDetector
+from hipp.image import match_multiple_templates
+from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
+from hipp.kh9pc.types import FiducialResult, RestitutionStrategy, Transformation
+from hipp.kh9pc.utils import SubImage
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 @dataclass
 class FiducialStrategy(RestitutionStrategy):
-    vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
-    height_fraction: float = 0.15
+    poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
+    template_paths: Sequence[str | Path] = field(default_factory=lambda: list(_TEMPLATE_DIR.glob("*.png")))
     block_width: int = 512
     threshold: float = 0.7
-    template_fiducial_radii: list[int] = field(default_factory=lambda: [18, 25])
-    mad_window: int = 11
-    mad_threshold: float = 3.0
+    nms_threshold: float = 0.1
 
     def __post_init__(self) -> None:
         super().__init__()
+        self.__templates = [img for p in self.template_paths if (img := cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)) is not None]
         self.__top_: FiducialResult | None = None
         self.__bottom_: FiducialResult | None = None
 
@@ -41,65 +41,74 @@ class FiducialStrategy(RestitutionStrategy):
             raise RuntimeError("Call fit() before")
         return self.__bottom_
 
-    def _fit(self, raster_filepath: Path) -> Self:
-        if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
-            self.vertical_detector.fit(raster_filepath)
+    @property
+    def is_failed(self) -> bool:
+        return False
 
-        col_start, col_end = self.vertical_detector.edges_
-        template_dict = {
-            f"circle_{r}": cv2.GaussianBlur(create_circle_template(r), (5, 5), 1.5)
-            for r in self.template_fiducial_radii
-        }
-        margin = 2 * max(self.template_fiducial_radii)
-
-        with rasterio.open(raster_filepath) as src:
-            window_height = int(src.height * self.height_fraction)
-
-            for side, row_off in {"top": 0, "bottom": src.height - window_height}.items():
-                blocks = []
-                for x in range(col_start, col_end, self.block_width):
-                    block_start = max(col_start, x - margin)
-                    block_end = min(col_end, x + self.block_width + margin)
-                    window = Window(block_start, row_off, block_end - block_start, window_height)
-                    sub_img = SubImage(src, window)
-
-                    df = match_multi_templates(sub_img.band, template_dict, margin, n_matches=2)
-
-                    max_r = max(self.template_fiducial_radii)
-                    h, w = sub_img.band.shape
-                    circularities, radii = [], []
-                    for row in df.itertuples():
-                        cx, cy = int(row.x), int(row.y)
-                        x0, x1 = max(0, cx - max_r), min(w, cx + max_r + 1)
-                        y0, y1 = max(0, cy - max_r), min(h, cy + max_r + 1)
-                        circ, rad = measure_circularity(sub_img.band[y0:y1, x0:x1])
-                        circularities.append(circ)
-                        radii.append(rad)
-                    df["circularity"] = circularities
-                    df["radius"] = radii
-
-                    df[["x", "y"]] = sub_img.to_global(df[["x", "y"]].values).astype(int)
-                    blocks.append(df)
-
-                all_candidates = (
-                    self._nms(pd.concat(blocks, ignore_index=True), radius=margin)
-                    if blocks
-                    else pd.DataFrame(columns=["template", "x", "y", "score"])
-                )
-                setattr(self, f"_FiducialStrategy__{side}_", FiducialResult(all_candidates))
-
-        return self
-
-    def _nms(self, df: pd.DataFrame, radius: int) -> pd.DataFrame:
-        df = df.sort_values("score", ascending=False).reset_index(drop=True)
-        xy = df[["x", "y"]].values.astype(float)
-        keep = np.ones(len(df), dtype=bool)
-        for i in range(len(df)):
-            if not keep[i]:
-                continue
-            dists = np.linalg.norm(xy[i + 1 :] - xy[i], axis=1)
-            keep[i + 1 :][dists < radius] = False
-        return df[keep].reset_index(drop=True)
+    @property
+    def transformation_(self) -> Transformation:
+        raise NotImplementedError
 
     def transform(self, output_path: str | Path) -> None:
         raise NotImplementedError
+
+    def _fit(self, raster_filepath: Path) -> Self:
+        if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
+            self.poly_strategy.fit(raster_filepath)
+
+        col_start, col_end = self.poly_strategy.vertical_detector.edges_
+        margin_fraction = 0.1
+
+        side_data: dict[str, tuple[list[list[int]], list[float], list[int]]] = {
+            "top": ([], [], []),
+            "bottom": ([], [], []),
+        }
+
+        with rasterio.open(raster_filepath) as src:
+            for cursor in range(col_start, col_end, self.block_width):
+                w_start = max(col_start, int(cursor - self.block_width * margin_fraction))
+                w_end = min(col_end, int(cursor + self.block_width * (1 + margin_fraction)))
+                w_width = w_end - w_start
+                w_center = w_start + w_width // 2
+
+                top_row = int(self.poly_strategy.top_.model.predict(np.array([[w_center]])).flat[0])
+                bot_row = int(self.poly_strategy.bottom_.model.predict(np.array([[w_center]])).flat[0])
+
+                for side, window in {
+                    "top": Window(w_start, 0, w_width, top_row),
+                    "bottom": Window(w_start, bot_row, w_width, src.height - bot_row),
+                }.items():
+                    if window.height <= 0 or window.width <= 0:
+                        continue
+                    sub_image = SubImage(src, window)
+
+                    _boxes, _scores, _template_ids = match_multiple_templates(
+                        image=sub_image.band,
+                        templates=self.__templates,
+                        threshold=self.threshold,
+                        nms_threshold=self.nms_threshold,
+                    )
+
+                    acc_boxes, acc_scores, acc_ids = side_data[side]
+                    for box in _boxes:
+                        x, y, w, h = box
+                        gx, gy = sub_image.to_global(np.array([x, y], dtype=np.float64))
+                        acc_boxes.append([int(gx), int(gy), w, h])
+                    acc_scores.extend(_scores)
+                    acc_ids.extend(_template_ids)
+
+        for side in ("top", "bottom"):
+            boxes, scores, template_ids = side_data[side]
+
+            if boxes:
+                indices = cv2.dnn.NMSBoxes(
+                    boxes, scores, score_threshold=self.threshold, nms_threshold=self.nms_threshold
+                )
+                indices_np = np.array(indices).reshape(-1)
+                boxes = [boxes[i] for i in indices_np]
+                scores = [scores[i] for i in indices_np]
+                template_ids = [template_ids[i] for i in indices_np]
+
+            setattr(self, f"_FiducialStrategy__{side}_", FiducialResult(boxes, scores, template_ids))
+
+        return self

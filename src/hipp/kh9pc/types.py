@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, Callable, Self
 
 import numpy as np
-import pandas as pd
 from numpy.typing import NDArray
 from sklearn.linear_model import RANSACRegressor
 
@@ -115,7 +114,9 @@ class FlatResult:
 
 @dataclass
 class FiducialResult:
-    candidates: pd.DataFrame
+    boxes: list[list[int]]  # (x, y, w, h) in global coordinates
+    scores: list[float]
+    template_ids: list[int]
 
 
 @dataclass

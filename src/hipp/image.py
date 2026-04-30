@@ -6,18 +6,16 @@ Description: some function for the image processing
 import logging
 import warnings
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import cv2
 import numpy as np
-import pandas as pd
 import rasterio
 from numpy.typing import NDArray
 from rasterio.errors import NotGeoreferencedWarning
-from rasterio.warp import Resampling, reproject
+from rasterio.warp import Resampling
 from rasterio.windows import Window
 from scipy.interpolate import RectBivariateSpline
-from skimage.transform import AffineTransform, ThinPlateSplineTransform
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
@@ -419,298 +417,72 @@ def remap_tif_blockwise(
                 dst.write(remapped_block, 1, window=dst_window)
 
 
-def remap_tif_blockwise_from_points(
-    input_path: str | Path,
-    output_path: str | Path,
-    src_points: NDArray[np.float32],
-    dst_points: NDArray[np.float32],
-    output_size: tuple[int, int] | None = None,
-    transformation: str = "tps",
-    interpolation: int = cv2.INTER_CUBIC,
-) -> None:
+def match_multiple_templates(
+    image: cv2.typing.MatLike,
+    templates: list[cv2.typing.MatLike],
+    threshold: float = 0.8,
+    method: int = cv2.TM_CCOEFF_NORMED,
+    nms_threshold: float = 0.3,
+) -> tuple[list[tuple[int, int, int, int]], list[float], list[int]]:
     """
-    Apply a geometric remapping defined by control point correspondences to a GeoTIFF.
-
-    Wraps :func:`remap_tif_blockwise` with a higher-level interface: fits either a
-    Thin Plate Spline (TPS) or affine transform from ``dst_points`` → ``src_points``
-    (inverse mapping direction), then delegates remapping. Block size and
-    ``lowres_step`` are set automatically per transform type.
+    Match multiple templates and return filtered detections.
 
     Parameters
     ----------
-    input_path : str or Path
-        Path to the input GeoTIFF file.
-    output_path : str or Path
-        Destination path for the remapped output GeoTIFF.
-    src_points : NDArray[np.float32], shape (N, 2)
-        Control points in the source (input) image, as (x, y) columns.
-    dst_points : NDArray[np.float32], shape (N, 2)
-        Corresponding control points in the destination (output) image.
-    output_size : tuple[int, int] or None, optional
-        Output dimensions as (width, height). If None, uses input dimensions.
-    transformation : {"tps", "affine"}, default "tps"
-        Transform type. ``"tps"`` uses a Thin Plate Spline (flexible, suited for
-        distorted imagery); ``"affine"`` uses a global affine fit (fast, suited for
-        nearly-flat imagery).
-    interpolation : int, default cv2.INTER_CUBIC
-        OpenCV interpolation flag passed to :func:`remap_tif_blockwise`.
-    """
-    inverse_remap: Callable[[NDArray[np.float32]], NDArray[np.float32]]
-    if transformation == "tps":
-        inverse_remap = ThinPlateSplineTransform.from_estimate(dst_points, src_points)
-        block_size = 2**13
-        lowres_step = 100
-    elif transformation == "affine":
-        inverse_remap = AffineTransform.from_estimate(dst_points, src_points)
-        block_size = 256
-        lowres_step = None
-    else:
-        raise ValueError(f"{transformation!r} not supported, use 'tps' or 'affine'")
+    image : np.ndarray
+        Input image.
+    templates : list of np.ndarray
+        List of templates.
+    threshold : float
+        Matching score threshold.
+    method : int
+        OpenCV template matching method.
+    nms_threshold : float
+        IoU threshold for NMS.
 
-    remap_tif_blockwise(
-        input_path=input_path,
-        output_path=output_path,
-        inverse_remap_function=inverse_remap,
-        output_size=output_size,
-        block_size=block_size,
-        interpolation=interpolation,
-        lowres_step=lowres_step,
+    Returns
+    -------
+    boxes : list of tuple
+        (x, y, w, h)
+    scores : list of float
+    template_ids : list of int
+        Index of template for each detection
+    """
+
+    all_boxes: list[tuple[int, int, int, int]] = []
+    all_scores: list[float] = []
+    all_template_ids: list[int] = []
+
+    # --- Collect detections ---
+    for tid, template in enumerate(templates):
+        res = cv2.matchTemplate(image, template, method)
+        h, w = template.shape[:2]
+
+        ys, xs = np.where(res >= threshold)
+
+        for x, y in zip(xs, ys):
+            all_boxes.append((int(x), int(y), int(w), int(h)))
+            all_scores.append(float(res[y, x]))
+            all_template_ids.append(tid)
+
+    if not all_boxes:
+        return [], [], []
+
+    # --- Apply global NMS ---
+    indices = cv2.dnn.NMSBoxes(
+        all_boxes,
+        all_scores,
+        score_threshold=threshold,
+        nms_threshold=nms_threshold,
     )
 
+    if len(indices) == 0:
+        return [], [], []
 
-def warp_raster_pixels(
-    raster_filepath: str | Path,
-    output_raster_filepath: str | Path,
-    transformation_matrix: cv2.typing.MatLike,
-    output_size: None | tuple[int, int] = None,
-    max_workers: int = 5,
-    resampling: int = Resampling.cubic,
-    band_idx: int = 1,
-) -> None:
-    """
-    Apply a pixel-wise affine warp to a raster band and save the result to a new file.
+    indices_np = np.array(indices).reshape(-1)
 
-    The function reprojects the selected raster band using a custom affine transformation
-    (e.g., translation, rotation, scaling) provided as a 2D transformation matrix.
-    The pixel grid of the output raster is updated to reflect the transformation, while
-    preserving the original spatial reference system.
+    boxes = [all_boxes[i] for i in indices_np]
+    scores = [all_scores[i] for i in indices_np]
+    template_ids = [all_template_ids[i] for i in indices_np]
 
-    Parameters
-    ----------
-    raster_filepath : str
-        Path to the input raster file.
-    output_raster_filepath : str
-        Path where the warped raster will be written.
-    transformation_matrix : cv2.typing.MatLike
-        A 2×3 affine-like transformation matrix (as used in OpenCV) defining the warp
-        to apply in pixel space.
-    output_size : tuple[int, int] or None, optional
-        Dimensions (width, height) of the output raster. If None (default), the input
-        raster dimensions are used.
-    max_workers : int, default 5
-        Number of threads to use during reprojection.
-    resampling : int, default rasterio.warp.Resampling.cubic
-        Resampling method applied during the warp (e.g., nearest, bilinear, cubic).
-    band_idx : int, default 1
-        Index of the raster band (1-based) to process.
-
-    Returns
-    -------
-    None
-        The warped raster is written to `output_raster_filepath`.
-
-    Notes
-    -----
-    - Only one band is processed at a time. For multi-band rasters, call the function
-      once per band or extend it accordingly.
-    - The output transform is temporarily updated to apply the warp, then reset to the
-      original transform to keep the spatial reference consistent.
-    - No CRS transformation is performed; warping is done strictly in pixel space.
-    """
-    affine_transform = rasterio.Affine(*transformation_matrix[:2].flatten())
-
-    # create the parent output directory if necessary
-    Path(output_raster_filepath).parent.mkdir(exist_ok=True, parents=True)
-
-    with rasterio.open(raster_filepath) as src:
-        output_size = output_size if output_size else (src.width, src.height)
-        profile = src.profile.copy()
-        profile.update(
-            {
-                "width": output_size[0],
-                "height": output_size[1],
-                "transform": src.transform * ~affine_transform,
-                "compress": "lzw",
-                "BIGTIFF": "YES",
-            }
-        )
-        with rasterio.open(output_raster_filepath, "w", **profile) as dst:
-            reproject(
-                source=rasterio.band(src, band_idx),
-                destination=rasterio.band(dst, band_idx),
-                resampling=resampling,
-                num_threads=max_workers,
-            )
-            dst.transform = src.transform
-
-
-def apply_clahe_to_tif_blockwise(
-    input_tif_path: str,
-    output_tif_path: str,
-    block_size: int = 256,
-    clip_limit: float = 2.0,
-    tile_grid_size: tuple[int, int] = (8, 8),
-) -> None:
-    """
-    Apply CLAHE on a GeoTIFF image block by block and save the result.
-
-    Args:
-        input_tif_path (str): Path to input .tif image.
-        output_tif_path (str): Path to save the output .tif image.
-        block_size (int): Size of the square block/window to process.
-        clip_limit (float): CLAHE clip limit parameter.
-        tile_grid_size (tuple[int, int]): CLAHE tile grid size.
-
-    """
-
-    # Open source image with rasterio
-    with rasterio.open(input_tif_path) as src:
-        profile = src.profile.copy()
-
-        # Update profile for output
-        profile.update(
-            dtype=rasterio.uint8,  # CLAHE output is uint8
-            count=src.count,
-            compress="lzw",
-            bigtiff="TRUE",
-        )
-
-        # Create CLAHE object from OpenCV
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-
-        with rasterio.open(output_tif_path, "w", **profile) as dst:
-            height = src.height
-            width = src.width
-
-            # Read only the first band (grayscale)
-            for row_off in range(0, height, block_size):
-                for col_off in range(0, width, block_size):
-                    # Define window dimensions (may be smaller on edges)
-                    win_width = min(block_size, width - col_off)
-                    win_height = min(block_size, height - row_off)
-
-                    window = Window(col_off, row_off, win_width, win_height)
-
-                    # Read block from source (as ndarray)
-                    block = src.read(1, window=window)
-
-                    # Write result block to destination
-                    dst.write(clahe.apply(block), 1, window=window)
-
-
-def match_multi_templates(
-    images: cv2.typing.MatLike,
-    template_dict: dict[str, cv2.typing.MatLike],
-    merged_dist: float,
-    n_matches: int = 1,
-    return_centers: bool = True,
-    method: int = cv2.TM_CCOEFF_NORMED,
-) -> pd.DataFrame:
-    """Find top-N matches for each template, then merge detections that are spatially close.
-
-    Runs :func:`match_template` for every template in ``template_dict`` and
-    aggregates all detections into a single DataFrame.  Detections whose
-    centres are within ``merged_dist`` pixels of each other are collapsed into
-    a single row that keeps the highest score among the group.
-
-    Parameters
-    ----------
-    images : cv2.typing.MatLike
-        Grayscale or colour source image to search in.
-    template_dict : dict[str, cv2.typing.MatLike]
-        Mapping of template name → template patch.
-    merged_dist : float
-        Maximum distance (in pixels) between two detections for them to be
-        considered duplicates.  Detections closer than this threshold are merged
-        by keeping the one with the highest score.
-    n_matches : int, optional
-        Number of matches to return per template, by default 1.
-    return_centers : bool, optional
-        If ``True`` (default), coordinates refer to the centre of each match.
-        If ``False``, coordinates refer to the top-left corner.
-    method : int, optional
-        OpenCV template-matching metric, by default ``cv2.TM_CCOEFF_NORMED``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: ``template``, ``x``, ``y``, ``score``.
-        One row per merged detection, sorted by descending score.
-    """
-    all_rows = []
-    for name, template in template_dict.items():
-        df = match_template(images, template, n_matches=n_matches, return_centers=return_centers, method=method)
-        df.insert(0, "template", name)
-        all_rows.append(df)
-
-    if not all_rows:
-        return pd.DataFrame(columns=["template", "x", "y", "score"])
-
-    detections = pd.concat(all_rows, ignore_index=True).sort_values("score", ascending=False)
-
-    kept: list[dict[str, Any]] = []
-    for row in detections.itertuples(index=False):
-        x, y = row.x, row.y
-        if all(np.hypot(x - k["x"], y - k["y"]) >= merged_dist for k in kept):
-            kept.append({"template": row.template, "x": x, "y": y, "score": row.score})
-
-    return pd.DataFrame(kept, columns=["template", "x", "y", "score"])
-
-
-def match_template(
-    image: cv2.typing.MatLike,
-    template: cv2.typing.MatLike,
-    n_matches: int = 1,
-    return_centers: bool = True,
-    method: int = cv2.TM_CCOEFF_NORMED,
-) -> pd.DataFrame:
-    """Find the top-N occurrences of a template in an image.
-
-    Uses OpenCV's ``matchTemplate`` and iteratively suppresses already-found
-    regions so that each successive match is distinct.
-
-    Parameters
-    ----------
-    image : cv2.typing.MatLike
-        Grayscale or colour source image to search in.
-    template : cv2.typing.MatLike
-        Patch to search for. Must be smaller than ``image``.
-    n_matches : int, optional
-        Number of matches to return, by default 1.
-    return_centers : bool, optional
-        If ``True`` (default), return the centre pixel of each match.
-        If ``False``, return the top-left corner of the matched bounding box.
-    method : int, optional
-        OpenCV template-matching metric, by default ``cv2.TM_CCOEFF_NORMED``.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: ``x``, ``y``, ``score``. Sorted by descending score.
-    """
-    h, w = template.shape[:2]
-    res = cv2.matchTemplate(image, template, method)
-
-    rows = []
-    for _ in range(n_matches):
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        x, y = max_loc
-
-        y0, x0 = max(0, y - h + 1), max(0, x - w + 1)
-        res[y0 : y + h, x0 : x + w] = -np.inf
-
-        if return_centers:
-            x, y = x + w // 2, y + h // 2
-        rows.append({"x": x, "y": y, "score": float(max_val)})
-
-    return pd.DataFrame(rows, columns=["x", "y", "score"])
+    return boxes, scores, template_ids

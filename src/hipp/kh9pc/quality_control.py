@@ -1,6 +1,3 @@
-from typing import Any
-
-import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
@@ -10,6 +7,7 @@ from rasterio.warp import Resampling
 from rasterio.windows import Window
 
 from hipp.kh9pc.restitution_strategy.collimation_strategy import CollimationStrategy
+from hipp.kh9pc.restitution_strategy.fiducial_strategy import FiducialStrategy
 from hipp.kh9pc.restitution_strategy.flat_strategy import FlatStrategy
 from hipp.kh9pc.restitution_strategy.mixed_strategy import MixedStrategy
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
@@ -203,6 +201,62 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
 
 
 # ---------------------------------------------------------------------------
+# CollimationStrategy
+# ---------------------------------------------------------------------------
+
+
+def plot_fiducal_detected_profiles(detector: FiducialStrategy) -> Figure:
+    fig, axes = plt.subplots(2, 1, figsize=(8, 4), constrained_layout=True)
+    fig.suptitle("Fiducial detected profiles", fontsize=12, fontweight="bold")
+
+    for ax, side, side_result in zip(axes, ("top", "bottom"), (detector.top_, detector.bottom_)):
+        count = len(side_result.boxes)
+        mean_score = float(np.mean(side_result.scores)) if side_result.scores else float("nan")
+
+        if count > 0:
+            boxes = np.array(side_result.boxes)
+            x, y = boxes[:, 0], boxes[:, 1]
+            ax.scatter(x, y, marker="+")
+
+        ax.set_title(f"{side}  —  {count} templates detected, mean score = {mean_score:.3f}")
+        ax.set_xlabel("x (global px)")
+        ax.set_ylabel("y (global px)")
+        ax.invert_yaxis()
+
+    return fig
+
+
+def plot_fiducial_detected_boxs(detector: FiducialStrategy) -> tuple[Figure, Figure]:
+    figures: list[Figure] = []
+
+    for side, side_result in zip(("top", "bottom"), (detector.top_, detector.bottom_)):
+        boxes = side_result.boxes
+        scores = side_result.scores
+        template_ids = side_result.template_ids
+        n = len(boxes)
+
+        grid = max(1, int(np.ceil(np.sqrt(n))))
+        fig, axes_2d = plt.subplots(grid, grid, figsize=(grid * 2, grid * 2), squeeze=False, constrained_layout=True)
+        fig.suptitle(f"Detected fiducial boxes — {side}  ({n} boxes)", fontsize=11, fontweight="bold")
+        axes = axes_2d.flatten()
+
+        with rasterio.open(detector.raster_filepath_) as src:
+            for ax, box, score, tid in zip(axes, boxes, scores, template_ids):
+                x, y, w, h = box
+                band = src.read(1, window=Window(x, y, w, h))
+                ax.imshow(band, cmap="gray", interpolation="nearest")
+                ax.set_title(f"tpl={tid}  score={score:.3f}", fontsize=7)
+                ax.axis("off")
+
+        for ax in axes[n:]:
+            ax.axis("off")
+
+        figures.append(fig)
+
+    return figures[0], figures[1]
+
+
+# ---------------------------------------------------------------------------
 # Transformation overview (all strategies)
 # ---------------------------------------------------------------------------
 
@@ -320,80 +374,6 @@ def plot_crop_area(transform: "Transformation", figsize: tuple[int, int] = (6, 6
     ax.set_title(f"Crop visualization\ncrop_offset = ({crop_x}, {crop_y}), size = ({crop_w}, {crop_h})")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1))
 
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# Report figure builders
-# ---------------------------------------------------------------------------
-
-_STATUS_COLOR = {"ran": "#2ecc71", "skipped": "#95a5a6", "failed": "#e74c3c"}
-_STRATEGY_DESCRIPTIONS = {
-    "CollimationStrategy": (
-        "Detects collimation lines (horizontal black bands) by searching for intensity peaks in each column, "
-        "then fits a RANSAC polynomial through the detected points."
-    ),
-    "PolyStrategy": (
-        "Detects film edges via intensity rupture detection (black background → image transition), "
-        "then fits a RANSAC polynomial through the detected ruptures."
-    ),
-    "FlatStrategy": (
-        "Detects film edges as flat horizontal lines via a global intensity rupture. "
-        "Applies an affine transform (4 control points)."
-    ),
-}
-
-
-def plot_pipeline_summary(
-    step_results: list[dict[str, Any]],
-    meta: dict[str, Any] | None = None,
-) -> Figure:
-    """Pipeline step summary table with optional provenance metadata."""
-    fig, ax = plt.subplots(figsize=(11, max(3.5, len(step_results) * 0.55 + 2.0)))
-    ax.axis("off")
-    ax.set_title("Pipeline Summary", fontsize=14, fontweight="bold", pad=16)
-
-    if meta:
-        parts = []
-        if meta.get("entity_id"):
-            parts.append(f"Scene: {meta['entity_id']}")
-        if meta.get("hipp_version"):
-            parts.append(f"hipp {meta['hipp_version']}")
-        if meta.get("git_hash"):
-            parts.append(f"git {meta['git_hash']}")
-        if parts:
-            ax.text(
-                0.5,
-                0.97,
-                "  |  ".join(parts),
-                transform=ax.transAxes,
-                fontsize=9,
-                ha="center",
-                va="top",
-                color="#666666",
-            )
-
-    headers = ["Step", "Status", "Started at", "Duration"]
-    rows = []
-    cell_colors: list[list[str | tuple[float, float, float, float]]] = []
-    for r in step_results:
-        duration = f"{r['duration']:.1f} s" if r["status"] != "skipped" else "—"
-        error_suffix = f"  ✗ {r['error']}" if r["error"] else ""
-        rows.append([r["name"], r["status"] + error_suffix, r["started_at"], duration])
-        color = mcolors.to_rgba(_STATUS_COLOR.get(r["status"], "#ffffff"), alpha=0.25)
-        cell_colors.append(["white", color, "white", "white"])
-
-    table = ax.table(
-        cellText=rows,
-        colLabels=headers,
-        cellColours=cell_colors,
-        loc="center",
-        cellLoc="left",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.auto_set_column_width([0, 1, 2, 3])
-    fig.tight_layout()
     return fig
 
 
