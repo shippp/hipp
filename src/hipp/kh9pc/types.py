@@ -83,6 +83,7 @@ class VerticalEdgeResult:
     rupture_local: int
     sub_image: SubImage
     profile: NDArray[np.integer]
+    gradient_pct: float
 
 
 @dataclass

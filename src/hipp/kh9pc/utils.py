@@ -31,6 +31,30 @@ def detect_ruptures(vec: NDArray[np.number], threshold: float, reverse_scan: boo
     return idx
 
 
+def compute_gradient_pcts(
+    profile: NDArray[np.number],
+    ruptures: NDArray[np.integer],
+    window_size: int,
+    use_max: bool,
+) -> list[float]:
+    """Score each rupture by its local gradient relative to the global gradient extremum.
+
+    For a rising edge (use_max=True)  : score = max(window_gradient) / max(profile_gradient)
+    For a falling edge (use_max=False): score = min(window_gradient) / min(profile_gradient)
+    """
+    gradient = np.diff(profile.astype(np.float32))
+    global_stat = float(np.max(gradient)) if use_max else float(np.min(gradient))
+    if global_stat == 0:
+        return [0.0] * len(ruptures)
+
+    pcts: list[float] = []
+    for r in ruptures:
+        w = np.diff(profile[r - window_size : r + window_size].astype(np.float32))
+        local_stat = float(np.max(w)) if use_max else float(np.min(w))
+        pcts.append(local_stat / global_stat)
+    return pcts
+
+
 def detect_collimation_peak(x: NDArray[np.number], max_peak_width: int, sigma: int = 2) -> int:
     smooth = gaussian_filter1d(x, sigma=sigma)
 

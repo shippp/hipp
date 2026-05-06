@@ -27,7 +27,7 @@ def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
         profile = result.sub_image.band.flatten()
         ax.plot(profile, color="gray")
         ax.axvline(x=result.rupture_local, color="red", label=f"rupture (local={result.rupture_local})")
-        ax.set_title(f"{side} band profile (global col={result.position})")
+        ax.set_title(f"{side} band profile (global col={result.position})\nGradient:{result.gradient_pct:.2%}")
         ax.set_xlabel("local column index")
         ax.set_ylabel("intensity")
         ax.legend()
