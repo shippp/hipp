@@ -86,8 +86,10 @@ def fit_ransac_poly(
         StandardScaler(),
         LinearRegression(),
     )
+
+    min_samples = min(degree * 3, len(x))
     ransac = RANSACRegressor(
-        poly_model, residual_threshold=residual_threshold, min_samples=degree * 3, max_trials=max_trials
+        poly_model, residual_threshold=residual_threshold, min_samples=min_samples, max_trials=max_trials
     )
     ransac.fit(x.reshape(-1, 1), y)
     return ransac
@@ -230,6 +232,77 @@ def build_inverse_map(
         return out
 
     return inverse_map
+
+
+def compute_spatial_regularization_score(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Compute a spatial regularity score from consecutive 2D point spacing.
+
+    The score evaluates how regularly points are distributed along a
+    2D trajectory. Points are first ordered along the x-axis, then
+    Euclidean distances between consecutive points are computed.
+
+    The metric is based on the coefficient of variation (CV) of the
+    inter-point distances:
+
+        CV = std(distances) / mean(distances)
+
+    The final score is normalized into the range [0, 1]:
+
+        score = 1 / (1 + CV)
+
+    Interpretation
+    --------------
+    - score ≈ 1:
+        Highly regular spacing between points.
+    - score ≈ 0:
+        Highly irregular spacing.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        1D array containing x coordinates.
+
+    y : np.ndarray
+        1D array containing y coordinates.
+
+    Returns
+    -------
+    float
+        Spatial regularity score in the range [0, 1].
+
+    Raises
+    ------
+    ValueError
+        If input arrays have different lengths or contain fewer than
+        two points.
+    """
+    if x.shape[0] != y.shape[0]:
+        raise ValueError("x and y must have the same length.")
+
+    if x.shape[0] < 2:
+        raise ValueError("At least two points are required.")
+
+    order = np.argsort(x)
+
+    x_sorted = x[order]
+    y_sorted = y[order]
+
+    dx = np.diff(x_sorted)
+    dy = np.diff(y_sorted)
+
+    inter_point_distances = np.hypot(dx, dy)
+
+    mean_distance = np.mean(inter_point_distances)
+
+    if mean_distance == 0:
+        return 0.0
+
+    coefficient_of_variation = np.std(inter_point_distances) / mean_distance
+
+    score = 1.0 / (1.0 + coefficient_of_variation)
+
+    return float(score)
 
 
 class SubImage:

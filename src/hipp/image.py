@@ -455,8 +455,10 @@ def match_multiple_templates(
 
     # --- Collect detections ---
     for tid, template in enumerate(templates):
-        res = cv2.matchTemplate(image, template, method)
         h, w = template.shape[:2]
+        if h > image.shape[0] or w > image.shape[1]:
+            continue
+        res = cv2.matchTemplate(image, template, method)
 
         ys, xs = np.where(res >= threshold)
 

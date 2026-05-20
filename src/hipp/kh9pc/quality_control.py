@@ -205,6 +205,73 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
 # ---------------------------------------------------------------------------
 
 
+def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
+    """Outlier filtering diagnostics: spatial scatter and feature space for top and bottom sides.
+
+    Each row corresponds to one side (top / bottom). The left column shows detections in
+    global image space (cx vs cy) with the fitted polynomial edge overlaid. The right column
+    shows the feature space (matching score vs residual to the edge model) used by DBSCAN.
+
+    In both columns points are coloured by their cluster label:
+    - green  — inlier cluster selected as the fiducial strip
+    - orange — other DBSCAN clusters (false positives kept together)
+    - gray   — DBSCAN noise (label -1)
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
+    fig.suptitle(f"Fiducial outlier filtering ({detector.raster_filepath_.stem})", fontsize=12, fontweight="bold")
+
+    sides = ("top", "bottom")
+    results = (detector.top_, detector.bottom_)
+    models = (detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model)
+
+    for row, (side, result, model) in enumerate(zip(sides, results, models)):
+        ax_spatial, ax_feat = axes[row]
+
+        filtering = result.filtering
+        if filtering is None:
+            for ax in (ax_spatial, ax_feat):
+                ax.set_visible(False)
+            continue
+
+        cx, cy = filtering.cx, filtering.cy
+        labels = filtering.labels
+        scores = np.array(filtering.scores_all)
+        residuals = filtering.residuals
+
+        # build a colour array: green=inlier, orange=other cluster, gray=noise
+        colours = np.where(
+            labels == filtering.best_cluster_label,
+            "green",
+            np.where(labels == -1, "lightgray", "orange"),
+        )
+
+        # --- left: spatial scatter (cx, cy) ---
+        ax_spatial.scatter(cx, cy, c=colours, s=20, linewidths=0)
+
+        # overlay the polynomial edge model
+        x_range = np.linspace(cx.min(), cx.max(), 300).reshape(-1, 1)
+        y_pred = model.predict(x_range).ravel()
+        ax_spatial.plot(x_range, y_pred, color="steelblue", linewidth=1.2, label="poly model")
+
+        # legend proxies
+        ax_spatial.scatter([], [], c="green", s=20, label="inliers")
+        ax_spatial.scatter([], [], c="orange", s=20, label="other cluster")
+        ax_spatial.scatter([], [], c="lightgray", s=20, label="noise")
+        ax_spatial.legend(loc="best", fontsize=7)
+        ax_spatial.invert_yaxis()
+        ax_spatial.set_title(f"{side} — spatial  (eps={filtering.best_eps:.2f}, w={filtering.best_weight:.2f})")
+        ax_spatial.set_xlabel("cx (px)")
+        ax_spatial.set_ylabel("cy (px)")
+
+        # --- right: feature space (score vs residual) ---
+        ax_feat.scatter(scores, residuals, c=colours, s=20, linewidths=0)
+        ax_feat.set_title(f"{side} — feature space")
+        ax_feat.set_xlabel("matching score")
+        ax_feat.set_ylabel("residual to poly (px)")
+
+    return fig
+
+
 def plot_fiducal_detected_profiles(detector: FiducialStrategy) -> Figure:
     fig, axes = plt.subplots(2, 1, figsize=(8, 4), constrained_layout=True)
     fig.suptitle("Fiducial detected profiles", fontsize=12, fontweight="bold")
@@ -403,6 +470,14 @@ def get_figures(fitting_class: FittingClass) -> list[Figure]:
             plot_collimation_distortions(fitting_class),
             plot_deformation_grid(fitting_class.transformation_),
             plot_crop_area(fitting_class.transformation_),
+        ]
+    if isinstance(fitting_class, FiducialStrategy):
+        return [
+            *get_figures(fitting_class.poly_strategy),
+            plot_fiducial_filtering(fitting_class),
+            plot_fiducal_detected_profiles(fitting_class),
+            plot_fiducial_detected_boxs(fitting_class)[0],
+            plot_fiducial_detected_boxs(fitting_class)[1],
         ]
     if isinstance(fitting_class, MixedStrategy):
         return get_figures(fitting_class.selected_strategy_)
