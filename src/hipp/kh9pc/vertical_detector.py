@@ -25,8 +25,7 @@ class VerticalDetector(FittingClass):
 
     def __post_init__(self) -> None:
         super().__init__()
-        self.__left_: VerticalEdgeResult | None = None
-        self.__right_: VerticalEdgeResult | None = None
+        self._results: dict[str, VerticalEdgeResult] = {}
 
     @property
     def is_failed(self) -> bool:
@@ -34,15 +33,15 @@ class VerticalDetector(FittingClass):
 
     @property
     def left_(self) -> VerticalEdgeResult:
-        if self.__left_ is None:
+        if "left" not in self._results:
             raise RuntimeError("left edge not available — call fit() first")
-        return self.__left_
+        return self._results["left"]
 
     @property
     def right_(self) -> VerticalEdgeResult:
-        if self.__right_ is None:
+        if "right" not in self._results:
             raise RuntimeError("right edge not available — call fit() first")
-        return self.__right_
+        return self._results["right"]
 
     @property
     def edges_(self) -> tuple[int, int]:
@@ -88,6 +87,6 @@ class VerticalDetector(FittingClass):
                     profile=profile,
                     gradient_pct=gradient_pct,
                 )
-                setattr(self, f"_VerticalDetector__{side}_", result)
+                self._results[side] = result
 
         return self

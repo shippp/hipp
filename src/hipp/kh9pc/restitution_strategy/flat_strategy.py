@@ -23,8 +23,7 @@ class FlatStrategy(RestitutionStrategy):
 
     def __post_init__(self) -> None:
         super().__init__()
-        self.__top_: FlatResult | None = None
-        self.__bottom_: FlatResult | None = None
+        self._results: dict[str, FlatResult] = {}
         self.__transform_: Transformation | None = None
 
     @property
@@ -33,15 +32,15 @@ class FlatStrategy(RestitutionStrategy):
 
     @property
     def top_(self) -> FlatResult:
-        if self.__top_ is None:
+        if "top" not in self._results:
             raise RuntimeError("Call fit() before")
-        return self.__top_
+        return self._results["top"]
 
     @property
     def bottom_(self) -> FlatResult:
-        if self.__bottom_ is None:
+        if "bottom" not in self._results:
             raise RuntimeError("Call fit() before")
-        return self.__bottom_
+        return self._results["bottom"]
 
     @property
     def transformation_(self) -> Transformation:
@@ -65,7 +64,7 @@ class FlatStrategy(RestitutionStrategy):
                 "bottom": Window(col_off, src.height - window_height, window_width, window_height),
             }.items():
                 sub_image = SubImage(src, window, out_shape)
-                setattr(self, f"_FlatStrategy__{side}_", self._process_side(sub_image, side))
+                self._results[side] = self._process_side(sub_image, side)
 
         return self
 

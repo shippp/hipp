@@ -31,8 +31,7 @@ class CollimationStrategy(RestitutionStrategy):
 
     def __post_init__(self) -> None:
         super().__init__()
-        self.__top_: CollimationResult | None = None
-        self.__bottom_: CollimationResult | None = None
+        self._results: dict[str, CollimationResult] = {}
         self.__transformation_: Transformation | None = None
 
     @property
@@ -41,15 +40,15 @@ class CollimationStrategy(RestitutionStrategy):
 
     @property
     def top_(self) -> CollimationResult:
-        if self.__top_ is None:
+        if "top" not in self._results:
             raise RuntimeError("Call fit() before")
-        return self.__top_
+        return self._results["top"]
 
     @property
     def bottom_(self) -> CollimationResult:
-        if self.__bottom_ is None:
+        if "bottom" not in self._results:
             raise RuntimeError("Call fit() before")
-        return self.__bottom_
+        return self._results["bottom"]
 
     @property
     def transformation_(self) -> Transformation:
@@ -73,7 +72,7 @@ class CollimationStrategy(RestitutionStrategy):
                 "bottom": Window(col_off, src.height - window_height, window_width, window_height),
             }.items():
                 sub_img = SubImage(src, window, out_shape, resampling=Resampling.average)
-                setattr(self, f"_CollimationStrategy__{side}_", self._process_side(side, sub_img))
+                self._results[side] = self._process_side(side, sub_img)
 
         return self
 
