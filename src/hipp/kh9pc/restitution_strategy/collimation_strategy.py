@@ -9,20 +9,20 @@ from rasterio.windows import Window
 from skimage.transform import ThinPlateSplineTransform
 
 from hipp.image import remap_tif_blockwise
+from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
 from hipp.kh9pc.types import CollimationResult, RestitutionStrategy, Transformation
 from hipp.kh9pc.utils import SubImage, detect_collimation_peak, fit_ransac_poly
-from hipp.kh9pc.vertical_detector import VerticalDetector
 
 
 @dataclass
 class CollimationStrategy(RestitutionStrategy):
-    vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
+    poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
     polynomial_degree: int = 5
     ransac_residual_threshold: float = 80.0
     ransac_max_trials: int = 1000
     grid_shape: tuple[int, int] = (100, 50)
     stride: int = 10
-    height_fraction: float = 0.15
+    refinement_fraction: float = 0.03
     max_width_peak: int = 200
     collimation_line_dist: int = 21770
     min_inliers_treshold: float = 0.5
@@ -57,19 +57,23 @@ class CollimationStrategy(RestitutionStrategy):
         return self.__transformation_
 
     def _fit(self, raster_filepath: Path) -> Self:
-        if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
-            self.vertical_detector.fit(raster_filepath)
+        if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
+            self.poly_strategy.fit(raster_filepath)
 
-        col_off, col_end = self.vertical_detector.edges_
+        col_off, col_end = self.poly_strategy.vertical_detector.edges_
         window_width = col_end - col_off
+        col_center = (col_off + col_end) // 2
 
         with rasterio.open(raster_filepath) as src:
-            window_height = int(src.height * self.height_fraction)
+            window_height = int(src.height * self.refinement_fraction)
             out_shape = (1, window_height // self.stride, self.grid_shape[0])
 
+            top_edge = int(self.poly_strategy.top_.model.predict(np.array([[col_center]])).flat[0])
+            bot_edge = int(self.poly_strategy.bottom_.model.predict(np.array([[col_center]])).flat[0])
+
             for side, window in {
-                "top": Window(col_off, 0, window_width, window_height),
-                "bottom": Window(col_off, src.height - window_height, window_width, window_height),
+                "top": Window(col_off, top_edge, window_width, window_height),
+                "bottom": Window(col_off, bot_edge - window_height, window_width, window_height),
             }.items():
                 sub_img = SubImage(src, window, out_shape, resampling=Resampling.average)
                 self._results[side] = self._process_side(side, sub_img)
@@ -112,7 +116,7 @@ class CollimationStrategy(RestitutionStrategy):
         )
 
     def _compute_transformation(self) -> Transformation:
-        left, right = self.vertical_detector.edges_
+        left, right = self.poly_strategy.vertical_detector.edges_
         detected_width = right - left
         output_width = self.output_width or detected_width
 

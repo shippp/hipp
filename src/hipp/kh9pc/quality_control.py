@@ -527,43 +527,53 @@ def plot_crop_area(transform: "Transformation", figsize: tuple[int, int] = (6, 6
     return fig
 
 
-def get_figures(fitting_class: FittingClass) -> list[Figure]:
+def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -> list[Figure]:
     """All QC figures for a fitted fitting_class."""
     if isinstance(fitting_class, VerticalDetector):
         return [plot_vertical_edges(fitting_class), plot_vertical_ruptures(fitting_class)]
     if isinstance(fitting_class, FlatStrategy):
         return [
-            *get_figures(fitting_class.vertical_detector),
+            *get_figures(fitting_class.vertical_detector, plot_transformation=False),
             plot_flat_edges(fitting_class),
             plot_flat_ruptures(fitting_class),
-            plot_crop_area(fitting_class.transformation_),
+            *([plot_crop_area(fitting_class.transformation_)] if plot_transformation else []),
         ]
     if isinstance(fitting_class, PolyStrategy):
         return [
-            *get_figures(fitting_class.vertical_detector),
+            *get_figures(fitting_class.vertical_detector, plot_transformation=False),
             plot_poly_edges(fitting_class),
             plot_poly_distortions(fitting_class),
-            plot_deformation_grid(fitting_class.transformation_),
-            plot_crop_area(fitting_class.transformation_),
+            *(
+                [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
+                if plot_transformation
+                else []
+            ),
         ]
     if isinstance(fitting_class, CollimationStrategy):
         return [
-            *get_figures(fitting_class.vertical_detector),
+            *get_figures(fitting_class.poly_strategy, plot_transformation=False),
             plot_collimation_edges(fitting_class),
             plot_collimation_distortions(fitting_class),
-            plot_deformation_grid(fitting_class.transformation_),
-            plot_crop_area(fitting_class.transformation_),
+            *(
+                [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
+                if plot_transformation
+                else []
+            ),
         ]
     if isinstance(fitting_class, FiducialStrategy):
         return [
-            *get_figures(fitting_class.poly_strategy),
+            *get_figures(fitting_class.poly_strategy, plot_transformation=False),
             plot_fiducial_filtering(fitting_class),
             plot_fiducial_distortions(fitting_class),
             plot_fiducial_detected_profiles(fitting_class),
-            plot_fiducial_detected_boxs(fitting_class)[0],
-            plot_fiducial_detected_boxs(fitting_class)[1],
+            *plot_fiducial_detected_boxs(fitting_class),
+            *(
+                [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
+                if plot_transformation
+                else []
+            ),
         ]
     if isinstance(fitting_class, MixedStrategy):
-        return get_figures(fitting_class.selected_strategy_)
+        return get_figures(fitting_class.selected_strategy_, plot_transformation=plot_transformation)
 
     return []

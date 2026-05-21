@@ -23,6 +23,8 @@ class MixedStrategy(RestitutionStrategy):
         for strat in self.strategies:
             if hasattr(strat, "vertical_detector"):
                 setattr(strat, "vertical_detector", self.vertical_detector)
+            if hasattr(strat, "poly_strategy"):
+                strat.poly_strategy.vertical_detector = self.vertical_detector
 
     @property
     def is_failed(self) -> bool:
