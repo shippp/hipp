@@ -235,7 +235,7 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
 
         cx, cy = filtering.cx, filtering.cy
         labels = filtering.labels
-        scores = np.array(filtering.scores_all)
+        scores = filtering.scores_all
         residuals = filtering.residuals
 
         # build a colour array: green=inlier, orange=other cluster, gray=noise
@@ -278,11 +278,10 @@ def plot_fiducal_detected_profiles(detector: FiducialStrategy) -> Figure:
 
     for ax, side, side_result in zip(axes, ("top", "bottom"), (detector.top_, detector.bottom_)):
         count = len(side_result.boxes)
-        mean_score = float(np.mean(side_result.scores)) if side_result.scores else float("nan")
+        mean_score = float(np.mean(side_result.scores)) if count > 0 else float("nan")
 
         if count > 0:
-            boxes = np.array(side_result.boxes)
-            x, y = boxes[:, 0], boxes[:, 1]
+            x, y = side_result.boxes[:, 0], side_result.boxes[:, 1]
             ax.scatter(x, y, marker="+")
 
         ax.set_title(f"{side}  —  {count} templates detected, mean score = {mean_score:.3f}")

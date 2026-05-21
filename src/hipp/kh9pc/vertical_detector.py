@@ -21,7 +21,7 @@ class VerticalDetector(FittingClass):
     stride: int = 10
     paddings_pct: tuple[float, float, float, float] = (0.0, 0.10, 0.0, 0.10)
     window_size: int = 30
-    min_delta_pct: float = 0.1
+    min_gradient_pct: float = 0.1
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -76,7 +76,7 @@ class VerticalDetector(FittingClass):
                 gradients_pct = compute_gradient_pcts(profile, ruptures, self.window_size, use_max=(side == "left"))
 
                 # first rupture above min_delta_pct threshold (fallback to first one)
-                idx = next((i for i, x in enumerate(gradients_pct) if x > self.min_delta_pct), 0)
+                idx = next((i for i, x in enumerate(gradients_pct) if x > self.min_gradient_pct), 0)
                 rupture_local = int(ruptures[idx])
                 gradient_pct = gradients_pct[idx]
 

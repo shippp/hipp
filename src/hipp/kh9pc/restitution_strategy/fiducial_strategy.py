@@ -5,6 +5,7 @@ from typing import Literal, Self, Sequence
 import cv2
 import numpy as np
 import rasterio
+from numpy.typing import NDArray
 from rasterio.windows import Window
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
@@ -96,13 +97,18 @@ class FiducialStrategy(RestitutionStrategy):
         with rasterio.open(raster_filepath) as src:
             for side in ("top", "bottom"):
                 boxes, scores, ids = self._scan_side(src, col_start, col_end, side)
-                boxes, scores, ids = self._apply_global_nms(boxes, scores, ids)
+
+                # apply NMS to remove duplicate detection
+                indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.threshold, self.nms_threshold)
+                keep = np.array(indices).reshape(-1)
+                boxes, scores, ids = boxes[keep], scores[keep], ids[keep]
+
                 filtering = self._filter_outliers(boxes, scores, ids, side)
                 keep = np.where(filtering.labels == filtering.best_cluster_label)[0]
                 self._results[side] = FiducialResult(
-                    boxes=[boxes[i] for i in keep],
-                    scores=[scores[i] for i in keep],
-                    template_ids=[ids[i] for i in keep],
+                    boxes=boxes[keep],
+                    scores=scores[keep],
+                    template_ids=ids[keep],
                     filtering=filtering,
                 )
 
@@ -114,12 +120,12 @@ class FiducialStrategy(RestitutionStrategy):
 
     def _scan_side(
         self, src: rasterio.DatasetReader, col_start: int, col_end: int, side: _Side
-    ) -> tuple[list[list[int]], list[float], list[int]]:
+    ) -> tuple[NDArray[np.int_], NDArray[np.float64], NDArray[np.int_]]:
         """Slide overlapping blocks across [col_start, col_end] for one side.
 
         Each block overlaps its neighbours by ``_BLOCK_MARGIN`` so that fiducials
         near block boundaries are not missed. Detections from all blocks are merged
-        into a single list; global NMS is applied by the caller.
+        into a single array; global NMS is applied by the caller.
 
         Parameters
         ----------
@@ -172,33 +178,14 @@ class FiducialStrategy(RestitutionStrategy):
             scores.extend(block_scores)
             template_ids.extend(block_ids)
 
-        return boxes, scores, template_ids
-
-    def _apply_global_nms(
-        self,
-        boxes: list[list[int]],
-        scores: list[float],
-        template_ids: list[int],
-    ) -> tuple[list[list[int]], list[float], list[int]]:
-        """Deduplicate detections collected across all blocks with a final NMS pass.
-
-        Without this step, fiducials near block boundaries would appear multiple
-        times because adjacent blocks overlap.
-        """
-        if boxes:
-            indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=self.threshold, nms_threshold=self.nms_threshold)
-            keep = np.array(indices).reshape(-1)
-            boxes = [boxes[i] for i in keep]
-            scores = [scores[i] for i in keep]
-            template_ids = [template_ids[i] for i in keep]
-
-        return (boxes, scores, template_ids)
+        np_boxes = np.array(boxes, dtype=np.int_).reshape(-1, 4) if boxes else np.empty((0, 4), dtype=np.int_)
+        return np_boxes, np.array(scores, dtype=np.float64), np.array(template_ids, dtype=np.int_)
 
     def _filter_outliers(
         self,
-        boxes: list[list[int]],
-        scores: list[float],
-        template_ids: list[int],
+        boxes: NDArray[np.int_],
+        scores: NDArray[np.float64],
+        template_ids: NDArray[np.int_],
         side: _Side,
     ) -> FiducialFilteringResult:
         """Identify the inlier cluster among raw detections using DBSCAN with a grid search.
@@ -235,9 +222,8 @@ class FiducialStrategy(RestitutionStrategy):
         model = self.poly_strategy.top_.model if side == "top" else self.poly_strategy.bottom_.model
 
         # box centre coordinates in global raster space
-        np_boxes = np.asarray(boxes)
-        cx = np_boxes[:, 0] + 0.5 * np_boxes[:, 2]
-        cy = np_boxes[:, 1] + 0.5 * np_boxes[:, 3]
+        cx = boxes[:, 0] + 0.5 * boxes[:, 2]
+        cy = boxes[:, 1] + 0.5 * boxes[:, 3]
 
         # vertical distance from each detection centre to the fitted polynomial edge
         residuals = np.abs(cy - model.predict(cx.reshape(-1, 1)).ravel())

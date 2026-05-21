@@ -115,9 +115,9 @@ class FlatResult:
 
 @dataclass
 class FiducialFilteringResult:
-    boxes_all: list[list[int]]
-    scores_all: list[float]
-    template_ids_all: list[int]
+    boxes_all: NDArray[np.int_]  # shape (N, 4) — (x, y, w, h) in global coordinates
+    scores_all: NDArray[np.float64]
+    template_ids_all: NDArray[np.int_]
     cx: NDArray[np.floating]
     cy: NDArray[np.floating]
     residuals: NDArray[np.floating]
@@ -129,9 +129,9 @@ class FiducialFilteringResult:
 
 @dataclass
 class FiducialResult:
-    boxes: list[list[int]]  # (x, y, w, h) in global coordinates
-    scores: list[float]
-    template_ids: list[int]
+    boxes: NDArray[np.int_]  # shape (N, 4) — (x, y, w, h) in global coordinates
+    scores: NDArray[np.float64]
+    template_ids: NDArray[np.int_]
     filtering: FiducialFilteringResult | None = None
 
 
