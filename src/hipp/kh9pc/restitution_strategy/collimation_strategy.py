@@ -25,7 +25,7 @@ class CollimationStrategy(RestitutionStrategy):
     refinement_fraction: float = 0.03
     max_width_peak: int = 200
     collimation_line_dist: int = 21770
-    min_inliers_treshold: float = 0.5
+    min_inliers_threshold: float = 0.5
     output_width: int | None = None
     output_height: int | None = 22064
 
@@ -36,7 +36,7 @@ class CollimationStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_treshold
+        return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_threshold
 
     @property
     def top_(self) -> CollimationResult:
@@ -75,22 +75,22 @@ class CollimationStrategy(RestitutionStrategy):
                 "top": Window(col_off, top_edge, window_width, window_height),
                 "bottom": Window(col_off, bot_edge - window_height, window_width, window_height),
             }.items():
-                sub_img = SubImage(src, window, out_shape, resampling=Resampling.average)
-                self._results[side] = self._process_side(side, sub_img)
+                sub_image = SubImage(src, window, out_shape, resampling=Resampling.average)
+                self._results[side] = self._process_side(sub_image, side)
 
         return self
 
-    def _process_side(self, side: str, sub_img: SubImage) -> CollimationResult:
-        _, w = sub_img.band.shape
+    def _process_side(self, sub_image: SubImage, side: str) -> CollimationResult:
+        _, w = sub_image.band.shape
 
         peaks_local = np.zeros((w, 2), dtype=int)
         for col in range(w):
-            vec = sub_img.band[:, col]
+            vec = sub_image.band[:, col]
             idx = detect_collimation_peak(vec, max_peak_width=self.max_width_peak // self.stride)
             peaks_local[col, 0] = col
             peaks_local[col, 1] = idx
 
-        peaks_global = sub_img.to_global(peaks_local).astype(int)
+        peaks_global = sub_image.to_global(peaks_local).astype(int)
 
         model = fit_ransac_poly(
             peaks_global[:, 0],
@@ -112,7 +112,7 @@ class CollimationStrategy(RestitutionStrategy):
             distortion=distortion,
             inlier_ratio=inlier_ratio,
             model=model,
-            sub_img=sub_img,
+            sub_image=sub_image,
         )
 
     def _compute_transformation(self) -> Transformation:

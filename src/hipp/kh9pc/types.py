@@ -2,7 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Self
+from typing import Callable, Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -70,8 +70,6 @@ class Transformation:
     deformation: Callable[[NDArray[np.float32]], NDArray[np.float32]]
     crop_offset: tuple[float, float] = (0, 0)
     output_size: tuple[int, int] = (0, 0)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
     def inverse_remap(self, coords: NDArray[np.float32]) -> NDArray[np.float32]:
         coords = coords + np.array([self.crop_offset[0], self.crop_offset[1]], dtype=coords.dtype)
         return self.deformation(coords)
@@ -103,7 +101,7 @@ class CollimationResult:
     distortion: NDArray[np.floating]
     inlier_ratio: float
     model: RANSACRegressor
-    sub_img: SubImage
+    sub_image: SubImage
 
 
 @dataclass

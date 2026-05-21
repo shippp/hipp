@@ -23,7 +23,7 @@ class PolyStrategy(RestitutionStrategy):
     ransac_residual_threshold: float = 80.0
     ransac_max_trials: int = 1000
     grid_shape: tuple[int, int] = (100, 50)
-    min_inliers_treshold: float = 0.5
+    min_inliers_threshold: float = 0.5
     output_width: int | None = None
     output_height: int | None = 22064
 
@@ -34,7 +34,7 @@ class PolyStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_treshold
+        return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_threshold
 
     @property
     def top_(self) -> PolyResult:

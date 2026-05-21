@@ -1,30 +1,35 @@
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from hipp.kh9pc.restitution_strategy.collimation_strategy import CollimationStrategy
+from hipp.kh9pc.restitution_strategy.fiducial_strategy import FiducialStrategy
 from hipp.kh9pc.restitution_strategy.flat_strategy import FlatStrategy
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
 from hipp.kh9pc.types import RestitutionStrategy, Transformation
-from hipp.kh9pc.vertical_detector import VerticalDetector
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MixedStrategy(RestitutionStrategy):
     strategies: list[RestitutionStrategy] = field(
-        default_factory=lambda: [CollimationStrategy(), PolyStrategy(), FlatStrategy()]
+        default_factory=lambda: [FiducialStrategy(), CollimationStrategy(), PolyStrategy(), FlatStrategy()]
     )
-    vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
+    poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
 
     def __post_init__(self) -> None:
         super().__init__()
         self.__selected_strategy_: RestitutionStrategy | None = None
 
-        # set the same vertical detector for each strategy to avoid re compute it
-        for strat in self.strategies:
+        for i, strat in enumerate(self.strategies):
             if hasattr(strat, "vertical_detector"):
-                setattr(strat, "vertical_detector", self.vertical_detector)
+                setattr(strat, "vertical_detector", self.poly_strategy.vertical_detector)
             if hasattr(strat, "poly_strategy"):
-                strat.poly_strategy.vertical_detector = self.vertical_detector
+                setattr(strat, "poly_strategy", self.poly_strategy)
+            # replace any standalone PolyStrategy with the shared instance to avoid recomputation
+            if isinstance(strat, PolyStrategy) and strat is not self.poly_strategy:
+                self.strategies[i] = self.poly_strategy
 
     @property
     def is_failed(self) -> bool:
@@ -63,15 +68,16 @@ class MixedStrategy(RestitutionStrategy):
     def _fit(self, raster_filepath: Path) -> "MixedStrategy":
         self.__selected_strategy_ = None
 
-        # fit the vertical detector if is not already fitted.
-        if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
-            self.vertical_detector.fit(raster_filepath)
+        vd = self.poly_strategy.vertical_detector
+        if not vd.is_fitted or raster_filepath != vd.raster_filepath_:
+            vd.fit(raster_filepath)
 
-        # loop around all strategies fit them until a strategy don't failed.
         for strat in self.strategies:
             try:
-                strat.fit(raster_filepath)
+                if not strat.is_fitted or raster_filepath != strat.raster_filepath_:
+                    strat.fit(raster_filepath)
             except Exception:
+                logger.warning("%s failed for %s", type(strat).__name__, raster_filepath.name, exc_info=True)
                 continue
             if not strat.is_failed:
                 self.__selected_strategy_ = strat

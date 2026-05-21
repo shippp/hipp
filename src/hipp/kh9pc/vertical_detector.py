@@ -19,6 +19,7 @@ class VerticalDetector(FittingClass):
     background_threshold: int = 20
     width_fraction: float = 0.15
     stride: int = 10
+    # tuple order: (left%, top%, right%, bottom%) — fractions of image width/height to ignore at each side
     paddings_pct: tuple[float, float, float, float] = (0.0, 0.10, 0.0, 0.10)
     window_size: int = 30
     min_gradient_pct: float = 0.1
@@ -26,10 +27,11 @@ class VerticalDetector(FittingClass):
     def __post_init__(self) -> None:
         super().__init__()
         self._results: dict[str, VerticalEdgeResult] = {}
+        self._failed: bool = False
 
     @property
     def is_failed(self) -> bool:
-        return False
+        return self._failed
 
     @property
     def left_(self) -> VerticalEdgeResult:
@@ -48,6 +50,9 @@ class VerticalDetector(FittingClass):
         return self.left_.position, self.right_.position
 
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
+        self._failed = False
+        self._results = {}
+
         with rasterio.open(raster_filepath) as src:
             pad_left = int(src.width * self.paddings_pct[0])
             pad_top = int(src.height * self.paddings_pct[1])
@@ -67,14 +72,14 @@ class VerticalDetector(FittingClass):
 
                 profile = sub_image.band.flatten()
 
-                # detect from profile all ruptures
                 ruptures = detect_ruptures(profile, self.background_threshold, reverse_scan=(side == "left"))
                 if len(ruptures) == 0:
-                    raise RuntimeError(f"No rupture detected on the {side} edge.")
+                    self._failed = True
+                    return self
 
                 gradients_pct = compute_gradient_pcts(profile, ruptures, self.window_size, use_max=(side == "left"))
 
-                # first rupture above min_delta_pct threshold (fallback to first one)
+                # first rupture above min_gradient_pct threshold (fallback to first one)
                 idx = next((i for i, x in enumerate(gradients_pct) if x > self.min_gradient_pct), 0)
                 rupture_local = int(ruptures[idx])
                 gradient_pct = gradients_pct[idx]

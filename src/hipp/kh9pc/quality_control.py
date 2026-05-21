@@ -168,7 +168,7 @@ def plot_collimation_edges(detector: CollimationStrategy) -> Figure:
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
     for ax, side, result in zip(axes, ["top", "bottom"], [detector.top_, detector.bottom_]):
-        ax.imshow(result.sub_img.band, cmap="gray", aspect="auto")
+        ax.imshow(result.sub_image.band, cmap="gray", aspect="auto")
 
         inliers = result.model.inlier_mask_
         peaks = result.peaks_local
@@ -177,7 +177,7 @@ def plot_collimation_edges(detector: CollimationStrategy) -> Figure:
 
         y_global_pred = result.model.predict(result.peaks_global[:, 0].reshape(-1, 1))
         global_pred = np.column_stack([result.peaks_global[:, 0], y_global_pred])
-        local_pred = result.sub_img.to_local(global_pred)
+        local_pred = result.sub_image.to_local(global_pred)
         ax.plot(local_pred[:, 0], local_pred[:, 1], color="blue", linewidth=1, label="model")
 
         ax.set_title(f"{side} collimation line")

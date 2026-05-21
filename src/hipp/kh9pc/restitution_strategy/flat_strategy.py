@@ -24,7 +24,7 @@ class FlatStrategy(RestitutionStrategy):
     def __post_init__(self) -> None:
         super().__init__()
         self._results: dict[str, FlatResult] = {}
-        self.__transform_: Transformation | None = None
+        self.__transformation_: Transformation | None = None
 
     @property
     def is_failed(self) -> bool:
@@ -44,9 +44,9 @@ class FlatStrategy(RestitutionStrategy):
 
     @property
     def transformation_(self) -> Transformation:
-        if self.__transform_ is None:
-            self.__transform_ = self._compute_transformation()
-        return self.__transform_
+        if self.__transformation_ is None:
+            self.__transformation_ = self._compute_transformation()
+        return self.__transformation_
 
     def _fit(self, raster_filepath: Path) -> Self:
         if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:

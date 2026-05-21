@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -180,58 +179,6 @@ def create_circle_template(radius: int, canvas_size: int | None = None) -> cv2.t
     img[(x - cx) ** 2 + (y - cy) ** 2 <= radius**2] = 255
     return img
 
-
-def build_inverse_map(
-    f_top_src: Callable[[NDArray[np.float32]], NDArray[np.float32]],
-    f_bot_src: Callable[[NDArray[np.float32]], NDArray[np.float32]],
-    f_top_ref: Callable[[NDArray[np.float32]], NDArray[np.float32]],
-    f_bot_ref: Callable[[NDArray[np.float32]], NDArray[np.float32]],
-) -> Callable[[NDArray[np.float32]], NDArray[np.float32]]:
-    """Build an inverse remap function from two pairs of curves.
-
-    Maps coordinates ``(x, y)`` to ``(x, y_src)`` via parametric interpolation
-    between ``f_top_src`` and ``f_bot_src``. The x coordinate is passed through
-    unchanged — callers are responsible for any x-axis translation.
-
-    Parameters
-    ----------
-    f_top_src, f_bot_src:
-        Top/bottom curves in source space, callable with a float64 x array.
-    f_top_ref, f_bot_ref:
-        Top/bottom reference curves in output space, typically
-        ``lambda x: np.zeros(len(x))`` and ``lambda x: np.full(len(x), h)``.
-    """
-
-    def inverse_map(coords: NDArray[np.float32]) -> NDArray[np.float32]:
-        x = coords[:, 0]
-        y = coords[:, 1]
-
-        # Reference space (output domain)
-        top_ref = f_top_ref(x)
-        bot_ref = f_bot_ref(x)
-
-        # Safe normalization (avoid division by zero)
-        denom = bot_ref - top_ref
-        np.maximum(np.abs(denom), 1e-6, out=denom)
-
-        # Parametric coordinate in [0, 1]
-        t = (y - top_ref) / denom
-        np.clip(t, 0.0, 1.0, out=t)
-
-        # Source interpolation
-        top_src = f_top_src(x)
-        bot_src = f_bot_src(x)
-
-        y_src = top_src + t * (bot_src - top_src)
-
-        # Output
-        out = np.empty_like(coords, dtype=np.float32)
-        out[:, 0] = x
-        out[:, 1] = y_src
-
-        return out
-
-    return inverse_map
 
 
 def compute_spatial_regularization_score(x: np.ndarray, y: np.ndarray) -> float:
