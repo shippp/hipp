@@ -376,7 +376,7 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
     return fig
 
 
-def plot_fiducial_detected_boxs(detector: FiducialStrategy) -> tuple[Figure, Figure]:
+def plot_fiducial_detected_boxes(detector: FiducialStrategy) -> tuple[Figure, Figure]:
     figures: list[Figure] = []
 
     for side, side_result in zip(("top", "bottom"), (detector.top_, detector.bottom_)):
@@ -566,7 +566,7 @@ def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -
             plot_fiducial_filtering(fitting_class),
             plot_fiducial_distortions(fitting_class),
             plot_fiducial_detected_profiles(fitting_class),
-            *plot_fiducial_detected_boxs(fitting_class),
+            *plot_fiducial_detected_boxes(fitting_class),
             *(
                 [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
                 if plot_transformation

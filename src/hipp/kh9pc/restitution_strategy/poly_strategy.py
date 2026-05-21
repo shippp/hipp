@@ -8,7 +8,7 @@ from rasterio.windows import Window
 from skimage.transform import ThinPlateSplineTransform
 
 from hipp.image import remap_tif_blockwise
-from hipp.kh9pc.types import PolyResult, RestitutionStrategy, Transformation
+from hipp.kh9pc.types import DEFAULT_OUTPUT_HEIGHT, PolyResult, RestitutionStrategy, Transformation
 from hipp.kh9pc.utils import SubImage, detect_ruptures, fit_ransac_poly
 from hipp.kh9pc.vertical_detector import VerticalDetector
 
@@ -25,7 +25,7 @@ class PolyStrategy(RestitutionStrategy):
     grid_shape: tuple[int, int] = (100, 50)
     min_inliers_threshold: float = 0.5
     output_width: int | None = None
-    output_height: int | None = 22064
+    output_height: int | None = DEFAULT_OUTPUT_HEIGHT
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -130,8 +130,8 @@ class PolyStrategy(RestitutionStrategy):
         y_top_dst = np.full_like(x, top)
         y_bot_dst = np.full_like(x, bot)
 
-        src = np.column_stack((np.concat((x, x)), np.concat((y_top_src, y_bot_src))))
-        dst = np.column_stack((np.concat((x, x)), np.concat((y_top_dst, y_bot_dst))))
+        src = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_src, y_bot_src))))
+        dst = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_dst, y_bot_dst))))
 
         # inverse source destination (important)
         deformation = ThinPlateSplineTransform().from_estimate(dst, src)

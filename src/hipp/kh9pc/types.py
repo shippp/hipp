@@ -12,6 +12,9 @@ from hipp.kh9pc.utils import SubImage
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_OUTPUT_HEIGHT: int = 22064
+"""Standard output height in pixels for restituted KH-9 PC images (22064 px at nominal scan resolution)."""
+
 ########################################################################
 #                           ABSTRACT CLASS
 ########################################################################
@@ -70,6 +73,7 @@ class Transformation:
     deformation: Callable[[NDArray[np.float32]], NDArray[np.float32]]
     crop_offset: tuple[float, float] = (0, 0)
     output_size: tuple[int, int] = (0, 0)
+
     def inverse_remap(self, coords: NDArray[np.float32]) -> NDArray[np.float32]:
         coords = coords + np.array([self.crop_offset[0], self.crop_offset[1]], dtype=coords.dtype)
         return self.deformation(coords)

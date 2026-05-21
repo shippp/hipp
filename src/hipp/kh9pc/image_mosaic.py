@@ -46,7 +46,7 @@ def image_mosaic(
         logger.info("Skipping image_mosaic: %s (already exists, overwrite=False)", str(output_tif))
         return
 
-    aligments = compute_sequential_alignments(
+    alignments = compute_sequential_alignments(
         image_paths,
         overlap_width=overlap_width,
         bloc_height=bloc_height,
@@ -55,7 +55,7 @@ def image_mosaic(
         ransac_residual_threshold=ransac_residual_threshold,
     )
 
-    write_mosaic(aligments, output_tif, resampling=resampling)
+    write_mosaic(alignments, output_tif, resampling=resampling)
 
 
 def compute_sequential_alignments(
@@ -208,7 +208,6 @@ def image_mosaic_asp(
     output_image_path: str | Path,
     threads: int = 0,
     cleanup: bool = True,
-    verbose: bool = True,
     dryrun: bool = False,
 ) -> None:
     """
@@ -224,8 +223,6 @@ def image_mosaic_asp(
         Number of threads to use for processing. Default is 0 (let the tool decide).
     cleanup : bool, optional
         Whether to remove temporary log and auxiliary files after processing. Default is True.
-    verbose : bool, optional
-        If True, prints detailed progress and command information. Default is True.
     dryrun : bool, optional
         If True, builds the command but does not execute it. Default is False.
     """
@@ -244,19 +241,13 @@ def image_mosaic_asp(
         str(output_image_path),
     ]
 
-    if verbose:
-        print(" ".join(cmd))
+    logger.info("Running: %s", " ".join(cmd))
 
     if not dryrun:
         try:
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=None if verbose else subprocess.DEVNULL,
-                stderr=None if verbose else subprocess.DEVNULL,
-            )
+            subprocess.run(cmd, check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
-            print(f"Error while processing {output_image_path}: {e}")
+            logger.error("image_mosaic_asp failed for %s: %s", output_image_path, e)
 
     if cleanup:
         for f in glob(f"{output_image_path}-log-image_mosaic-*.txt") + glob(f"{output_image_path}.aux.xml"):
@@ -314,7 +305,8 @@ def _extract_global_matches_from_overlap(
         height_a = src_a.height
         height_b = src_b.height
 
-        assert height_a == height_b, "Both images must have the same height for block-wise matching."
+        if height_a != height_b:
+            raise ValueError(f"Both images must have the same height for block-wise matching ({height_a} != {height_b}).")
 
         for i in range(0, height_a, bloc_height):
             current_block_height = min(bloc_height, height_a - i)

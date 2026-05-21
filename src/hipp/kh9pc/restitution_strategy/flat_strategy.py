@@ -7,7 +7,7 @@ import rasterio
 from rasterio.windows import Window
 
 from hipp.image import remap_tif_blockwise
-from hipp.kh9pc.types import FlatResult, RestitutionStrategy, Transformation
+from hipp.kh9pc.types import DEFAULT_OUTPUT_HEIGHT, FlatResult, RestitutionStrategy, Transformation
 from hipp.kh9pc.utils import SubImage, detect_ruptures
 from hipp.kh9pc.vertical_detector import VerticalDetector
 
@@ -19,7 +19,7 @@ class FlatStrategy(RestitutionStrategy):
     height_fraction: float = 0.15
     stride: int = 10
     output_width: int | None = None
-    output_height: int | None = 22064
+    output_height: int | None = DEFAULT_OUTPUT_HEIGHT
 
     def __post_init__(self) -> None:
         super().__init__()

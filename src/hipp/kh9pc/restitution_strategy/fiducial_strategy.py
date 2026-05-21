@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 
 from hipp.image import match_multiple_templates, remap_tif_blockwise
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
-from hipp.kh9pc.types import FiducialFilteringResult, FiducialResult, RestitutionStrategy, Transformation
+from hipp.kh9pc.types import DEFAULT_OUTPUT_HEIGHT, FiducialFilteringResult, FiducialResult, RestitutionStrategy, Transformation
 from hipp.kh9pc.utils import SubImage, compute_spatial_regularization_score
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -52,7 +52,7 @@ class FiducialStrategy(RestitutionStrategy):
     threshold: float = 0.7
     nms_threshold: float = 0.1
     output_width: int | None = None
-    output_height: int | None = 22064
+    output_height: int | None = DEFAULT_OUTPUT_HEIGHT
     min_fiducials: int = 10
     min_width_coverage: float = 0.7
 
@@ -350,8 +350,8 @@ class FiducialStrategy(RestitutionStrategy):
         y_top_dst = np.full_like(x, y_top_src.mean())
         y_bot_dst = np.full_like(x, y_bot_src.mean())
 
-        src = np.column_stack((np.concat((x, x)), np.concat((y_top_src, y_bot_src))))
-        dst = np.column_stack((np.concat((x, x)), np.concat((y_top_dst, y_bot_dst))))
+        src = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_src, y_bot_src))))
+        dst = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_dst, y_bot_dst))))
 
         # inverse source destination (important)
         deformation = ThinPlateSplineTransform().from_estimate(dst, src)

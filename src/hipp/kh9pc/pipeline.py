@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 def preprocess_kh9pc(
     input: str | Path | Sequence[str | Path],
     output_path: str | Path,
-    config_file: str | Path | None,
     work_dir: str | Path | None = None,
     qc_dir: str | Path | None = None,
     overwrite: bool = False,
@@ -24,7 +23,6 @@ def preprocess_kh9pc(
     # standardize path
     input_paths: Path | list[Path] = Path(input) if isinstance(input, (str, Path)) else [Path(f) for f in input]
     output_path = Path(output_path)
-    config_file = Path(config_file) if config_file else None
     work_dir = Path(work_dir) if work_dir else output_path.parent / "_work"
     qc_dir = Path(qc_dir) if qc_dir else None
 
