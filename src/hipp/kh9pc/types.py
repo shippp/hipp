@@ -125,13 +125,18 @@ class FiducialFilteringResult:
     best_cluster_label: int
     best_eps: float
     best_weight: float
+    cluster_scores: dict[int, float] = field(default_factory=dict)  # spatial score per cluster at best params
 
 
 @dataclass
 class FiducialResult:
+    centers: NDArray[np.int_] # shape (N, 2) — (x, y) in global coordinates
+    poly: np.polynomial.Polynomial
+    distortion: NDArray[np.floating]
     boxes: NDArray[np.int_]  # shape (N, 4) — (x, y, w, h) in global coordinates
     scores: NDArray[np.float64]
     template_ids: NDArray[np.int_]
+    width_coverage: float = 0.0  # fraction of the detected image width covered by fiducials
     filtering: FiducialFilteringResult | None = None
 
 

@@ -3,6 +3,7 @@ import numpy as np
 import rasterio
 from matplotlib import patches
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from rasterio.warp import Resampling
 from rasterio.windows import Window
 
@@ -12,6 +13,7 @@ from hipp.kh9pc.restitution_strategy.flat_strategy import FlatStrategy
 from hipp.kh9pc.restitution_strategy.mixed_strategy import MixedStrategy
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
 from hipp.kh9pc.types import FittingClass, Transformation
+from hipp.kh9pc.utils import SubImage
 from hipp.kh9pc.vertical_detector import VerticalDetector
 
 # ---------------------------------------------------------------------------
@@ -201,7 +203,7 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
 
 
 # ---------------------------------------------------------------------------
-# CollimationStrategy
+# FiducialStragey
 # ---------------------------------------------------------------------------
 
 
@@ -209,13 +211,13 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
     """Outlier filtering diagnostics: spatial scatter and feature space for top and bottom sides.
 
     Each row corresponds to one side (top / bottom). The left column shows detections in
-    global image space (cx vs cy) with the fitted polynomial edge overlaid. The right column
-    shows the feature space (matching score vs residual to the edge model) used by DBSCAN.
+    global image space (cx vs cy) with the fitted polynomial edge and the fiducial polynomial
+    overlaid. The right column shows the feature space (matching score vs residual to the edge
+    model) used by DBSCAN.
 
-    In both columns points are coloured by their cluster label:
-    - green  — inlier cluster selected as the fiducial strip
-    - orange — other DBSCAN clusters (false positives kept together)
-    - gray   — DBSCAN noise (label -1)
+    Each DBSCAN cluster gets a distinct colour; noise (label -1) is shown in light gray.
+    The legend lists every cluster with its size, mean matching score, and a ★ for the
+    selected inlier cluster.
     """
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
     fig.suptitle(f"Fiducial outlier filtering ({detector.raster_filepath_.stem})", fontsize=12, fontweight="bold")
@@ -223,6 +225,7 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
     sides = ("top", "bottom")
     results = (detector.top_, detector.bottom_)
     models = (detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model)
+    cmap = plt.get_cmap("tab10")
 
     for row, (side, result, model) in enumerate(zip(sides, results, models)):
         ax_spatial, ax_feat = axes[row]
@@ -238,28 +241,64 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
         scores = filtering.scores_all
         residuals = filtering.residuals
 
-        # build a colour array: green=inlier, orange=other cluster, gray=noise
-        colours = np.where(
-            labels == filtering.best_cluster_label,
-            "green",
-            np.where(labels == -1, "lightgray", "orange"),
-        )
+        # one distinct colour per cluster; noise=-1 → light gray
+        unique_labels = sorted(int(lbl) for lbl in np.unique(labels) if lbl != -1)
+        label_to_color = {lbl: cmap(i % 10) for i, lbl in enumerate(unique_labels)}
+        _noise = (0.85, 0.85, 0.85, 1.0)
+        colours = np.array([label_to_color[int(lbl)] if lbl != -1 else _noise for lbl in labels])
 
         # --- left: spatial scatter (cx, cy) ---
         ax_spatial.scatter(cx, cy, c=colours, s=20, linewidths=0)
 
-        # overlay the polynomial edge model
-        x_range = np.linspace(cx.min(), cx.max(), 300).reshape(-1, 1)
-        y_pred = model.predict(x_range).ravel()
-        ax_spatial.plot(x_range, y_pred, color="steelblue", linewidth=1.2, label="poly model")
+        x_line = np.linspace(cx.min(), cx.max(), 300)
 
-        # legend proxies
-        ax_spatial.scatter([], [], c="green", s=20, label="inliers")
-        ax_spatial.scatter([], [], c="orange", s=20, label="other cluster")
-        ax_spatial.scatter([], [], c="lightgray", s=20, label="noise")
-        ax_spatial.legend(loc="best", fontsize=7)
+        # edge model from PolyStrategy (dashed)
+        ax_spatial.plot(
+            x_line,
+            model.predict(x_line.reshape(-1, 1)).ravel(),
+            color="steelblue",
+            linewidth=1.2,
+            linestyle="--",
+        )
+
+        # fiducial polynomial fitted on the selected inliers
+        if len(result.centers) >= 2:
+            ax_spatial.plot(x_line, result.poly(x_line), color="crimson", linewidth=1.5)
+
+        # legend: one entry per cluster (count + spatial score + ★ if selected) then noise + lines
+        inlier_mask = labels == filtering.best_cluster_label
+        legend_handles: list[Line2D] = []
+        for lbl in unique_labels:
+            n = int((labels == lbl).sum())
+            spatial_score = filtering.cluster_scores.get(lbl, float("nan"))
+            star = " ★" if lbl == filtering.best_cluster_label else ""
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=label_to_color[lbl],
+                    markersize=6,
+                    label=f"cluster {lbl}{star}  n={n}  s={spatial_score:.3f}",
+                )
+            )
+        noise_n = int((labels == -1).sum())
+        legend_handles += [
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=_noise, markersize=6, label=f"noise  n={noise_n}"),
+            Line2D([0], [0], color="steelblue", linewidth=1.2, linestyle="--", label="edge model"),
+            Line2D([0], [0], color="crimson", linewidth=1.5, label="fiducial poly"),
+        ]
+        ax_feat.legend(
+            handles=legend_handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, borderaxespad=0
+        )
         ax_spatial.invert_yaxis()
-        ax_spatial.set_title(f"{side} — spatial  (eps={filtering.best_eps:.2f}, w={filtering.best_weight:.2f})")
+
+        n_inliers = int(inlier_mask.sum())
+        ax_spatial.set_title(
+            f"{side} — spatial  (eps={filtering.best_eps:.2f}, w={filtering.best_weight:.2f})\n"
+            f"inliers={n_inliers} | coverage={result.width_coverage:.1%}"
+        )
         ax_spatial.set_xlabel("cx (px)")
         ax_spatial.set_ylabel("cy (px)")
 
@@ -267,27 +306,72 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
         ax_feat.scatter(scores, residuals, c=colours, s=20, linewidths=0)
         ax_feat.set_title(f"{side} — feature space")
         ax_feat.set_xlabel("matching score")
-        ax_feat.set_ylabel("residual to poly (px)")
+        ax_feat.set_ylabel("residual to edge model (px)")
 
     return fig
 
 
-def plot_fiducal_detected_profiles(detector: FiducialStrategy) -> Figure:
-    fig, axes = plt.subplots(2, 1, figsize=(8, 4), constrained_layout=True)
-    fig.suptitle("Fiducial detected profiles", fontsize=12, fontweight="bold")
+def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
+    """Residual distortion curves (deviation from mean) for top and bottom fiducial polynomial fits."""
+    fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
 
-    for ax, side, side_result in zip(axes, ("top", "bottom"), (detector.top_, detector.bottom_)):
-        count = len(side_result.boxes)
-        mean_score = float(np.mean(side_result.scores)) if count > 0 else float("nan")
+    for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
+        ax.plot(result.distortion[:, 0], result.distortion[:, 1], label=side)
 
-        if count > 0:
-            x, y = side_result.boxes[:, 0], side_result.boxes[:, 1]
-            ax.scatter(x, y, marker="+")
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+    ax.legend()
+    ax.set_title("fiducial distortion (top & bottom)")
+    ax.set_xlabel("column (px)")
+    ax.set_ylabel("distortion (px)")
 
-        ax.set_title(f"{side}  —  {count} templates detected, mean score = {mean_score:.3f}")
-        ax.set_xlabel("x (global px)")
-        ax.set_ylabel("y (global px)")
-        ax.invert_yaxis()
+    return fig
+
+
+def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fraction: float = 0.08) -> Figure:
+    """Detected fiducial centers overlaid on the top and bottom image strips."""
+    fig, axes = plt.subplots(2, 1, figsize=(16, 5), constrained_layout=True)
+    fig.suptitle(f"Fiducial detected profiles — {detector.raster_filepath_.stem}", fontsize=12, fontweight="bold")
+
+    with rasterio.open(detector.raster_filepath_) as src:
+        window_height = int(src.height * window_height_fraction)
+        windows = [
+            Window(0, 0, src.width, window_height),
+            Window(0, src.height - window_height, src.width, window_height),
+        ]
+        edge_models = [detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model]
+
+        for ax, side, window, result, edge_model in zip(
+            axes, ["top", "bottom"], windows, [detector.top_, detector.bottom_], edge_models
+        ):
+            sub_img = SubImage(src, window, (1, 512, 4096))
+            ax.imshow(sub_img.band, cmap="gray", aspect="auto")
+
+            if len(result.centers) > 0:
+                centers_local = sub_img.to_local(result.centers.astype(np.float64))
+                ax.scatter(
+                    centers_local[:, 0],
+                    centers_local[:, 1],
+                    c="red",
+                    s=60,
+                    marker="+",
+                    linewidths=1.5,
+                    zorder=3,
+                )
+
+            x_edge = np.linspace(0, src.width, 500)
+            edge_local = sub_img.to_local(np.column_stack([x_edge, edge_model.predict(x_edge.reshape(-1, 1)).ravel()]))
+            ax.plot(edge_local[:, 0], edge_local[:, 1], color="steelblue", linewidth=1.0, linestyle="--")
+
+            n = len(result.centers)
+            if n >= 2:
+                sorted_cx = np.sort(result.centers[:, 0].astype(np.float64))
+                dists = np.diff(sorted_cx)
+                dist_mean, dist_std = float(dists.mean()), float(dists.std())
+                spacing_info = f"spacing  mean={dist_mean:.1f}px  std={dist_std:.1f}px"
+            else:
+                spacing_info = "spacing  n/a"
+            ax.set_title(f"{side}  |  fiducials={n}  |  {spacing_info}")
+            ax.axis("off")
 
     return fig
 
@@ -474,7 +558,8 @@ def get_figures(fitting_class: FittingClass) -> list[Figure]:
         return [
             *get_figures(fitting_class.poly_strategy),
             plot_fiducial_filtering(fitting_class),
-            plot_fiducal_detected_profiles(fitting_class),
+            plot_fiducial_distortions(fitting_class),
+            plot_fiducial_detected_profiles(fitting_class),
             plot_fiducial_detected_boxs(fitting_class)[0],
             plot_fiducial_detected_boxs(fitting_class)[1],
         ]

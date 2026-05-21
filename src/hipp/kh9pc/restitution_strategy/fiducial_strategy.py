@@ -7,10 +7,11 @@ import numpy as np
 import rasterio
 from numpy.typing import NDArray
 from rasterio.windows import Window
+from skimage.transform import ThinPlateSplineTransform
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
 
-from hipp.image import match_multiple_templates
+from hipp.image import match_multiple_templates, remap_tif_blockwise
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
 from hipp.kh9pc.types import FiducialFilteringResult, FiducialResult, RestitutionStrategy, Transformation
 from hipp.kh9pc.utils import SubImage, compute_spatial_regularization_score
@@ -46,9 +47,14 @@ class FiducialStrategy(RestitutionStrategy):
 
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
     template_paths: Sequence[str | Path] = field(default_factory=lambda: list(_TEMPLATE_DIR.glob("*.png")))
+    polynomial_degree: int = 7
     block_width: int = 512
     threshold: float = 0.7
     nms_threshold: float = 0.1
+    output_width: int | None = None
+    output_height: int | None = 22064
+    min_fiducials: int = 10
+    min_width_coverage: float = 0.7
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -56,6 +62,7 @@ class FiducialStrategy(RestitutionStrategy):
             img for p in self.template_paths if (img := cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)) is not None
         ]
         self._results: dict[str, FiducialResult] = {}
+        self.__transformation_: Transformation | None = None
 
     # ------------------------------------------------------------------
     # Public properties
@@ -75,14 +82,29 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        return False
+        return (
+            len(self.top_.centers) < self.min_fiducials
+            or len(self.bottom_.centers) < self.min_fiducials
+            or self.top_.width_coverage < self.min_width_coverage
+            or self.bottom_.width_coverage < self.min_width_coverage
+        )
 
     @property
     def transformation_(self) -> Transformation:
-        raise NotImplementedError
+        if self.__transformation_ is None:
+            self.__transformation_ = self._compute_transformation()
+        return self.__transformation_
 
     def transform(self, output_path: str | Path) -> None:
-        raise NotImplementedError
+        tf = self.transformation_
+        remap_tif_blockwise(
+            tf.raster_filepath,
+            output_path,
+            tf.inverse_remap,
+            tf.output_size,
+            block_size=2**13,
+            lowres_step=100,
+        )
 
     # ------------------------------------------------------------------
     # Fitting
@@ -103,12 +125,38 @@ class FiducialStrategy(RestitutionStrategy):
                 keep = np.array(indices).reshape(-1)
                 boxes, scores, ids = boxes[keep], scores[keep], ids[keep]
 
+                # filter outliers by applying clustering to find the better cluster
                 filtering = self._filter_outliers(boxes, scores, ids, side)
                 keep = np.where(filtering.labels == filtering.best_cluster_label)[0]
+                boxes, scores, ids = boxes[keep], scores[keep], ids[keep]
+
+                # compute boxes centers
+                cx = (boxes[:, 0] + 0.5 * boxes[:, 2]).astype(np.intp)
+                cy = (boxes[:, 1] + 0.5 * boxes[:, 3]).astype(np.intp)
+                centers = np.column_stack([cx, cy])
+
+                # fit poly
+                poly = np.polynomial.Polynomial.fit(cx, cy, self.polynomial_degree)
+
+                # fraction of the image width covered by detections
+                detected_width = col_end - col_start
+                width_coverage = float((cx.max() - cx.min()) / detected_width) if len(cx) >= 2 else 0.0
+
+                # compute distortion
+                start, end = self.poly_strategy.vertical_detector.edges_
+                x = np.linspace(start, end, 100)
+                y = poly(x)
+                y_distortion = y - y.mean()
+                distortion = np.column_stack([x, y_distortion])
+
                 self._results[side] = FiducialResult(
-                    boxes=boxes[keep],
-                    scores=scores[keep],
-                    template_ids=ids[keep],
+                    centers=centers,
+                    poly=poly,
+                    boxes=boxes,
+                    distortion=distortion,
+                    scores=scores,
+                    template_ids=ids,
+                    width_coverage=width_coverage,
                     filtering=filtering,
                 )
 
@@ -265,6 +313,15 @@ class FiducialStrategy(RestitutionStrategy):
                         best_labels = labels.copy()
                         best_cluster_label = label
 
+        # compute the spatial score for every cluster at the best (eps, weight) params
+        cluster_scores: dict[int, float] = {}
+        for label in np.unique(best_labels):
+            if label == -1:
+                continue
+            mask = best_labels == label
+            width_fraction = float((np.max(cx[mask]) - np.min(cx[mask])) / detected_width)
+            cluster_scores[int(label)] = compute_spatial_regularization_score(cx[mask], cy[mask]) * width_fraction
+
         return FiducialFilteringResult(
             boxes_all=boxes,
             scores_all=scores,
@@ -276,4 +333,43 @@ class FiducialStrategy(RestitutionStrategy):
             best_cluster_label=best_cluster_label,
             best_eps=best_eps,
             best_weight=best_weight,
+            cluster_scores=cluster_scores,
+        )
+
+    def _compute_transformation(self) -> Transformation:
+        left, right = self.poly_strategy.vertical_detector.edges_
+        detected_width = right - left
+        output_width = self.output_width or detected_width
+
+        x = np.linspace(left, right, self.poly_strategy.grid_shape[0])
+
+        # High-degree fiducial polynomials as control points — more precise than edge model
+        y_top_src = self.top_.poly(x)
+        y_bot_src = self.bottom_.poly(x)
+
+        y_top_dst = np.full_like(x, y_top_src.mean())
+        y_bot_dst = np.full_like(x, y_bot_src.mean())
+
+        src = np.column_stack((np.concat((x, x)), np.concat((y_top_src, y_bot_src))))
+        dst = np.column_stack((np.concat((x, x)), np.concat((y_top_dst, y_bot_dst))))
+
+        # inverse source destination (important)
+        deformation = ThinPlateSplineTransform().from_estimate(dst, src)
+
+        # Image boundaries from poly_strategy edge models for crop offset / output size
+        y_edge_top = self.poly_strategy.top_.model.predict(x.reshape(-1, 1)).ravel()
+        y_edge_bot = self.poly_strategy.bottom_.model.predict(x.reshape(-1, 1)).ravel()
+        top, bot = int(np.median(y_edge_top)), int(np.median(y_edge_bot))
+        detected_height = bot - top
+        output_height = self.output_height or detected_height
+
+        pad_x = (output_width - detected_width) / 2
+        pad_y = (output_height - detected_height) / 2
+        crop_offset = (int(left - pad_x), int(top - pad_y))
+
+        return Transformation(
+            self.raster_filepath_,
+            deformation,
+            crop_offset=crop_offset,
+            output_size=(output_width, output_height),
         )
