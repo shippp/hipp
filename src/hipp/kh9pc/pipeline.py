@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import joblib
+import matplotlib.pyplot as plt
 
 from hipp.image import generate_quickview
 from hipp.kh9pc.image_mosaic import image_mosaic
@@ -68,6 +69,7 @@ def preprocess_kh9pc(
         qc_restitution_dir.mkdir(exist_ok=True, parents=True)
         for i, figure in enumerate(get_figures(strategy)):
             figure.savefig(qc_restitution_dir / f"{i}.png")
+            plt.close(figure)
 
     # QC STEP : QUICKVIEW (skipped if no qc dir is provideed)
     if qc_dir:

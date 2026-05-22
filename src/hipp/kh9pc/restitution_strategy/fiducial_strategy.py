@@ -13,7 +13,14 @@ from sklearn.preprocessing import StandardScaler
 
 from hipp.image import match_multiple_templates, remap_tif_blockwise
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
-from hipp.kh9pc.types import DEFAULT_OUTPUT_HEIGHT, FiducialFilteringResult, FiducialResult, RestitutionStrategy, Transformation
+from hipp.kh9pc.types import (
+    DEFAULT_OUTPUT_HEIGHT,
+    DetectionError,
+    FiducialFilteringResult,
+    FiducialResult,
+    RestitutionStrategy,
+    Transformation,
+)
 from hipp.kh9pc.utils import SubImage, compute_spatial_regularization_score
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -49,7 +56,7 @@ class FiducialStrategy(RestitutionStrategy):
     template_paths: Sequence[str | Path] = field(default_factory=lambda: list(_TEMPLATE_DIR.glob("*.png")))
     polynomial_degree: int = 7
     block_width: int = 512
-    threshold: float = 0.7
+    threshold: float = 0.5
     nms_threshold: float = 0.1
     output_width: int | None = None
     output_height: int | None = DEFAULT_OUTPUT_HEIGHT
@@ -122,32 +129,29 @@ class FiducialStrategy(RestitutionStrategy):
 
                 # apply NMS to remove duplicate detection
                 indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.threshold, self.nms_threshold)
-                keep = np.array(indices).reshape(-1)
+                keep = np.array(indices).reshape(-1).astype(int)
                 boxes, scores, ids = boxes[keep], scores[keep], ids[keep]
+
+                if len(boxes) == 0:
+                    raise DetectionError(f"no fiducials detected on {side} side of {raster_filepath.name}")
 
                 # filter outliers by applying clustering to find the better cluster
                 filtering = self._filter_outliers(boxes, scores, ids, side)
                 keep = np.where(filtering.labels == filtering.best_cluster_label)[0]
                 boxes, scores, ids = boxes[keep], scores[keep], ids[keep]
 
-                # compute boxes centers
+                if len(boxes) == 0:
+                    raise DetectionError(f"no inlier cluster found on {side} side of {raster_filepath.name}")
+
                 cx = (boxes[:, 0] + 0.5 * boxes[:, 2]).astype(np.intp)
                 cy = (boxes[:, 1] + 0.5 * boxes[:, 3]).astype(np.intp)
                 centers = np.column_stack([cx, cy])
 
-                # fit poly
                 poly = np.polynomial.Polynomial.fit(cx, cy, self.polynomial_degree)
-
-                # fraction of the image width covered by detections
-                detected_width = col_end - col_start
-                width_coverage = float((cx.max() - cx.min()) / detected_width) if len(cx) >= 2 else 0.0
-
-                # compute distortion
-                start, end = self.poly_strategy.vertical_detector.edges_
-                x = np.linspace(start, end, 100)
+                x = np.linspace(col_start, col_end, 100)
                 y = poly(x)
-                y_distortion = y - y.mean()
-                distortion = np.column_stack([x, y_distortion])
+                distortion = np.column_stack([x, y - y.mean()])
+                width_coverage = float((cx.max() - cx.min()) / (col_end - col_start))
 
                 self._results[side] = FiducialResult(
                     centers=centers,
@@ -299,6 +303,8 @@ class FiducialStrategy(RestitutionStrategy):
                     if label == -1:  # DBSCAN noise points
                         continue
                     mask = labels == label
+                    if mask.sum() < 5:
+                        continue
 
                     # fraction of the total image width covered by this cluster
                     width_fraction = (np.max(cx[mask]) - np.min(cx[mask])) / detected_width
@@ -319,6 +325,8 @@ class FiducialStrategy(RestitutionStrategy):
             if label == -1:
                 continue
             mask = best_labels == label
+            if mask.sum() < 5:
+                continue
             width_fraction = float((np.max(cx[mask]) - np.min(cx[mask])) / detected_width)
             cluster_scores[int(label)] = compute_spatial_regularization_score(cx[mask], cy[mask]) * width_fraction
 

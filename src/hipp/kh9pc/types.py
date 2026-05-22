@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_OUTPUT_HEIGHT: int = 22064
 """Standard output height in pixels for restituted KH-9 PC images (22064 px at nominal scan resolution)."""
 
+
+class DetectionError(Exception):
+    """Raised when no valid detections are found during fitting."""
+
+
 ########################################################################
 #                           ABSTRACT CLASS
 ########################################################################
