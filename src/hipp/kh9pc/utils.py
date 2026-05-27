@@ -48,7 +48,7 @@ def compute_gradient_pcts(
 
     pcts: list[float] = []
     for r in ruptures:
-        w = np.diff(profile[r - window_size : r + window_size].astype(np.float32))
+        w = np.diff(profile[max(0, r - window_size) : r + window_size].astype(np.float32))
         local_stat = float(np.max(w)) if use_max else float(np.min(w))
         pcts.append(local_stat / global_stat)
     return pcts
@@ -178,7 +178,6 @@ def create_circle_template(radius: int, canvas_size: int | None = None) -> cv2.t
     y, x = np.ogrid[:canvas_size, :canvas_size]
     img[(x - cx) ** 2 + (y - cy) ** 2 <= radius**2] = 255
     return img
-
 
 
 def compute_spatial_regularization_score(x: np.ndarray, y: np.ndarray) -> float:

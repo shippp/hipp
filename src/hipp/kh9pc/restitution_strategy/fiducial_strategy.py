@@ -196,9 +196,13 @@ class FiducialStrategy(RestitutionStrategy):
         scores: list[float] = []
         template_ids: list[int] = []
 
+        detected_width = col_end - col_start
+        left_boundary = max(0, col_start - int(0.02 * detected_width))
+
         for cursor in range(col_start, col_end, self.block_width):
             # expand block by _BLOCK_MARGIN on each side to avoid missing fiducials at boundaries
-            w_start = max(col_start, int(cursor - self.block_width * _BLOCK_MARGIN))
+            # left_boundary extends 2 % of the detected width to the left of col_start
+            w_start = max(left_boundary, int(cursor - self.block_width * _BLOCK_MARGIN))
             w_end = min(col_end, int(cursor + self.block_width * (1 + _BLOCK_MARGIN)))
             w_width = w_end - w_start
             w_center = w_start + w_width // 2
