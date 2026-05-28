@@ -244,6 +244,7 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
         # one distinct colour per cluster; noise=-1 → light gray
         unique_labels = sorted(int(lbl) for lbl in np.unique(labels) if lbl != -1)
         label_to_color = {lbl: cmap(i % 10) for i, lbl in enumerate(unique_labels)}
+        legend_labels = unique_labels[:5]
         _noise = (0.85, 0.85, 0.85, 1.0)
         colours = np.array([label_to_color[int(lbl)] if lbl != -1 else _noise for lbl in labels])
 
@@ -268,7 +269,7 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
         # legend: one entry per cluster (count + spatial score + ★ if selected) then noise + lines
         inlier_mask = labels == filtering.best_cluster_label
         legend_handles: list[Line2D] = []
-        for lbl in unique_labels:
+        for lbl in legend_labels:
             n = int((labels == lbl).sum())
             spatial_score = filtering.cluster_scores.get(lbl, float("nan"))
             star = " ★" if lbl == filtering.best_cluster_label else ""

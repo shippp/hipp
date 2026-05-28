@@ -125,7 +125,7 @@ class FiducialStrategy(RestitutionStrategy):
 
         with rasterio.open(raster_filepath) as src:
             for side in ("top", "bottom"):
-                boxes, scores, ids = self._scan_side(src, col_start, col_end, side)
+                boxes, scores, ids = self._scan_side(src, 0, col_end, side)
 
                 # apply NMS to remove duplicate detection
                 indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.threshold, self.nms_threshold)
@@ -196,13 +196,9 @@ class FiducialStrategy(RestitutionStrategy):
         scores: list[float] = []
         template_ids: list[int] = []
 
-        detected_width = col_end - col_start
-        left_boundary = max(0, col_start - int(0.02 * detected_width))
-
         for cursor in range(col_start, col_end, self.block_width):
-            # expand block by _BLOCK_MARGIN on each side to avoid missing fiducials at boundaries
             # left_boundary extends 2 % of the detected width to the left of col_start
-            w_start = max(left_boundary, int(cursor - self.block_width * _BLOCK_MARGIN))
+            w_start = max(col_start, int(cursor - self.block_width * _BLOCK_MARGIN))
             w_end = min(col_end, int(cursor + self.block_width * (1 + _BLOCK_MARGIN)))
             w_width = w_end - w_start
             w_center = w_start + w_width // 2
@@ -292,6 +288,7 @@ class FiducialStrategy(RestitutionStrategy):
         X_scaled = StandardScaler().fit_transform(np.column_stack((scores, residuals)))
 
         best_score = -np.inf
+        best_secondary_score = -np.inf
         best_eps = 0.0
         best_weight = 0.0
         best_labels = np.full(len(boxes), -1, dtype=np.intp)  # default: all noise
@@ -303,6 +300,7 @@ class FiducialStrategy(RestitutionStrategy):
             for eps in np.linspace(0.1, 5, 20):
                 labels = DBSCAN(eps, min_samples=5).fit(features).labels_
 
+                cluster_scores_current: dict[int, float] = {}
                 for label in np.unique(labels):
                     if label == -1:  # DBSCAN noise points
                         continue
@@ -314,14 +312,25 @@ class FiducialStrategy(RestitutionStrategy):
                     width_fraction = (np.max(cx[mask]) - np.min(cx[mask])) / detected_width
 
                     # prefer clusters that are both spatially regular and horizontally spread
-                    score = compute_spatial_regularization_score(cx[mask], cy[mask]) * width_fraction
+                    cluster_scores_current[int(label)] = (
+                        compute_spatial_regularization_score(cx[mask], cy[mask]) * width_fraction
+                    )
 
-                    if score >= best_score:
-                        best_score = score
-                        best_eps = eps
-                        best_weight = rw
-                        best_labels = labels.copy()
-                        best_cluster_label = label
+                if not cluster_scores_current:
+                    continue
+
+                sorted_clusters = sorted(cluster_scores_current.items(), key=lambda kv: kv[1], reverse=True)
+                primary_label, primary_score = sorted_clusters[0]
+                secondary_score = sorted_clusters[1][1] if len(sorted_clusters) > 1 else 0.0
+
+                # lexicographic comparison: best cluster is primary, second best is tiebreaker
+                if (primary_score, secondary_score) > (best_score, best_secondary_score):
+                    best_score = primary_score
+                    best_secondary_score = secondary_score
+                    best_eps = eps
+                    best_weight = rw
+                    best_labels = labels.copy()
+                    best_cluster_label = primary_label
 
         # compute the spatial score for every cluster at the best (eps, weight) params
         cluster_scores: dict[int, float] = {}
