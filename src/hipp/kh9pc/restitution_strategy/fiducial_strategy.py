@@ -148,7 +148,7 @@ class FiducialStrategy(RestitutionStrategy):
                 centers = np.column_stack([cx, cy])
 
                 poly = np.polynomial.Polynomial.fit(cx, cy, self.polynomial_degree)
-                x = np.linspace(col_start, col_end, 100)
+                x = np.linspace(cx.min(), cx.max(), 100)
                 y = poly(x)
                 distortion = np.column_stack([x, y - y.mean()])
                 width_coverage = float((cx.max() - cx.min()) / (col_end - col_start))
@@ -362,25 +362,30 @@ class FiducialStrategy(RestitutionStrategy):
         detected_width = right - left
         output_width = self.output_width or detected_width
 
-        x = np.linspace(left, right, self.poly_strategy.grid_shape[0])
+        n_points = self.poly_strategy.grid_shape[0]
+
+        # Restrict control points to the range actually covered by detected fiducials on each
+        # side — extrapolating the high-degree polynomial beyond that range causes instability.
+        cx_top = self.top_.centers[:, 0]
+        cx_bot = self.bottom_.centers[:, 0]
+        x_top = np.linspace(cx_top.min(), cx_top.max(), n_points)
+        x_bot = np.linspace(cx_bot.min(), cx_bot.max(), n_points)
 
         # High-degree fiducial polynomials as control points — more precise than edge model
-        y_top_src = self.top_.poly(x)
-        y_bot_src = self.bottom_.poly(x)
+        y_top_src = self.top_.poly(x_top)
+        y_bot_src = self.bottom_.poly(x_bot)
 
-        y_top_dst = np.full_like(x, y_top_src.mean())
-        y_bot_dst = np.full_like(x, y_bot_src.mean())
+        y_top_dst = np.full_like(x_top, y_top_src.mean())
+        y_bot_dst = np.full_like(x_bot, y_bot_src.mean())
 
-        src = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_src, y_bot_src))))
-        dst = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_dst, y_bot_dst))))
+        src = np.column_stack((np.concatenate((x_top, x_bot)), np.concatenate((y_top_src, y_bot_src))))
+        dst = np.column_stack((np.concatenate((x_top, x_bot)), np.concatenate((y_top_dst, y_bot_dst))))
 
         # inverse source destination (important)
         deformation = ThinPlateSplineTransform().from_estimate(dst, src)
 
-        # Image boundaries from poly_strategy edge models for crop offset / output size
-        y_edge_top = self.poly_strategy.top_.model.predict(x.reshape(-1, 1)).ravel()
-        y_edge_bot = self.poly_strategy.bottom_.model.predict(x.reshape(-1, 1)).ravel()
-        top, bot = int(np.median(y_edge_top)), int(np.median(y_edge_bot))
+        # Image boundaries
+        top, bot = int(np.mean(y_top_src)), int(np.mean(y_bot_src))
         detected_height = bot - top
         output_height = self.output_height or detected_height
 
