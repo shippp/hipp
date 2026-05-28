@@ -13,7 +13,7 @@ from hipp.kh9pc.restitution_strategy.flat_strategy import FlatStrategy
 from hipp.kh9pc.restitution_strategy.mixed_strategy import MixedStrategy
 from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
 from hipp.kh9pc.types import FittingClass, Transformation
-from hipp.kh9pc.utils import SubImage
+from hipp.kh9pc.utils import SubImage, mean_patch_from_centers
 from hipp.kh9pc.vertical_detector import VerticalDetector
 
 # ---------------------------------------------------------------------------
@@ -333,8 +333,12 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
 
 def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fraction: float = 0.08) -> Figure:
     """Detected fiducial centers overlaid on the top and bottom image strips."""
-    fig, axes = plt.subplots(2, 1, figsize=(16, 5), constrained_layout=True)
-    fig.suptitle(f"Fiducial detected profiles — {detector.raster_filepath_.stem}", fontsize=12, fontweight="bold")
+    # 2 inset columns (one per possible cluster); hidden when unused
+    fig = plt.figure(figsize=(18, 5), constrained_layout=True)
+    fig.suptitle(f"Fiducial detected profiles — {detector.raster_filepath_.stem}", fontsize=18, fontweight="bold")
+    gs = fig.add_gridspec(2, 3, width_ratios=[14, 1, 1])
+    main_axes = [fig.add_subplot(gs[row, 0]) for row in range(2)]
+    inset_slots = [[fig.add_subplot(gs[row, col + 1]) for col in range(2)] for row in range(2)]
 
     with rasterio.open(detector.raster_filepath_) as src:
         window_height = int(src.height * window_height_fraction)
@@ -344,38 +348,95 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
         ]
         edge_models = [detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model]
 
-        for ax, side, window, result, edge_model in zip(
-            axes, ["top", "bottom"], windows, [detector.top_, detector.bottom_], edge_models
+        def _spacing_info(cx: np.ndarray) -> str:
+            if len(cx) >= 2:
+                dists = np.diff(np.sort(cx.astype(np.float64)))
+                return f"spacing  mean={float(dists.mean()):.1f}px  std={float(dists.std()):.1f}px"
+            return "spacing  n/a"
+
+        for row, (ax, side, window, result, edge_model) in enumerate(
+            zip(main_axes, ["top", "bottom"], windows, [detector.top_, detector.bottom_], edge_models)
         ):
             sub_img = SubImage(src, window, (1, 512, 4096))
             ax.imshow(sub_img.band, cmap="gray", aspect="auto")
 
-            if len(result.centers) > 0:
+            n = len(result.centers)
+            if n > 0:
                 centers_local = sub_img.to_local(result.centers.astype(np.float64))
-                ax.scatter(
-                    centers_local[:, 0],
-                    centers_local[:, 1],
-                    c="red",
-                    s=60,
-                    marker="+",
-                    linewidths=1.5,
-                    zorder=3,
+                ax.scatter(centers_local[:, 0], centers_local[:, 1], c="red", s=20, zorder=3)
+
+            ax_handles: list[Line2D] = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor="red",
+                    markersize=7,
+                    label=f"{side}  |  fiducials={n}  |  {_spacing_info(result.centers[:, 0]) if n > 0 else 'spacing  n/a'}",
                 )
+            ]
+            # (color, mean_patch) pairs, one per cluster
+            inset_data: list[tuple[str, np.ndarray]] = []
+            if n > 0:
+                mp = mean_patch_from_centers(src, result.centers.astype(np.float64))
+                if mp is not None:
+                    inset_data.append(("red", mp))
+
+            if side == "bottom" and result.filtering is not None:
+                filtering = result.filtering
+                second_candidates = sorted(
+                    [(lbl, s) for lbl, s in filtering.cluster_scores.items() if lbl != filtering.best_cluster_label],
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+                if second_candidates and second_candidates[0][1] > 0.9:
+                    second_label, _ = second_candidates[0]
+                    mask = filtering.labels == second_label
+                    second_cx = filtering.cx[mask]
+                    second_centers = np.column_stack([second_cx, filtering.cy[mask]])
+                    second_local = sub_img.to_local(second_centers)
+                    ax.scatter(second_local[:, 0], second_local[:, 1], c="orange", s=20, zorder=3)
+                    ax_handles.append(
+                        Line2D(
+                            [0],
+                            [0],
+                            marker="o",
+                            color="w",
+                            markerfacecolor="orange",
+                            markersize=7,
+                            label=f"bottom 2nd cluster  |  fiducials={int(mask.sum())}  |  {_spacing_info(second_cx)}",
+                        )
+                    )
+                    mp2 = mean_patch_from_centers(src, second_centers)
+                    if mp2 is not None:
+                        inset_data.append(("orange", mp2))
 
             x_edge = np.linspace(0, src.width, 500)
             edge_local = sub_img.to_local(np.column_stack([x_edge, edge_model.predict(x_edge.reshape(-1, 1)).ravel()]))
             ax.plot(edge_local[:, 0], edge_local[:, 1], color="steelblue", linewidth=1.0, linestyle="--")
 
-            n = len(result.centers)
-            if n >= 2:
-                sorted_cx = np.sort(result.centers[:, 0].astype(np.float64))
-                dists = np.diff(sorted_cx)
-                dist_mean, dist_std = float(dists.mean()), float(dists.std())
-                spacing_info = f"spacing  mean={dist_mean:.1f}px  std={dist_std:.1f}px"
-            else:
-                spacing_info = "spacing  n/a"
-            ax.set_title(f"{side}  |  fiducials={n}  |  {spacing_info}")
+            ax.legend(
+                handles=ax_handles,
+                loc="lower center",
+                bbox_to_anchor=(0.5, 1.0),
+                fontsize=15,
+                frameon=True,
+            )
             ax.axis("off")
+
+            # fill pre-allocated inset slots; hide unused ones
+            for col, inset_ax in enumerate(inset_slots[row]):
+                if col < len(inset_data):
+                    color, patch = inset_data[col]
+                    inset_ax.imshow(patch, cmap="gray")
+                    for spine in inset_ax.spines.values():
+                        spine.set_edgecolor(color)
+                        spine.set_linewidth(2)
+                    inset_ax.set_xticks([])
+                    inset_ax.set_yticks([])
+                else:
+                    inset_ax.set_visible(False)
 
     return fig
 

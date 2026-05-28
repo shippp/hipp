@@ -251,6 +251,59 @@ def compute_spatial_regularization_score(x: np.ndarray, y: np.ndarray) -> float:
     return float(score)
 
 
+def mean_patch_from_centers(
+    src: str | Path | rasterio.DatasetReader,
+    centers: np.ndarray,
+    half_size: int = 50,
+) -> np.ndarray | None:
+    """Compute the mean image patch (band 1) around a set of pixel centers.
+
+    Uses an incremental float64 accumulator so peak memory is O(patch_size²)
+    regardless of the number of centers. Out-of-bounds regions are zero-padded
+    before averaging (same semantics as storing full zero-padded patches).
+
+    Centers that fall entirely outside the raster are silently skipped.
+
+    Parameters
+    ----------
+    src:
+        Rasterio dataset, or path to a raster file, to read from.
+    centers:
+        Pixel coordinates (x, y) of patch centers, shape (N, 2).
+    half_size:
+        Half-side of the square patch in pixels; each patch is
+        ``(2*half_size) × (2*half_size)``.
+
+    Returns
+    -------
+    Float32 array of shape ``(2*half_size, 2*half_size)``, or ``None`` if no
+    valid patch was found.
+    """
+    if not isinstance(src, rasterio.DatasetReader):
+        with rasterio.open(src) as opened:
+            return mean_patch_from_centers(opened, centers, half_size)
+
+    size = 2 * half_size
+    accumulator = np.zeros((size, size), dtype=np.float64)
+    count = 0
+
+    x0s: np.ndarray = centers[:, 0].astype(np.intp) - half_size
+    y0s: np.ndarray = centers[:, 1].astype(np.intp) - half_size
+
+    for x0, y0 in zip(x0s, y0s):
+        x0c = max(0, int(x0))
+        y0c = max(0, int(y0))
+        x1c = min(src.width, int(x0) + size)
+        y1c = min(src.height, int(y0) + size)
+        if x1c <= x0c or y1c <= y0c:
+            continue
+        patch = src.read(1, window=Window(x0c, y0c, x1c - x0c, y1c - y0c))
+        accumulator[y0c - y0 : y0c - y0 + patch.shape[0], x0c - x0 : x0c - x0 + patch.shape[1]] += patch
+        count += 1
+
+    return (accumulator / count).astype(np.float32) if count > 0 else None
+
+
 class SubImage:
     def __init__(
         self,
