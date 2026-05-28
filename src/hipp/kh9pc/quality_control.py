@@ -150,6 +150,7 @@ def plot_poly_distortions(detector: PolyStrategy) -> Figure:
     ax.plot(detector.top_.distortion[:, 0], detector.top_.distortion[:, 1], label="top")
     ax.plot(detector.bottom_.distortion[:, 0], detector.bottom_.distortion[:, 1], label="bottom")
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+    ax.invert_yaxis()
     ax.legend()
     ax.set_title("global distortion (top & bottom)")
     ax.set_xlabel("column (px)")
@@ -194,6 +195,7 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
     for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
         ax.plot(result.distortion[:, 0], result.distortion[:, 1], label=side)
 
+    ax.invert_yaxis()
     ax.legend()
     ax.set_title("global distortion (top & bottom)")
     ax.set_xlabel("column (px)")
@@ -320,6 +322,7 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
         ax.plot(result.distortion[:, 0], result.distortion[:, 1], label=side)
 
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+    ax.invert_yaxis()
     ax.legend()
     ax.set_title("fiducial distortion (top & bottom)")
     ax.set_xlabel("column (px)")
