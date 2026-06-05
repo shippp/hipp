@@ -308,22 +308,32 @@ class SubImage:
     def __init__(
         self,
         raster: str | Path | rasterio.DatasetReader,
-        window: Window,
+        window: Window | None,
         out_shape: tuple[int, int, int] | None = None,
         resampling: Resampling = Resampling.average,
     ):
-        self.window = window
-
         if isinstance(raster, rasterio.DatasetReader):
-            self.band = raster.read(1, window=window, out_shape=out_shape, resampling=resampling)
+            self._setup(raster, window, out_shape, resampling)
         else:
             with rasterio.open(raster) as src:
-                self.band = src.read(1, window=window, out_shape=out_shape, resampling=resampling)
+                self._setup(src, window, out_shape, resampling)
+
+    def _setup(
+        self,
+        src: rasterio.DatasetReader,
+        window: Window | None,
+        out_shape: tuple[int, int, int] | None,
+        resampling: Resampling,
+    ) -> None:
+        self.window = window or Window(0, 0, src.width, src.height)
+        self.band = src.read(1, window=self.window, out_shape=out_shape, resampling=resampling)
 
         actual_shape = self.band.shape  # (height, width) after read
         self.out_shape = (1, actual_shape[0], actual_shape[1])
-        self._scale = np.array([window.width / actual_shape[1], window.height / actual_shape[0]], dtype=np.float64)
-        self._offset = np.array([window.col_off, window.row_off], dtype=np.float64)
+        self._scale = np.array(
+            [self.window.width / actual_shape[1], self.window.height / actual_shape[0]], dtype=np.float64
+        )
+        self._offset = np.array([self.window.col_off, self.window.row_off], dtype=np.float64)
 
     def to_global(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
         """Convert local sub-image pixel coordinates to global raster coordinates.

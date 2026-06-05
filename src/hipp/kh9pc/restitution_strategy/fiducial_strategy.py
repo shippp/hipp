@@ -1,6 +1,7 @@
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Self, Sequence
+from typing import Literal, Self
 
 import cv2
 import numpy as np
@@ -24,8 +25,34 @@ from hipp.kh9pc.types import (
 from hipp.kh9pc.utils import SubImage, compute_spatial_regularization_score
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
-_Side = Literal["top", "bottom"]
 _BLOCK_MARGIN = 0.1  # overlap fraction between adjacent blocks
+
+# D3C12(01-13) → disk fiducials, D3C12(14-19) → wagon-wheel fiducials
+_MISSION_RE = re.compile(r"D3C12(\d{2})")
+_KIND_TEMPLATES: dict[str, list[Path]] = {
+    "disk": sorted(_TEMPLATE_DIR.glob("disk*.png")),
+    "wagon_wheel": sorted(_TEMPLATE_DIR.glob("wagon_wheel.png")),
+}
+
+
+def _infer_kind(stem: str) -> Literal["disk", "wagon_wheel"]:
+    m = _MISSION_RE.search(stem)
+    if m is None:
+        raise DetectionError(f"Cannot infer template kind from {stem!r}: filename must match D3C12XX")
+    n = int(m.group(1))
+    if 1 <= n <= 13:
+        return "disk"
+    if 14 <= n <= 19:
+        return "wagon_wheel"
+    raise DetectionError(f"Unknown KH-9 mission D3C12{n:02d} in {stem!r} — expected 01–19")
+
+
+def _load_kind(kind: str) -> list[cv2.typing.MatLike]:
+    paths = _KIND_TEMPLATES.get(kind, [])
+    templates = [img for p in paths if (img := cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)) is not None]
+    if not templates:
+        raise DetectionError(f"No templates loaded for kind {kind!r} — check {_TEMPLATE_DIR}")
+    return templates
 
 
 @dataclass
@@ -41,9 +68,11 @@ class FiducialStrategy(RestitutionStrategy):
     ----------
     poly_strategy:
         Fitted (or to-be-fitted) strategy that provides the horizontal edge models.
-    template_paths:
-        Paths to PNG template images. Defaults to all PNGs in the ``templates/``
-        directory next to this file.
+    template_kind:
+        Which fiducial template set to use: ``"disk"`` (missions D3C1201–D3C1213),
+        ``"wagon_wheel"`` (missions D3C1214–D3C1219), or ``"auto"`` to infer from
+        the image filename (default).  Raises ``DetectionError`` if auto-detection
+        fails or the resolved template set is empty.
     block_width:
         Width in pixels of each scanning block.
     threshold:
@@ -53,7 +82,7 @@ class FiducialStrategy(RestitutionStrategy):
     """
 
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
-    template_paths: Sequence[str | Path] = field(default_factory=lambda: list(_TEMPLATE_DIR.glob("*.png")))
+    template_kind: Literal["auto", "disk", "wagon_wheel"] = "auto"
     polynomial_degree: int = 7
     block_width: int = 512
     threshold: float = 0.5
@@ -65,9 +94,9 @@ class FiducialStrategy(RestitutionStrategy):
 
     def __post_init__(self) -> None:
         super().__init__()
-        self._templates = [
-            img for p in self.template_paths if (img := cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)) is not None
-        ]
+        self._templates: list[cv2.typing.MatLike] = (
+            [] if self.template_kind == "auto" else _load_kind(self.template_kind)
+        )
         self._results: dict[str, FiducialResult] = {}
         self.__transformation_: Transformation | None = None
 
@@ -118,6 +147,9 @@ class FiducialStrategy(RestitutionStrategy):
     # ------------------------------------------------------------------
 
     def _fit(self, raster_filepath: Path) -> Self:
+        if self.template_kind == "auto":
+            self._templates = _load_kind(_infer_kind(raster_filepath.stem))
+
         if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
             self.poly_strategy.fit(raster_filepath)
 
@@ -171,7 +203,7 @@ class FiducialStrategy(RestitutionStrategy):
     # ------------------------------------------------------------------
 
     def _scan_side(
-        self, src: rasterio.DatasetReader, col_start: int, col_end: int, side: _Side
+        self, src: rasterio.DatasetReader, col_start: int, col_end: int, side: Literal["top", "bottom"]
     ) -> tuple[NDArray[np.int_], NDArray[np.float64], NDArray[np.int_]]:
         """Slide overlapping blocks across [col_start, col_end] for one side.
 
@@ -238,7 +270,7 @@ class FiducialStrategy(RestitutionStrategy):
         boxes: NDArray[np.int_],
         scores: NDArray[np.float64],
         template_ids: NDArray[np.int_],
-        side: _Side,
+        side: Literal["top", "bottom"],
     ) -> FiducialFilteringResult:
         """Identify the inlier cluster among raw detections using DBSCAN with a grid search.
 

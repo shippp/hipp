@@ -33,7 +33,7 @@ def image_mosaic(
     overwrite: bool = False,
     resampling: int = Resampling.cubic,
     overlap_width: int = 3000,
-    bloc_height: int = 256,
+    bloc_height: int = 512,
     nfeature_per_block: int = 500,
     ransac_max_trials: int = 1000,
     ransac_residual_threshold: float = 3.0,
@@ -61,7 +61,7 @@ def image_mosaic(
 def compute_sequential_alignments(
     image_paths: Sequence[str | Path],
     overlap_width: int = 3000,
-    bloc_height: int = 256,
+    bloc_height: int = 512,
     nfeature_per_block: int = 500,
     ransac_max_trials: int = 1000,
     ransac_residual_threshold: float = 3.0,
@@ -306,7 +306,9 @@ def _extract_global_matches_from_overlap(
         height_b = src_b.height
 
         if height_a != height_b:
-            raise ValueError(f"Both images must have the same height for block-wise matching ({height_a} != {height_b}).")
+            raise ValueError(
+                f"Both images must have the same height for block-wise matching ({height_a} != {height_b})."
+            )
 
         for i in range(0, height_a, bloc_height):
             current_block_height = min(bloc_height, height_a - i)
