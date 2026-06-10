@@ -6,10 +6,17 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 
-from hipp.image import remap_tif_blockwise
-from hipp.kh9pc.types import DEFAULT_OUTPUT_HEIGHT, FlatResult, RestitutionStrategy, Transformation
-from hipp.kh9pc.utils import SubImage, detect_ruptures
-from hipp.kh9pc.vertical_detector import VerticalDetector
+from hipp.image import SubImage, remap_tif_blockwise
+from hipp.kh9pc.fitting import detect_ruptures
+from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, RestitutionStrategy, Transformation
+from hipp.kh9pc.restitution.vertical import VerticalDetector
+
+
+@dataclass
+class FlatResult:
+    position: int
+    rupture_local: int
+    sub_image: SubImage
 
 
 @dataclass
@@ -52,8 +59,8 @@ class FlatStrategy(RestitutionStrategy):
         if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
             self.vertical_detector.fit(raster_filepath)
 
-        col_off, col_end = self.vertical_detector.edges_
-        window_width = col_end - col_off
+        col_off, _ = self.vertical_detector.edges_
+        window_width = self.vertical_detector.detected_width_
 
         with rasterio.open(raster_filepath) as src:
             window_height = int(src.height * self.height_fraction)
@@ -78,7 +85,7 @@ class FlatStrategy(RestitutionStrategy):
 
     def _compute_transformation(self) -> Transformation:
         left, right = self.vertical_detector.edges_
-        detected_width = right - left
+        detected_width = self.vertical_detector.detected_width_
         output_width = self.output_width or detected_width
 
         top = self.top_.position

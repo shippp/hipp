@@ -1,4 +1,3 @@
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
@@ -12,39 +11,46 @@ from skimage.transform import ThinPlateSplineTransform
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
 
-from hipp.image import match_multiple_templates, remap_tif_blockwise
-from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
-from hipp.kh9pc.types import (
-    DEFAULT_OUTPUT_HEIGHT,
-    DetectionError,
-    FiducialFilteringResult,
-    FiducialResult,
-    RestitutionStrategy,
-    Transformation,
-)
-from hipp.kh9pc.utils import SubImage, compute_spatial_regularization_score
+from hipp.image import SubImage, match_multiple_templates, remap_tif_blockwise
+from hipp.kh9pc.fiducials import KH9ImageSpec
+from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
+from hipp.kh9pc.restitution.poly import PolyStrategy
+
+
+@dataclass
+class FiducialFilteringResult:
+    boxes_all: NDArray[np.int_]
+    scores_all: NDArray[np.float64]
+    template_ids_all: NDArray[np.int_]
+    cx: NDArray[np.floating]
+    cy: NDArray[np.floating]
+    residuals: NDArray[np.floating]
+    labels: NDArray[np.integer]
+    best_cluster_label: int
+    best_eps: float
+    best_weight: float
+    cluster_scores: dict[int, float] = field(default_factory=dict)
+
+
+@dataclass
+class FiducialResult:
+    centers: NDArray[np.int_]
+    poly: np.polynomial.Polynomial
+    distortion: NDArray[np.floating]
+    boxes: NDArray[np.int_]
+    scores: NDArray[np.float64]
+    template_ids: NDArray[np.int_]
+    width_coverage: float = 0.0
+    filtering: FiducialFilteringResult | None = None
+
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _BLOCK_MARGIN = 0.1  # overlap fraction between adjacent blocks
 
-# D3C12(01-13) → disk fiducials, D3C12(14-19) → wagon-wheel fiducials
-_MISSION_RE = re.compile(r"D3C12(\d{2})")
 _KIND_TEMPLATES: dict[str, list[Path]] = {
     "disk": sorted(_TEMPLATE_DIR.glob("disk*.png")),
     "wagon_wheel": sorted(_TEMPLATE_DIR.glob("wagon_wheel.png")),
 }
-
-
-def _infer_kind(stem: str) -> Literal["disk", "wagon_wheel"]:
-    m = _MISSION_RE.search(stem)
-    if m is None:
-        raise DetectionError(f"Cannot infer template kind from {stem!r}: filename must match D3C12XX")
-    n = int(m.group(1))
-    if 1 <= n <= 13:
-        return "disk"
-    if 14 <= n <= 19:
-        return "wagon_wheel"
-    raise DetectionError(f"Unknown KH-9 mission D3C12{n:02d} in {stem!r} — expected 01–19")
 
 
 def _load_kind(kind: str) -> list[cv2.typing.MatLike]:
@@ -68,11 +74,12 @@ class FiducialStrategy(RestitutionStrategy):
     ----------
     poly_strategy:
         Fitted (or to-be-fitted) strategy that provides the horizontal edge models.
-    template_kind:
-        Which fiducial template set to use: ``"disk"`` (missions D3C1201–D3C1213),
-        ``"wagon_wheel"`` (missions D3C1214–D3C1219), or ``"auto"`` to infer from
-        the image filename (default).  Raises ``DetectionError`` if auto-detection
-        fails or the resolved template set is empty.
+    kh9_image_spec:
+        Image specification describing which fiducial template set to use
+        (``fiducial_type`` field: ``"disk"`` for missions D3C1201–D3C1213,
+        ``"wagon_wheel"`` for D3C1214–D3C1219). If ``None`` (default), the spec
+        is inferred from the image filename at fit time via
+        ``KH9ImageSpec.from_filename()`` and stored in ``self.kh9_image_spec``.
     block_width:
         Width in pixels of each scanning block.
     threshold:
@@ -82,7 +89,7 @@ class FiducialStrategy(RestitutionStrategy):
     """
 
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
-    template_kind: Literal["auto", "disk", "wagon_wheel"] = "auto"
+    kh9_image_spec: KH9ImageSpec | None = None
     polynomial_degree: int = 7
     block_width: int = 512
     threshold: float = 0.5
@@ -95,7 +102,7 @@ class FiducialStrategy(RestitutionStrategy):
     def __post_init__(self) -> None:
         super().__init__()
         self._templates: list[cv2.typing.MatLike] = (
-            [] if self.template_kind == "auto" else _load_kind(self.template_kind)
+            _load_kind(self.kh9_image_spec.fiducial_type) if self.kh9_image_spec is not None else []
         )
         self._results: dict[str, FiducialResult] = {}
         self.__transformation_: Transformation | None = None
@@ -147,8 +154,9 @@ class FiducialStrategy(RestitutionStrategy):
     # ------------------------------------------------------------------
 
     def _fit(self, raster_filepath: Path) -> Self:
-        if self.template_kind == "auto":
-            self._templates = _load_kind(_infer_kind(raster_filepath.stem))
+        if self.kh9_image_spec is None:
+            self.kh9_image_spec = KH9ImageSpec.from_filename(raster_filepath)
+            self._templates = _load_kind(self.kh9_image_spec.fiducial_type)
 
         if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
             self.poly_strategy.fit(raster_filepath)
@@ -391,7 +399,7 @@ class FiducialStrategy(RestitutionStrategy):
 
     def _compute_transformation(self) -> Transformation:
         left, right = self.poly_strategy.vertical_detector.edges_
-        detected_width = right - left
+        detected_width = self.poly_strategy.vertical_detector.detected_width_
         output_width = self.output_width or detected_width
 
         n_points = self.poly_strategy.grid_shape[0]
@@ -431,3 +439,74 @@ class FiducialStrategy(RestitutionStrategy):
             crop_offset=crop_offset,
             output_size=(output_width, output_height),
         )
+
+
+def compute_spatial_regularization_score(x: np.ndarray, y: np.ndarray) -> float:
+    """
+    Compute a spatial regularity score from consecutive 2D point spacing.
+
+    The score evaluates how regularly points are distributed along a
+    2D trajectory. Points are first ordered along the x-axis, then
+    Euclidean distances between consecutive points are computed.
+
+    The metric is based on the coefficient of variation (CV) of the
+    inter-point distances:
+
+        CV = std(distances) / mean(distances)
+
+    The final score is normalized into the range [0, 1]:
+
+        score = 1 / (1 + CV)
+
+    Interpretation
+    --------------
+    - score ≈ 1:
+        Highly regular spacing between points.
+    - score ≈ 0:
+        Highly irregular spacing.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        1D array containing x coordinates.
+
+    y : np.ndarray
+        1D array containing y coordinates.
+
+    Returns
+    -------
+    float
+        Spatial regularity score in the range [0, 1].
+
+    Raises
+    ------
+    ValueError
+        If input arrays have different lengths or contain fewer than
+        two points.
+    """
+    if x.shape[0] != y.shape[0]:
+        raise ValueError("x and y must have the same length.")
+
+    if x.shape[0] < 2:
+        raise ValueError("At least two points are required.")
+
+    order = np.argsort(x)
+
+    x_sorted = x[order]
+    y_sorted = y[order]
+
+    dx = np.diff(x_sorted)
+    dy = np.diff(y_sorted)
+
+    inter_point_distances = np.hypot(dx, dy)
+
+    mean_distance = np.mean(inter_point_distances)
+
+    if mean_distance == 0:
+        return 0.0
+
+    coefficient_of_variation = np.std(inter_point_distances) / mean_distance
+
+    score = 1.0 / (1.0 + coefficient_of_variation)
+
+    return float(score)

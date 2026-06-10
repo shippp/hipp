@@ -1,18 +1,18 @@
-from . import image_mosaic, types
-from . import quality_control as qc
-from .restitution_strategy import CollimationStrategy, FiducialStrategy, FlatStrategy, MixedStrategy, PolyStrategy
-from .types import DetectionError
-from .vertical_detector import VerticalDetector
+from . import mosaic, qc
+from .mosaic import image_mosaic
+from .restitution import CollimationStrategy, FiducialStrategy, FlatStrategy, MixedStrategy, PolyStrategy
+from .restitution.base import DetectionError
+from .restitution.vertical import VerticalDetector
 
 __all__ = [
-    "image_mosaic",
-    "types",
+    "mosaic",
     "qc",
+    "image_mosaic",
     "CollimationStrategy",
     "DetectionError",
     "FiducialStrategy",
     "FlatStrategy",
-    "PolyStrategy",
     "MixedStrategy",
+    "PolyStrategy",
     "VerticalDetector",
 ]

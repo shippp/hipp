@@ -8,13 +8,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 import rasterio
 from rasterio.windows import Window
 
-from hipp.kh9pc.types import FittingClass, VerticalEdgeResult
-from hipp.kh9pc.utils import SubImage, compute_gradient_pcts, detect_ruptures
+from hipp.kh9pc.fitting import detect_ruptures
+from hipp.kh9pc.restitution.base import FittingClass
+from hipp.image import SubImage
+
+
+@dataclass
+class VerticalEdgeResult:
+    position: int
+    rupture_local: int
+    sub_image: SubImage
+    profile: NDArray[np.integer]
+    gradient_pct: float
+
 
 logger = logging.getLogger(__name__)
+
+IMAGE_WIDTHS_MM: list[float] = [798.576, 1597.152, 2395.728, 3194.304]
+IMAGE_WIDTHS_PX: list[int] = [114082, 228165, 342247, 456329]
 
 
 @dataclass
@@ -52,11 +67,18 @@ class VerticalDetector(FittingClass):
     def edges_(self) -> tuple[int, int]:
         return self.left_.position, self.right_.position
 
+    @property
+    def detected_width_(self) -> int:
+        return self.right_.position - self.left_.position
+
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
         self._failed = False
         self._results = {}
 
         with rasterio.open(raster_filepath) as src:
+            exp_width = expected_width(src)
+            logger.info("VerticalDetector: raster width=%d, effective image width=%d", src.width, exp_width)
+
             pad_left = int(src.width * self.paddings_pct[0])
             pad_top = int(src.height * self.paddings_pct[1])
             pad_right = int(src.width * self.paddings_pct[2])
@@ -80,9 +102,16 @@ class VerticalDetector(FittingClass):
                     profile = sub_image.band.flatten()
                     ruptures = detect_ruptures(profile, self.background_threshold, reverse_scan=(side == "left"))
                     if width_frac > self.width_fraction:
-                        logger.warning("VerticalDetector: no rupture found for %s edge at width_fraction=%.2f, retrying with %.2f", side, width_frac - 0.1, width_frac)
+                        logger.warning(
+                            "VerticalDetector: no rupture found for %s edge at width_fraction=%.2f, retrying with %.2f",
+                            side,
+                            width_frac - 0.1,
+                            width_frac,
+                        )
                     if len(ruptures) > 0:
-                        gradients_pct = compute_gradient_pcts(profile, ruptures, self.window_size, use_max=(side == "left"))
+                        gradients_pct = compute_gradient_pcts(
+                            profile, ruptures, self.window_size, use_max=(side == "left")
+                        )
                         # first rupture above min_gradient_pct threshold (fallback to first one)
                         idx = next((i for i, x in enumerate(gradients_pct) if x > self.min_gradient_pct), 0)
                         rupture_local = int(ruptures[idx])
@@ -102,4 +131,49 @@ class VerticalDetector(FittingClass):
                     return self
                 self._results[side] = result
 
+            logger.info(
+                "VerticalDetector: left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
+                self._results["left"].position,
+                self._results["right"].position,
+                self.detected_width_,
+                exp_width,
+                self.detected_width_ - exp_width,
+            )
+
         return self
+
+
+def expected_width(raster: str | Path | rasterio.DatasetReader) -> int:
+    if not isinstance(raster, rasterio.DatasetReader):
+        with rasterio.open(raster) as src:
+            return expected_width(src)
+
+    expected_widths_px = sorted(IMAGE_WIDTHS_PX)
+    candidates = [w for w in expected_widths_px if w <= raster.width]
+    if not candidates:
+        raise ValueError(f"Image width {raster.width} is smaller than all known expected widths.")
+    return candidates[-1]
+
+
+def compute_gradient_pcts(
+    profile: NDArray[np.number],
+    ruptures: NDArray[np.integer],
+    window_size: int,
+    use_max: bool,
+) -> list[float]:
+    """Score each rupture by its local gradient relative to the global gradient extremum.
+
+    For a rising edge (use_max=True)  : score = max(window_gradient) / max(profile_gradient)
+    For a falling edge (use_max=False): score = min(window_gradient) / min(profile_gradient)
+    """
+    gradient = np.diff(profile.astype(np.float32))
+    global_stat = float(np.max(gradient)) if use_max else float(np.min(gradient))
+    if global_stat == 0:
+        return [0.0] * len(ruptures)
+
+    pcts: list[float] = []
+    for r in ruptures:
+        w = np.diff(profile[max(0, r - window_size) : r + window_size].astype(np.float32))
+        local_stat = float(np.max(w)) if use_max else float(np.min(w))
+        pcts.append(local_stat / global_stat)
+    return pcts

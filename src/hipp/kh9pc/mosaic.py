@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
 
@@ -19,7 +20,35 @@ from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
 
-from hipp.kh9pc.types import ImageAlignment
+
+@dataclass
+class ImageAlignment:
+    """Alignment result for a single image in a sequential alignment chain.
+
+    Attributes
+    ----------
+    image_path : Path
+        Path to the image file.
+    relative_transform : np.ndarray
+        3x3 homogeneous transformation matrix relative to the previous image
+        (identity for the first/reference image).
+    absolute_transform : np.ndarray
+        3x3 homogeneous transformation matrix in the global/mosaic coordinate system,
+        accumulated from the reference image.
+    n_matches : int
+        Total number of ORB keypoint matches found before RANSAC filtering
+        (0 for the reference image).
+    n_inliers : int
+        Number of inlier matches kept after RANSAC filtering
+        (0 for the reference image).
+    """
+
+    image_path: Path
+    relative_transform: np.ndarray
+    absolute_transform: np.ndarray
+    n_matches: int
+    n_inliers: int
+
 
 logger = logging.getLogger(__name__)
 

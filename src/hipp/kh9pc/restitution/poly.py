@@ -4,34 +4,44 @@ from typing import Self
 
 import numpy as np
 import rasterio
-from rasterio.warp import Resampling
+from numpy.typing import NDArray
 from rasterio.windows import Window
 from skimage.transform import ThinPlateSplineTransform
+from sklearn.linear_model import RANSACRegressor
 
-from hipp.image import remap_tif_blockwise
-from hipp.kh9pc.restitution_strategy.poly_strategy import PolyStrategy
-from hipp.kh9pc.types import DEFAULT_OUTPUT_HEIGHT, CollimationResult, RestitutionStrategy, Transformation
-from hipp.kh9pc.utils import SubImage, detect_collimation_peak, fit_ransac_poly
+from hipp.image import SubImage, remap_tif_blockwise
+from hipp.kh9pc.fitting import detect_ruptures, fit_ransac_poly
+from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, RestitutionStrategy, Transformation
+from hipp.kh9pc.restitution.vertical import VerticalDetector
 
 
 @dataclass
-class CollimationStrategy(RestitutionStrategy):
-    poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
-    polynomial_degree: int = 5
+class PolyResult:
+    ruptures_local: NDArray[np.integer]
+    ruptures_global: NDArray[np.integer]
+    distortion: NDArray[np.floating]
+    inlier_ratio: float
+    model: RANSACRegressor
+    sub_image: SubImage
+
+
+@dataclass
+class PolyStrategy(RestitutionStrategy):
+    vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
+    background_threshold: int = 20
+    height_fraction: float = 0.15
+    stride: int = 10
+    polynomial_degree: int = 2
     ransac_residual_threshold: float = 80.0
     ransac_max_trials: int = 1000
     grid_shape: tuple[int, int] = (100, 50)
-    stride: int = 10
-    refinement_fraction: float = 0.03
-    max_width_peak: int = 200
-    collimation_line_dist: int = 21770  # known physical distance between top/bottom collimation lines at nominal scan resolution
     min_inliers_threshold: float = 0.5
     output_width: int | None = None
     output_height: int | None = DEFAULT_OUTPUT_HEIGHT
 
     def __post_init__(self) -> None:
         super().__init__()
-        self._results: dict[str, CollimationResult] = {}
+        self._results: dict[str, PolyResult] = {}
         self.__transformation_: Transformation | None = None
 
     @property
@@ -39,13 +49,13 @@ class CollimationStrategy(RestitutionStrategy):
         return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_threshold
 
     @property
-    def top_(self) -> CollimationResult:
+    def top_(self) -> PolyResult:
         if "top" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["top"]
 
     @property
-    def bottom_(self) -> CollimationResult:
+    def bottom_(self) -> PolyResult:
         if "bottom" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["bottom"]
@@ -57,44 +67,41 @@ class CollimationStrategy(RestitutionStrategy):
         return self.__transformation_
 
     def _fit(self, raster_filepath: Path) -> Self:
-        if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
-            self.poly_strategy.fit(raster_filepath)
+        if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
+            self.vertical_detector.fit(raster_filepath)
 
-        col_off, col_end = self.poly_strategy.vertical_detector.edges_
-        window_width = col_end - col_off
-        col_center = (col_off + col_end) // 2
+        col_off, _ = self.vertical_detector.edges_
+        window_width = self.vertical_detector.detected_width_
 
         with rasterio.open(raster_filepath) as src:
-            window_height = int(src.height * self.refinement_fraction)
+            window_height = int(src.height * self.height_fraction)
             out_shape = (1, window_height // self.stride, self.grid_shape[0])
 
-            top_edge = int(self.poly_strategy.top_.model.predict(np.array([[col_center]])).flat[0])
-            bot_edge = int(self.poly_strategy.bottom_.model.predict(np.array([[col_center]])).flat[0])
-
             for side, window in {
-                "top": Window(col_off, top_edge, window_width, window_height),
-                "bottom": Window(col_off, bot_edge - window_height, window_width, window_height),
+                "top": Window(col_off, 0, window_width, window_height),
+                "bottom": Window(col_off, src.height - window_height, window_width, window_height),
             }.items():
-                sub_image = SubImage(src, window, out_shape, resampling=Resampling.average)
+                sub_image = SubImage(src, window, out_shape)
                 self._results[side] = self._process_side(sub_image, side)
 
         return self
 
-    def _process_side(self, sub_image: SubImage, side: str) -> CollimationResult:
-        _, w = sub_image.band.shape
+    def _process_side(self, sub_image: SubImage, side: str) -> PolyResult:
+        res = []
+        for i in range(sub_image.band.shape[1]):
+            ruptures = detect_ruptures(sub_image.band[:, i], self.background_threshold, reverse_scan=(side == "top"))
+            if len(ruptures) > 0:
+                res.append((i, ruptures[0]))
 
-        peaks_local = np.zeros((w, 2), dtype=int)
-        for col in range(w):
-            vec = sub_image.band[:, col]
-            idx = detect_collimation_peak(vec, max_peak_width=self.max_width_peak // self.stride)
-            peaks_local[col, 0] = col
-            peaks_local[col, 1] = idx
+        if not res:
+            raise RuntimeError(f"No rupture detected on the {side} edge.")
 
-        peaks_global = sub_image.to_global(peaks_local).astype(int)
+        ruptures_local = np.array(res)
+        ruptures_global = sub_image.to_global(ruptures_local)
 
         model = fit_ransac_poly(
-            peaks_global[:, 0],
-            peaks_global[:, 1],
+            ruptures_global[:, 0],
+            ruptures_global[:, 1],
             degree=self.polynomial_degree,
             residual_threshold=self.ransac_residual_threshold,
             max_trials=self.ransac_max_trials,
@@ -102,13 +109,16 @@ class CollimationStrategy(RestitutionStrategy):
 
         inlier_ratio = float(model.inlier_mask_.mean())
 
-        y_global_pred = model.predict(peaks_global[:, 0].reshape(-1, 1))
+        x_sample = np.linspace(
+            sub_image.window.col_off, sub_image.window.col_off + sub_image.window.width, self.grid_shape[0]
+        )
+        y_global_pred = model.predict(x_sample.reshape(-1, 1)).ravel()
         y_distortion = y_global_pred - y_global_pred.mean()
-        distortion = np.column_stack([peaks_global[:, 0], y_distortion])
+        distortion = np.column_stack([x_sample, y_distortion])
 
-        return CollimationResult(
-            peaks_local=peaks_local,
-            peaks_global=peaks_global,
+        return PolyResult(
+            ruptures_local=ruptures_local,
+            ruptures_global=ruptures_global.astype(int),
             distortion=distortion,
             inlier_ratio=inlier_ratio,
             model=model,
@@ -116,8 +126,8 @@ class CollimationStrategy(RestitutionStrategy):
         )
 
     def _compute_transformation(self) -> Transformation:
-        left, right = self.poly_strategy.vertical_detector.edges_
-        detected_width = right - left
+        left, right = self.vertical_detector.edges_
+        detected_width = self.vertical_detector.detected_width_
         output_width = self.output_width or detected_width
 
         x = np.linspace(left, right, self.grid_shape[0])
@@ -125,8 +135,7 @@ class CollimationStrategy(RestitutionStrategy):
         y_top_src = self.top_.model.predict(x.reshape(-1, 1))
         y_bot_src = self.bottom_.model.predict(x.reshape(-1, 1))
 
-        top = int(np.median(y_top_src))
-        bot = top + self.collimation_line_dist
+        top, bot = int(np.median(y_top_src)), int(np.median(y_bot_src))
         detected_height = bot - top
         output_height = self.output_height or detected_height
 

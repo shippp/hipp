@@ -488,3 +488,50 @@ def match_multiple_templates(
     template_ids = [all_template_ids[i] for i in indices_np]
 
     return boxes, scores, template_ids
+
+
+class SubImage:
+    """A windowed view of a rasterio raster with coordinate conversion helpers.
+
+    Reads band 1 of a raster within a given window (optionally resampled) and
+    provides ``to_global`` / ``to_local`` to convert pixel coordinates between
+    the sub-image space and the full raster space.
+    """
+
+    def __init__(
+        self,
+        raster: str | Path | rasterio.DatasetReader,
+        window: Window | None,
+        out_shape: tuple[int, int, int] | None = None,
+        resampling: Resampling = Resampling.average,
+    ):
+        if isinstance(raster, rasterio.DatasetReader):
+            self._setup(raster, window, out_shape, resampling)
+        else:
+            with rasterio.open(raster) as src:
+                self._setup(src, window, out_shape, resampling)
+
+    def _setup(
+        self,
+        src: rasterio.DatasetReader,
+        window: Window | None,
+        out_shape: tuple[int, int, int] | None,
+        resampling: Resampling,
+    ) -> None:
+        self.window = window or Window(0, 0, src.width, src.height)
+        self.band = src.read(1, window=self.window, out_shape=out_shape, resampling=resampling)
+
+        actual_shape = self.band.shape  # (height, width) after read
+        self.out_shape = (1, actual_shape[0], actual_shape[1])
+        self._scale = np.array(
+            [self.window.width / actual_shape[1], self.window.height / actual_shape[0]], dtype=np.float64
+        )
+        self._offset = np.array([self.window.col_off, self.window.row_off], dtype=np.float64)
+
+    def to_global(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Convert local sub-image pixel coordinates to global raster coordinates."""
+        return pts * self._scale + self._offset
+
+    def to_local(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Convert global raster pixel coordinates to local sub-image coordinates."""
+        return (pts - self._offset) / self._scale

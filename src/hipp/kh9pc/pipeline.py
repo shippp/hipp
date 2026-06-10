@@ -6,9 +6,9 @@ import joblib
 import matplotlib.pyplot as plt
 
 from hipp.image import generate_quickview
-from hipp.kh9pc.image_mosaic import image_mosaic
-from hipp.kh9pc.quality_control import get_figures
-from hipp.kh9pc.restitution_strategy.mixed_strategy import MixedStrategy
+from hipp.kh9pc.mosaic import image_mosaic
+from hipp.kh9pc.qc import get_figures
+from hipp.kh9pc.restitution.mixed import MixedStrategy
 from hipp.tools import extract_archive
 
 logger = logging.getLogger(__name__)
