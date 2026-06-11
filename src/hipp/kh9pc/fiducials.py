@@ -77,6 +77,11 @@ class KH9ImageSpec:
         return cls.from_mission(mission)
 
 
+def centers_xy_from_boxes(boxes: NDArray[np.int_]) -> NDArray[np.floating]:
+    """Return (N, 2) array of box centers from (N, 4) ``[x, y, w, h]`` boxes."""
+    return boxes[:, :2] + boxes[:, 2:] * 0.5
+
+
 def compute_fiducial_pattern_score(pattern: _PATERN_STR, points: NDArray[np.floating], image_width: int) -> float:
     if len(points) == 0 or pattern == "serialized_time_word":
         return 0.0
@@ -99,7 +104,7 @@ def compute_fiducial_pattern_score(pattern: _PATERN_STR, points: NDArray[np.floa
             return 0.0
 
     if pattern.startswith("regular"):
-        return coefficient_of_variation_score(distances) * coverage_score
+        return float((coefficient_of_variation_score(distances) * coverage_score) ** (1 / 2))
 
     if pattern.startswith("segmented"):
         mult = SEGMENTED_MID_GAP if "mid" in pattern else SEGMENTED_DENSE_GAP
@@ -108,7 +113,10 @@ def compute_fiducial_pattern_score(pattern: _PATERN_STR, points: NDArray[np.floa
         gap_dist = distances[distances > split_threshold]
         if len(regular_dist) == 0 or len(gap_dist) == 0:
             return 0.0
-        return coefficient_of_variation_score(regular_dist) * coefficient_of_variation_score(gap_dist) * coverage_score
+        return float(
+            (coefficient_of_variation_score(regular_dist) * coefficient_of_variation_score(gap_dist) * coverage_score)
+            ** (1 / 3)
+        )
 
     return 0.0
 

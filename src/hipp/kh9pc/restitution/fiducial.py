@@ -4,44 +4,38 @@ from typing import Literal, Self
 
 import cv2
 import numpy as np
+import pandas as pd
 import rasterio
 from numpy.typing import NDArray
 from rasterio.windows import Window
-from skimage.transform import ThinPlateSplineTransform
 from sklearn.cluster import DBSCAN
+from sklearn.linear_model import RANSACRegressor
 from sklearn.preprocessing import StandardScaler
 
 from hipp.image import SubImage, match_multiple_templates, remap_tif_blockwise
-from hipp.kh9pc.fiducials import KH9ImageSpec
+from hipp.kh9pc.fiducials import KH9ImageSpec, centers_xy_from_boxes, compute_all_fiducial_pattern_scores
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
 from hipp.kh9pc.restitution.poly import PolyStrategy
 
 
 @dataclass
-class FiducialFilteringResult:
-    boxes_all: NDArray[np.int_]
-    scores_all: NDArray[np.float64]
-    template_ids_all: NDArray[np.int_]
-    cx: NDArray[np.floating]
-    cy: NDArray[np.floating]
-    residuals: NDArray[np.floating]
+class Clustering:
+    features: NDArray[np.floating]
     labels: NDArray[np.integer]
-    best_cluster_label: int
-    best_eps: float
-    best_weight: float
-    cluster_scores: dict[int, float] = field(default_factory=dict)
+    eps: float
+    weight: float
+    cluster_df: pd.DataFrame
 
 
 @dataclass
 class FiducialResult:
-    centers: NDArray[np.int_]
-    poly: np.polynomial.Polynomial
-    distortion: NDArray[np.floating]
     boxes: NDArray[np.int_]
     scores: NDArray[np.float64]
-    template_ids: NDArray[np.int_]
-    width_coverage: float = 0.0
-    filtering: FiducialFilteringResult | None = None
+    clustering: Clustering
+
+    @property
+    def centers_xy(self) -> NDArray[np.floating]:
+        return centers_xy_from_boxes(self.boxes)
 
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -96,8 +90,7 @@ class FiducialStrategy(RestitutionStrategy):
     nms_threshold: float = 0.1
     output_width: int | None = None
     output_height: int | None = DEFAULT_OUTPUT_HEIGHT
-    min_fiducials: int = 10
-    min_width_coverage: float = 0.7
+    min_score_threshold: float = 0.9
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -125,12 +118,10 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        return (
-            len(self.top_.centers) < self.min_fiducials
-            or len(self.bottom_.centers) < self.min_fiducials
-            or self.top_.width_coverage < self.min_width_coverage
-            or self.bottom_.width_coverage < self.min_width_coverage
-        )
+        for result in (self.top_, self.bottom_):
+            if not result.clustering.cluster_df["is_good"].any():
+                return True
+        return False
 
     @property
     def transformation_(self) -> Transformation:
@@ -175,34 +166,12 @@ class FiducialStrategy(RestitutionStrategy):
                 if len(boxes) == 0:
                     raise DetectionError(f"no fiducials detected on {side} side of {raster_filepath.name}")
 
-                # filter outliers by applying clustering to find the better cluster
-                filtering = self._filter_outliers(boxes, scores, ids, side)
-                keep = np.where(filtering.labels == filtering.best_cluster_label)[0]
-                boxes, scores, ids = boxes[keep], scores[keep], ids[keep]
+                result = self._filter_outliers(boxes, scores, side)
 
-                if len(boxes) == 0:
+                if len(result.boxes) == 0:
                     raise DetectionError(f"no inlier cluster found on {side} side of {raster_filepath.name}")
 
-                cx = (boxes[:, 0] + 0.5 * boxes[:, 2]).astype(np.intp)
-                cy = (boxes[:, 1] + 0.5 * boxes[:, 3]).astype(np.intp)
-                centers = np.column_stack([cx, cy])
-
-                poly = np.polynomial.Polynomial.fit(cx, cy, self.polynomial_degree)
-                x = np.linspace(cx.min(), cx.max(), 100)
-                y = poly(x)
-                distortion = np.column_stack([x, y - y.mean()])
-                width_coverage = float((cx.max() - cx.min()) / (col_end - col_start))
-
-                self._results[side] = FiducialResult(
-                    centers=centers,
-                    poly=poly,
-                    boxes=boxes,
-                    distortion=distortion,
-                    scores=scores,
-                    template_ids=ids,
-                    width_coverage=width_coverage,
-                    filtering=filtering,
-                )
+                self._results[side] = result
 
         return self
 
@@ -273,25 +242,84 @@ class FiducialStrategy(RestitutionStrategy):
         np_boxes = np.array(boxes, dtype=np.int_).reshape(-1, 4) if boxes else np.empty((0, 4), dtype=np.int_)
         return np_boxes, np.array(scores, dtype=np.float64), np.array(template_ids, dtype=np.int_)
 
+    @staticmethod
+    def _compute_detection_features(
+        boxes: NDArray[np.int_],
+        scores: NDArray[np.float64],
+        model: RANSACRegressor,
+    ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+        centers_xy = centers_xy_from_boxes(boxes)
+        residuals = np.abs(centers_xy[:, 1] - model.predict(centers_xy[:, 0].reshape(-1, 1)).ravel())
+        features: NDArray[np.floating] = np.column_stack((scores, residuals))
+        return centers_xy, features
+
+    @staticmethod
+    def _score_clusters(
+        labels: NDArray[np.int_],
+        centers_xy: NDArray[np.floating],
+        detected_width: int,
+    ) -> pd.DataFrame:
+        results = []
+        for label in np.unique(labels):
+            if label == -1:
+                continue
+            mask = labels == label
+            if mask.sum() < 5:
+                continue
+            pattern_scores = compute_all_fiducial_pattern_scores(centers_xy[mask], detected_width)
+            pattern, score = max(pattern_scores.items(), key=lambda item: item[1])
+            if score > 0.0:
+                results.append({"label": label, "pattern": pattern, "score": score})
+            else:
+                results.append({"label": label, "pattern": None, "score": 0.0})
+
+        return pd.DataFrame(results)
+
+    def _grid_search_clustering(
+        self,
+        features: NDArray[np.floating],
+        centers_xy: NDArray[np.floating],
+        detected_width: int,
+    ) -> Clustering:
+        X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
+        best_key: tuple[float, float] = (-1.0, -1.0)
+        best: Clustering | None = None
+
+        for rw in np.linspace(0.5, 5, 20):
+            X_weighted = (X_scaled * np.array([1.0, rw])).astype(np.float64)
+            for eps in np.linspace(0.1, 5, 20):
+                labels: NDArray[np.int_] = DBSCAN(eps, min_samples=5).fit(X_weighted).labels_
+                df = self._score_clusters(labels, centers_xy, detected_width)
+                if df.empty:
+                    continue
+                top2 = df["score"].nlargest(2).tolist()
+                while len(top2) < 2:
+                    top2.append(0.0)
+                key = (top2[0], top2[1])
+                if key > best_key:
+                    best_key = key
+                    df["is_good"] = df["score"] >= self.min_score_threshold
+                    best = Clustering(features=features, labels=labels, eps=eps, weight=rw, cluster_df=df)
+
+        if best is None:
+            raise DetectionError("No valid cluster found during grid search")
+
+        return best
+
     def _filter_outliers(
         self,
         boxes: NDArray[np.int_],
         scores: NDArray[np.float64],
-        template_ids: NDArray[np.int_],
         side: Literal["top", "bottom"],
-    ) -> FiducialFilteringResult:
-        """Identify the inlier cluster among raw detections using DBSCAN with a grid search.
+    ) -> FiducialResult:
+        """Identify the two fiducial pattern clusters among raw detections using DBSCAN with a grid search.
 
-        After NMS, spurious detections can still remain (e.g. template matches on image
-        artifacts far from the actual fiducial strip). This method clusters detections in a
-        2-D feature space of (matching score, residual to the polynomial edge model) and
-        selects the cluster whose spatial distribution best covers the full image width.
-
-        The grid search explores 20×20 combinations of ``eps`` (DBSCAN neighbourhood radius)
-        and ``residual_weight`` (relative importance of the residual feature vs. the score).
-        For each combination every non-noise cluster is evaluated with
-        ``compute_spatial_regularization_score * width_fraction``; the globally best
-        (parameters, cluster) pair is retained.
+        For each side (top/bottom) two distinct fiducial patterns coexist. This method clusters
+        detections in a 2-D feature space of (matching score, residual to the polynomial edge model),
+        then scores each cluster with ``compute_all_fiducial_pattern_scores`` and selects the
+        configuration that maximises the best cluster score, with the second-best as tiebreaker
+        (lexicographic comparison). The two top-scoring clusters are returned as inliers, each
+        labelled with its best matching fiducial pattern.
 
         Parameters
         ----------
@@ -299,214 +327,22 @@ class FiducialStrategy(RestitutionStrategy):
             Detection boxes ``[x, y, w, h]`` in global raster coordinates, after NMS.
         scores:
             Corresponding template-matching scores.
-        template_ids:
-            Index into ``self._templates`` for each detection.
         side:
             Which edge model to use for residual computation.
 
         Returns
         -------
-        FiducialFilteringResult
-            Full clustering state (all boxes, labels, residuals, best parameters) needed
-            to reconstruct both inliers and outliers for plotting or debugging.
-            The caller extracts inliers with ``labels == best_cluster_label``.
+        FiducialResult
+            Inlier boxes and scores from the two selected clusters, pattern label per cluster,
+            and the full DBSCAN state at the best (eps, weight) parameters.
         """
         model = self.poly_strategy.top_.model if side == "top" else self.poly_strategy.bottom_.model
+        detected_width = int(self.poly_strategy.vertical_detector.detected_width_)
 
-        # box centre coordinates in global raster space
-        cx = boxes[:, 0] + 0.5 * boxes[:, 2]
-        cy = boxes[:, 1] + 0.5 * boxes[:, 3]
+        centers_xy, features = self._compute_detection_features(boxes, scores, model)
+        clustering = self._grid_search_clustering(features, centers_xy, detected_width)
 
-        # vertical distance from each detection centre to the fitted polynomial edge
-        residuals = np.abs(cy - model.predict(cx.reshape(-1, 1)).ravel())
-
-        # reference width used to normalise the spatial coverage score
-        edges = self.poly_strategy.vertical_detector.edges_
-        detected_width = edges[1] - edges[0]
-
-        # standardise so that score and residual are on the same scale before weighting
-        X_scaled = StandardScaler().fit_transform(np.column_stack((scores, residuals)))
-
-        best_score = -np.inf
-        best_secondary_score = -np.inf
-        best_eps = 0.0
-        best_weight = 0.0
-        best_labels = np.full(len(boxes), -1, dtype=np.intp)  # default: all noise
-        best_cluster_label = -1
-
-        for rw in np.linspace(0.5, 5, 20):
-            # amplify the residual dimension relative to the score dimension
-            features = X_scaled * np.array([1.0, rw])
-            for eps in np.linspace(0.1, 5, 20):
-                labels = DBSCAN(eps, min_samples=5).fit(features).labels_
-
-                cluster_scores_current: dict[int, float] = {}
-                for label in np.unique(labels):
-                    if label == -1:  # DBSCAN noise points
-                        continue
-                    mask = labels == label
-                    if mask.sum() < 5:
-                        continue
-
-                    # fraction of the total image width covered by this cluster
-                    width_fraction = (np.max(cx[mask]) - np.min(cx[mask])) / detected_width
-
-                    # prefer clusters that are both spatially regular and horizontally spread
-                    cluster_scores_current[int(label)] = (
-                        compute_spatial_regularization_score(cx[mask], cy[mask]) * width_fraction
-                    )
-
-                if not cluster_scores_current:
-                    continue
-
-                sorted_clusters = sorted(cluster_scores_current.items(), key=lambda kv: kv[1], reverse=True)
-                primary_label, primary_score = sorted_clusters[0]
-                secondary_score = sorted_clusters[1][1] if len(sorted_clusters) > 1 else 0.0
-
-                # lexicographic comparison: best cluster is primary, second best is tiebreaker
-                if (primary_score, secondary_score) > (best_score, best_secondary_score):
-                    best_score = primary_score
-                    best_secondary_score = secondary_score
-                    best_eps = eps
-                    best_weight = rw
-                    best_labels = labels.copy()
-                    best_cluster_label = primary_label
-
-        # compute the spatial score for every cluster at the best (eps, weight) params
-        cluster_scores: dict[int, float] = {}
-        for label in np.unique(best_labels):
-            if label == -1:
-                continue
-            mask = best_labels == label
-            if mask.sum() < 5:
-                continue
-            width_fraction = float((np.max(cx[mask]) - np.min(cx[mask])) / detected_width)
-            cluster_scores[int(label)] = compute_spatial_regularization_score(cx[mask], cy[mask]) * width_fraction
-
-        return FiducialFilteringResult(
-            boxes_all=boxes,
-            scores_all=scores,
-            template_ids_all=template_ids,
-            cx=cx,
-            cy=cy,
-            residuals=residuals,
-            labels=best_labels,
-            best_cluster_label=best_cluster_label,
-            best_eps=best_eps,
-            best_weight=best_weight,
-            cluster_scores=cluster_scores,
-        )
+        return FiducialResult(boxes=boxes, scores=scores, clustering=clustering)
 
     def _compute_transformation(self) -> Transformation:
-        left, right = self.poly_strategy.vertical_detector.edges_
-        detected_width = self.poly_strategy.vertical_detector.detected_width_
-        output_width = self.output_width or detected_width
-
-        n_points = self.poly_strategy.grid_shape[0]
-
-        # Restrict control points to the range actually covered by detected fiducials on each
-        # side — extrapolating the high-degree polynomial beyond that range causes instability.
-        cx_top = self.top_.centers[:, 0]
-        cx_bot = self.bottom_.centers[:, 0]
-        x_top = np.linspace(cx_top.min(), cx_top.max(), n_points)
-        x_bot = np.linspace(cx_bot.min(), cx_bot.max(), n_points)
-
-        # High-degree fiducial polynomials as control points — more precise than edge model
-        y_top_src = self.top_.poly(x_top)
-        y_bot_src = self.bottom_.poly(x_bot)
-
-        y_top_dst = np.full_like(x_top, y_top_src.mean())
-        y_bot_dst = np.full_like(x_bot, y_bot_src.mean())
-
-        src = np.column_stack((np.concatenate((x_top, x_bot)), np.concatenate((y_top_src, y_bot_src))))
-        dst = np.column_stack((np.concatenate((x_top, x_bot)), np.concatenate((y_top_dst, y_bot_dst))))
-
-        # inverse source destination (important)
-        deformation = ThinPlateSplineTransform().from_estimate(dst, src)
-
-        # Image boundaries
-        top, bot = int(np.mean(y_top_src)), int(np.mean(y_bot_src))
-        detected_height = bot - top
-        output_height = self.output_height or detected_height
-
-        pad_x = (output_width - detected_width) / 2
-        pad_y = (output_height - detected_height) / 2
-        crop_offset = (int(left - pad_x), int(top - pad_y))
-
-        return Transformation(
-            self.raster_filepath_,
-            deformation,
-            crop_offset=crop_offset,
-            output_size=(output_width, output_height),
-        )
-
-
-def compute_spatial_regularization_score(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Compute a spatial regularity score from consecutive 2D point spacing.
-
-    The score evaluates how regularly points are distributed along a
-    2D trajectory. Points are first ordered along the x-axis, then
-    Euclidean distances between consecutive points are computed.
-
-    The metric is based on the coefficient of variation (CV) of the
-    inter-point distances:
-
-        CV = std(distances) / mean(distances)
-
-    The final score is normalized into the range [0, 1]:
-
-        score = 1 / (1 + CV)
-
-    Interpretation
-    --------------
-    - score ≈ 1:
-        Highly regular spacing between points.
-    - score ≈ 0:
-        Highly irregular spacing.
-
-    Parameters
-    ----------
-    x : np.ndarray
-        1D array containing x coordinates.
-
-    y : np.ndarray
-        1D array containing y coordinates.
-
-    Returns
-    -------
-    float
-        Spatial regularity score in the range [0, 1].
-
-    Raises
-    ------
-    ValueError
-        If input arrays have different lengths or contain fewer than
-        two points.
-    """
-    if x.shape[0] != y.shape[0]:
-        raise ValueError("x and y must have the same length.")
-
-    if x.shape[0] < 2:
-        raise ValueError("At least two points are required.")
-
-    order = np.argsort(x)
-
-    x_sorted = x[order]
-    y_sorted = y[order]
-
-    dx = np.diff(x_sorted)
-    dy = np.diff(y_sorted)
-
-    inter_point_distances = np.hypot(dx, dy)
-
-    mean_distance = np.mean(inter_point_distances)
-
-    if mean_distance == 0:
-        return 0.0
-
-    coefficient_of_variation = np.std(inter_point_distances) / mean_distance
-
-    score = 1.0 / (1.0 + coefficient_of_variation)
-
-    return float(score)
+        raise NotImplementedError

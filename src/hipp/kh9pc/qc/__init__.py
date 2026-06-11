@@ -79,7 +79,7 @@ def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -
             plot_fiducial_filtering(fitting_class),
             plot_fiducial_distortions(fitting_class),
             plot_fiducial_detected_profiles(fitting_class),
-            *plot_fiducial_detected_boxes(fitting_class),
+            # *plot_fiducial_detected_boxes(fitting_class),
             *(
                 [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
                 if plot_transformation

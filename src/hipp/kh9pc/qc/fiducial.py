@@ -15,35 +15,27 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
     """Outlier filtering diagnostics: spatial scatter and feature space for top and bottom sides.
 
     Each row corresponds to one side (top / bottom). The left column shows detections in
-    global image space (cx vs cy) with the fitted polynomial edge and the fiducial polynomial
-    overlaid. The right column shows the feature space (matching score vs residual to the edge
-    model) used by DBSCAN.
+    global image space (cx vs cy) with the fitted polynomial edge overlaid. The right column
+    shows the feature space (matching score vs residual to the edge model) used by DBSCAN.
 
     Each DBSCAN cluster gets a distinct colour; noise (label -1) is shown in light gray.
-    The legend lists every cluster with its size, mean matching score, and a ★ for the
-    selected inlier cluster.
+    The legend lists every cluster with its size, pattern score, a ★ for the best-scoring
+    cluster, and a ✓ for clusters above the min_score_threshold.
     """
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
     fig.suptitle(f"Fiducial outlier filtering ({detector.raster_filepath_.stem})", fontsize=12, fontweight="bold")
 
     sides = ("top", "bottom")
     results = (detector.top_, detector.bottom_)
-    models = (detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model)
     cmap = plt.get_cmap("tab10")
 
-    for row, (side, result, model) in enumerate(zip(sides, results, models)):
+    for row, (side, result) in enumerate(zip(sides, results)):
         ax_spatial, ax_feat = axes[row]
 
-        filtering = result.filtering
-        if filtering is None:
-            for ax in (ax_spatial, ax_feat):
-                ax.set_visible(False)
-            continue
-
-        cx, cy = filtering.cx, filtering.cy
-        labels = filtering.labels
-        scores = filtering.scores_all
-        residuals = filtering.residuals
+        clustering = result.clustering
+        centers_xy = result.centers_xy
+        labels = clustering.labels
+        cluster_df = clustering.cluster_df
 
         unique_labels = sorted(int(lbl) for lbl in np.unique(labels) if lbl != -1)
         label_to_color = {lbl: cmap(i % 10) for i, lbl in enumerate(unique_labels)}
@@ -51,26 +43,23 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
         _noise = (0.85, 0.85, 0.85, 1.0)
         colours = np.array([label_to_color[int(lbl)] if lbl != -1 else _noise for lbl in labels])
 
-        ax_spatial.scatter(cx, cy, c=colours, s=20, linewidths=0)
+        ax_spatial.scatter(centers_xy[:, 0], centers_xy[:, 1], c=colours, s=20, linewidths=0)
 
-        x_line = np.linspace(cx.min(), cx.max(), 300)
-        ax_spatial.plot(
-            x_line,
-            model.predict(x_line.reshape(-1, 1)).ravel(),
-            color="steelblue",
-            linewidth=1.2,
-            linestyle="--",
-        )
+        score_by_label = dict(zip(cluster_df["label"].tolist(), cluster_df["score"].tolist()))
+        pattern_by_label = dict(zip(cluster_df["label"].tolist(), cluster_df["pattern"].tolist()))
+        good_labels_set = set(cluster_df.loc[cluster_df["is_good"], "label"].tolist())
+        best_label = int(cluster_df.loc[cluster_df["score"].idxmax(), "label"]) if not cluster_df.empty else -1
 
-        if len(result.centers) >= 2:
-            ax_spatial.plot(x_line, result.poly(x_line), color="crimson", linewidth=1.5)
-
-        inlier_mask = labels == filtering.best_cluster_label
+        inlier_mask = np.isin(labels, list(good_labels_set))
         legend_handles: list[Line2D] = []
         for lbl in legend_labels:
-            n = int((labels == lbl).sum())
-            spatial_score = filtering.cluster_scores.get(lbl, float("nan"))
-            star = " ★" if lbl == filtering.best_cluster_label else ""
+            if lbl in good_labels_set:
+                spatial_score = score_by_label.get(lbl, float("nan"))
+                pattern = pattern_by_label.get(lbl)
+                star = " ★" if lbl == best_label else ""
+                label_text = f"{pattern}{star}  s={spatial_score:.3f}"
+            else:
+                label_text = f"cluster {lbl}"
             legend_handles.append(
                 Line2D(
                     [0],
@@ -79,15 +68,13 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
                     color="w",
                     markerfacecolor=label_to_color[lbl],
                     markersize=6,
-                    label=f"cluster {lbl}{star}  n={n}  s={spatial_score:.3f}",
+                    label=label_text,
                 )
             )
         noise_n = int((labels == -1).sum())
-        legend_handles += [
+        legend_handles.append(
             Line2D([0], [0], marker="o", color="w", markerfacecolor=_noise, markersize=6, label=f"noise  n={noise_n}"),
-            Line2D([0], [0], color="steelblue", linewidth=1.2, linestyle="--", label="edge model"),
-            Line2D([0], [0], color="crimson", linewidth=1.5, label="fiducial poly"),
-        ]
+        )
         ax_feat.legend(
             handles=legend_handles, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, borderaxespad=0
         )
@@ -95,31 +82,56 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
 
         n_inliers = int(inlier_mask.sum())
         ax_spatial.set_title(
-            f"{side} — spatial  (eps={filtering.best_eps:.2f}, w={filtering.best_weight:.2f})\n"
-            f"inliers={n_inliers} | coverage={result.width_coverage:.1%}"
+            f"{side} — spatial  (eps={clustering.eps:.2f}, w={clustering.weight:.2f})\ninliers={n_inliers}"
         )
         ax_spatial.set_xlabel("cx (px)")
         ax_spatial.set_ylabel("cy (px)")
 
-        ax_feat.scatter(scores, residuals, c=colours, s=20, linewidths=0)
+        ax_feat.scatter(clustering.features[:, 0], clustering.features[:, 1], c=colours, s=20, linewidths=0)
         ax_feat.set_title(f"{side} — feature space")
-        ax_feat.set_xlabel("matching score")
-        ax_feat.set_ylabel("residual to edge model (px)")
+        ax_feat.set_xlabel("score")
+        ax_feat.set_ylabel("residual (px)")
 
     return fig
 
 
 def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
-    """Residual distortion curves (deviation from mean) for top and bottom fiducial polynomial fits."""
-    fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+    """Degree-7 polynomial fit per cluster, normalized by its mean, for top and bottom sides.
+
+    Each good cluster gets a degree-7 polynomial fitted to its fiducial centers, evaluated on a
+    common x-grid and mean-centered (``y − mean(y)``). In the ideal case all curves coincide at 0.
+    Divergence between curves reveals scan distortion that differs across the fiducial strip.
+    """
+    fig, ax = plt.subplots(figsize=(14, 4), constrained_layout=True)
+    fig.suptitle(f"Fiducial distortion — {detector.raster_filepath_.stem}", fontsize=12, fontweight="bold")
+
+    linestyles = {"top": "-", "bottom": "--"}
 
     for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
-        ax.plot(result.distortion[:, 0], result.distortion[:, 1], label=side)
+        clustering = result.clustering
+        centers_xy = result.centers_xy
+        good_df = clustering.cluster_df[clustering.cluster_df["is_good"]]
 
-    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
-    ax.invert_yaxis()
-    ax.legend()
-    ax.set_title("fiducial distortion (top & bottom)")
+        x_grid = np.linspace(float(centers_xy[:, 0].min()), float(centers_xy[:, 0].max()), 500)
+
+        for _, row in good_df.iterrows():
+            label = int(row["label"])
+            pattern = str(row["pattern"]) if row["pattern"] is not None else f"cluster {label}"
+            mask = clustering.labels == label
+            inlier_centers = centers_xy[mask]
+            if len(inlier_centers) < 8:
+                continue
+            coeffs = np.polyfit(inlier_centers[:, 0].astype(np.float64), inlier_centers[:, 1].astype(np.float64), 7)
+            y_fit = np.polyval(coeffs, x_grid)
+            ax.plot(
+                x_grid,
+                y_fit - float(np.mean(y_fit)),
+                linestyle=linestyles[side],
+                label=f"{side} · {pattern}  (n={int(mask.sum())})",
+            )
+
+    ax.axhline(0.0, color="gray", linewidth=0.8, linestyle=":")
+    ax.legend(fontsize=8)
     ax.set_xlabel("column (px)")
     ax.set_ylabel("distortion (px)")
 
@@ -127,12 +139,27 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
 
 
 def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fraction: float = 0.08) -> Figure:
-    """Detected fiducial centers overlaid on the top and bottom image strips."""
+    """Detected fiducial centers overlaid on the top and bottom image strips, one scatter per valid pattern."""
+    _PATTERN_COLORS: dict[str | None, str] = {
+        "regular_sparse": "red",
+        "regular_mid": "orange",
+        "regular_dense": "gold",
+        "segmented_mid": "limegreen",
+        "segmented_dense": "cyan",
+        "serialized_time_word": "violet",
+    }
+
+    sides_results = [detector.top_, detector.bottom_]
+    n_insets = max(
+        max(int(r.clustering.cluster_df["is_good"].sum()) for r in sides_results),
+        1,
+    )
+
     fig = plt.figure(figsize=(18, 5), constrained_layout=True)
     fig.suptitle(f"Fiducial detected profiles — {detector.raster_filepath_.stem}", fontsize=18, fontweight="bold")
-    gs = fig.add_gridspec(2, 3, width_ratios=[14, 1, 1])
+    gs = fig.add_gridspec(2, 1 + n_insets, width_ratios=[14] + [1] * n_insets)
     main_axes = [fig.add_subplot(gs[row, 0]) for row in range(2)]
-    inset_slots = [[fig.add_subplot(gs[row, col + 1]) for col in range(2)] for row in range(2)]
+    inset_slots = [[fig.add_subplot(gs[row, col + 1]) for col in range(n_insets)] for row in range(2)]
 
     with rasterio.open(detector.raster_filepath_) as src:
         window_height = int(src.height * window_height_fraction)
@@ -149,61 +176,46 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
             return "spacing  n/a"
 
         for row, (ax, side, window, result, edge_model) in enumerate(
-            zip(main_axes, ["top", "bottom"], windows, [detector.top_, detector.bottom_], edge_models)
+            zip(main_axes, ["top", "bottom"], windows, sides_results, edge_models)
         ):
             sub_img = SubImage(src, window, (1, 512, 4096))
             ax.imshow(sub_img.band, cmap="gray", aspect="auto")
 
-            n = len(result.centers)
-            if n > 0:
-                centers_local = sub_img.to_local(result.centers.astype(np.float64))
-                ax.scatter(centers_local[:, 0], centers_local[:, 1], c="red", s=20, zorder=3)
+            clustering = result.clustering
+            centers_xy = result.centers_xy
 
-            ax_handles: list[Line2D] = [
-                Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor="red",
-                    markersize=7,
-                    label=f"{side}  |  fiducials={n}  |  {_spacing_info(result.centers[:, 0]) if n > 0 else 'spacing  n/a'}",
-                )
-            ]
+            good_df = clustering.cluster_df[clustering.cluster_df["is_good"]].reset_index(drop=True)
+
+            ax_handles: list[Line2D] = []
             inset_data: list[tuple[str, np.ndarray]] = []
-            if n > 0:
-                mp = mean_patch_from_centers(src, result.centers.astype(np.float64))
-                if mp is not None:
-                    inset_data.append(("red", mp))
 
-            if side == "bottom" and result.filtering is not None:
-                filtering = result.filtering
-                second_candidates = sorted(
-                    [(lbl, s) for lbl, s in filtering.cluster_scores.items() if lbl != filtering.best_cluster_label],
-                    key=lambda kv: kv[1],
-                    reverse=True,
-                )
-                if second_candidates and second_candidates[0][1] > 0.9:
-                    second_label, _ = second_candidates[0]
-                    mask = filtering.labels == second_label
-                    second_cx = filtering.cx[mask]
-                    second_centers = np.column_stack([second_cx, filtering.cy[mask]])
-                    second_local = sub_img.to_local(second_centers)
-                    ax.scatter(second_local[:, 0], second_local[:, 1], c="orange", s=20, zorder=3)
+            for _, cluster_row in good_df.iterrows():
+                label = int(cluster_row["label"])
+                pattern = cluster_row["pattern"]
+                score = float(cluster_row["score"])
+                color = _PATTERN_COLORS.get(pattern, "white")
+
+                mask = clustering.labels == label
+                cluster_centers = centers_xy[mask]
+                if len(cluster_centers) > 0:
+                    centers_local = sub_img.to_local(cluster_centers.astype(np.float64))
+                    ax.scatter(centers_local[:, 0], centers_local[:, 1], c=color, s=20, zorder=3)
+
                     ax_handles.append(
                         Line2D(
                             [0],
                             [0],
                             marker="o",
                             color="w",
-                            markerfacecolor="orange",
+                            markerfacecolor=color,
                             markersize=7,
-                            label=f"bottom 2nd cluster  |  fiducials={int(mask.sum())}  |  {_spacing_info(second_cx)}",
+                            label=f"{side} {pattern}  |  score={score:.3f}  |  fiducials={int(mask.sum())}  |  {_spacing_info(cluster_centers[:, 0])}",
                         )
                     )
-                    mp2 = mean_patch_from_centers(src, second_centers)
-                    if mp2 is not None:
-                        inset_data.append(("orange", mp2))
+
+                    mp = mean_patch_from_centers(src, cluster_centers.astype(np.float64))
+                    if mp is not None:
+                        inset_data.append((color, mp))
 
             x_edge = np.linspace(0, src.width, 500)
             edge_local = sub_img.to_local(np.column_stack([x_edge, edge_model.predict(x_edge.reshape(-1, 1)).ravel()]))
@@ -234,14 +246,25 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
 
 
 def plot_fiducial_detected_boxes(detector: FiducialStrategy) -> tuple[Figure, Figure]:
-    """One figure per side showing every detected fiducial box as a cropped patch."""
+    """One figure per side showing every detected fiducial box as a cropped patch.
+
+    Boxes are colour-coded by DBSCAN cluster label; noise (label -1) appears in gray.
+    The subplot title shows the pattern name (if the cluster is scored) and matching score.
+    """
     figures: list[Figure] = []
+    cmap = plt.get_cmap("tab10")
 
     for side, side_result in zip(("top", "bottom"), (detector.top_, detector.bottom_)):
         boxes = side_result.boxes
         scores = side_result.scores
-        template_ids = side_result.template_ids
+        clustering = side_result.clustering
+        labels = clustering.labels
+        cluster_df = clustering.cluster_df
         n = len(boxes)
+
+        pattern_by_label = dict(zip(cluster_df["label"].tolist(), cluster_df["pattern"].tolist()))
+        unique_labels = sorted(int(lbl) for lbl in np.unique(labels) if lbl != -1)
+        label_to_color = {lbl: cmap(i % 10) for i, lbl in enumerate(unique_labels)}
 
         grid = max(1, int(np.ceil(np.sqrt(n))))
         fig, axes_2d = plt.subplots(grid, grid, figsize=(grid * 2, grid * 2), squeeze=False, constrained_layout=True)
@@ -249,11 +272,15 @@ def plot_fiducial_detected_boxes(detector: FiducialStrategy) -> tuple[Figure, Fi
         axes = axes_2d.flatten()
 
         with rasterio.open(detector.raster_filepath_) as src:
-            for ax, box, score, tid in zip(axes, boxes, scores, template_ids):
+            for ax, box, score, label in zip(axes, boxes, scores, labels):
                 x, y, w, h = box
                 band = src.read(1, window=Window(x, y, w, h))
                 ax.imshow(band, cmap="gray", interpolation="nearest")
-                ax.set_title(f"tpl={tid}  score={score:.3f}", fontsize=7)
+
+                color = label_to_color.get(int(label), (0.85, 0.85, 0.85, 1.0))
+                pattern = pattern_by_label.get(int(label), "noise" if label == -1 else None)
+                label_str = pattern if pattern else f"lbl={label}"
+                ax.set_title(f"{label_str}  {score:.3f}", fontsize=7, color=color)
                 ax.axis("off")
 
         for ax in axes[n:]:
