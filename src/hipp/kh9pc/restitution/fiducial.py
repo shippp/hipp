@@ -80,6 +80,10 @@ class FiducialStrategy(RestitutionStrategy):
         Minimum template-matching score to keep a detection.
     nms_threshold:
         IoU threshold for non-maximum suppression within a block and globally.
+    horizontal_margins:
+        ``(left, right)`` fractional margins relative to the detected image width.
+        The search window is inset by ``left * width`` on the left and
+        ``right * width`` on the right of the vertical edges.
     """
 
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
@@ -91,6 +95,7 @@ class FiducialStrategy(RestitutionStrategy):
     output_width: int | None = None
     output_height: int | None = DEFAULT_OUTPUT_HEIGHT
     min_score_threshold: float = 0.9
+    horizontal_margins: tuple[float, float] = (0.02, 0.01)
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -153,10 +158,14 @@ class FiducialStrategy(RestitutionStrategy):
             self.poly_strategy.fit(raster_filepath)
 
         col_start, col_end = self.poly_strategy.vertical_detector.edges_
+        detected_width = col_end - col_start
+        margin_l, margin_r = self.horizontal_margins
+        scan_start = col_start + int(margin_l * detected_width)
+        scan_end = col_end - int(margin_r * detected_width)
 
         with rasterio.open(raster_filepath) as src:
             for side in ("top", "bottom"):
-                boxes, scores, ids = self._scan_side(src, 0, col_end, side)
+                boxes, scores, ids = self._scan_side(src, scan_start, scan_end, side)
 
                 # apply NMS to remove duplicate detection
                 indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.threshold, self.nms_threshold)

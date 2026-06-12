@@ -5,7 +5,7 @@ import re
 import numpy as np
 
 from numpy.typing import NDArray
-from typing import Literal, get_args
+from typing import ClassVar, Literal, get_args
 
 
 _PATERN_STR = Literal[
@@ -17,16 +17,6 @@ SCAN_PIXEL_SIZE_MM: float = 0.007
 
 film_distance_mm = pixel_distance * SCAN_PIXEL_SIZE_MM
 """
-
-SPARSE_SCAN_MARKS_DISTANCE_MM: float = 133.096
-MID_SCAN_MARKS_DISTANCE_MM: float = SPARSE_SCAN_MARKS_DISTANCE_MM / 5
-TIME_RECORDING_MAX_DISTANCE_MM: float = 10.36
-
-SEGMENTED_MID_GAP: int = 3
-SEGMENTED_DENSE_GAP: int = 9
-
-FIDUCIAL_MAX_SPARSE_DELTA: float = 200
-FIDUCIAL_MAX_MID_DELTA: float = 100
 
 
 @dataclass
@@ -77,6 +67,49 @@ class KH9ImageSpec:
         return cls.from_mission(mission)
 
 
+class FiducialConstants:
+    SPARSE_DISTANCE_PX: ClassVar[int] = 19014
+    MID_DISTANCE_PX: ClassVar[int] = round(SPARSE_DISTANCE_PX / 5)
+    DENSE_MAX_DISTANCE_PX: ClassVar[int] = 1480
+
+    SEGMENTED_MID_GAP: ClassVar[int] = 3
+    SEGMENTED_DENSE_GAP: ClassVar[int] = 9
+
+    KEYWORD_RANGES: ClassVar[dict[str, tuple[int, int]]] = {
+        "sparse": (SPARSE_DISTANCE_PX - 200, SPARSE_DISTANCE_PX + 200),
+        "mid": (MID_DISTANCE_PX - 100, MID_DISTANCE_PX + 100),
+        "dense": (DENSE_MAX_DISTANCE_PX - 600, DENSE_MAX_DISTANCE_PX),
+    }
+
+    SEGMENTED_GAP_RATIO_TOLERANCE: ClassVar[float] = 1.5
+    """Allowed deviation from the expected gap-to-regular-spacing ratio for segmented patterns."""
+
+    @staticmethod
+    def is_valid_spacing(keyword: str, median_dist: float) -> bool:
+        lo, hi = FiducialConstants.KEYWORD_RANGES[keyword]
+        return lo <= median_dist <= hi
+
+    @staticmethod
+    def is_valid_gap_ratio(pattern: _PATERN_STR, regular_median: float, gap_median: float) -> bool:
+        """Check that the gap median is within tolerance of gap_factor × regular_median."""
+        if regular_median == 0:
+            return False
+        expected_ratio = FiducialConstants.segmented_gap(pattern)
+        return abs(gap_median / regular_median - expected_ratio) <= FiducialConstants.SEGMENTED_GAP_RATIO_TOLERANCE
+
+    @staticmethod
+    def segmented_gap(pattern: _PATERN_STR) -> int:
+        mapping = {
+            "segmented_dense": FiducialConstants.SEGMENTED_DENSE_GAP,
+            "segmented_mid": FiducialConstants.SEGMENTED_MID_GAP,
+        }
+
+        gap = mapping.get(pattern)
+        if gap is None:
+            raise ValueError(f"Unrecognized pattern : {pattern}")
+        return gap
+
+
 def centers_xy_from_boxes(boxes: NDArray[np.int_]) -> NDArray[np.floating]:
     """Return (N, 2) array of box centers from (N, 4) ``[x, y, w, h]`` boxes."""
     return boxes[:, :2] + boxes[:, 2:] * 0.5
@@ -89,29 +122,24 @@ def compute_fiducial_pattern_score(pattern: _PATERN_STR, points: NDArray[np.floa
     sorted_points = points[np.argsort(points[:, 0])]
     coverage_score = float((sorted_points[-1, 0] - sorted_points[0, 0]) / image_width)
     distances = np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
+    median_dist = float(np.median(distances))
 
-    if "sparse" in pattern:
-        expected_distance_px = SPARSE_SCAN_MARKS_DISTANCE_MM / SCAN_PIXEL_SIZE_MM
-        if np.abs(np.median(distances) - expected_distance_px) > FIDUCIAL_MAX_SPARSE_DELTA:
-            return 0.0
-    if "mid" in pattern:
-        expected_distance_px = MID_SCAN_MARKS_DISTANCE_MM / SCAN_PIXEL_SIZE_MM
-        if np.abs(np.median(distances) - expected_distance_px) > FIDUCIAL_MAX_MID_DELTA:
-            return 0.0
-    if "dense" in pattern:
-        max_distance_px = TIME_RECORDING_MAX_DISTANCE_MM / SCAN_PIXEL_SIZE_MM
-        if np.median(distances) > max_distance_px:
+    for keyword in FiducialConstants.KEYWORD_RANGES:
+        if keyword in pattern and not FiducialConstants.is_valid_spacing(keyword, median_dist):
             return 0.0
 
     if pattern.startswith("regular"):
         return float((coefficient_of_variation_score(distances) * coverage_score) ** (1 / 2))
 
     if pattern.startswith("segmented"):
-        mult = SEGMENTED_MID_GAP if "mid" in pattern else SEGMENTED_DENSE_GAP
-        split_threshold = np.median(distances) * mult / 2
+        split_threshold = median_dist * FiducialConstants.segmented_gap(pattern) / 2
         regular_dist = distances[distances < split_threshold]
         gap_dist = distances[distances > split_threshold]
         if len(regular_dist) == 0 or len(gap_dist) == 0:
+            return 0.0
+        if not FiducialConstants.is_valid_gap_ratio(
+            pattern, float(np.median(regular_dist)), float(np.median(gap_dist))
+        ):
             return 0.0
         return float(
             (coefficient_of_variation_score(regular_dist) * coefficient_of_variation_score(gap_dist) * coverage_score)

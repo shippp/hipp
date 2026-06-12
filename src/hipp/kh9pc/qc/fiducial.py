@@ -105,14 +105,10 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
     fig, ax = plt.subplots(figsize=(14, 4), constrained_layout=True)
     fig.suptitle(f"Fiducial distortion — {detector.raster_filepath_.stem}", fontsize=12, fontweight="bold")
 
-    linestyles = {"top": "-", "bottom": "--"}
-
     for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
         clustering = result.clustering
         centers_xy = result.centers_xy
         good_df = clustering.cluster_df[clustering.cluster_df["is_good"]]
-
-        x_grid = np.linspace(float(centers_xy[:, 0].min()), float(centers_xy[:, 0].max()), 500)
 
         for _, row in good_df.iterrows():
             label = int(row["label"])
@@ -121,16 +117,18 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
             inlier_centers = centers_xy[mask]
             if len(inlier_centers) < 8:
                 continue
-            coeffs = np.polyfit(inlier_centers[:, 0].astype(np.float64), inlier_centers[:, 1].astype(np.float64), 7)
-            y_fit = np.polyval(coeffs, x_grid)
-            ax.plot(
-                x_grid,
-                y_fit - float(np.mean(y_fit)),
-                linestyle=linestyles[side],
-                label=f"{side} · {pattern}  (n={int(mask.sum())})",
+            x = inlier_centers[:, 0].astype(np.float64)
+            y = inlier_centers[:, 1].astype(np.float64)
+            ax.scatter(
+                x,
+                y - y.mean(),
+                s=8,
+                marker="x" if side == "bottom" else "o",
+                label=f"{side} · {pattern}  (n={len(x)})",
             )
 
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle=":")
+    ax.invert_yaxis()
     ax.legend(fontsize=8)
     ax.set_xlabel("column (px)")
     ax.set_ylabel("distortion (px)")
