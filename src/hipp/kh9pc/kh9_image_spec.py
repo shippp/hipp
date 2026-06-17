@@ -5,7 +5,7 @@ import re
 import rasterio
 
 
-from hipp.kh9pc.fiducials import (
+from hipp.kh9pc.fiducial_patterns import (
     FiducialPattern,
     RegularDense,
     RegularMid,

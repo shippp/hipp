@@ -12,10 +12,10 @@ from sklearn.linear_model import RANSACRegressor
 from sklearn.preprocessing import StandardScaler
 
 from hipp.image import SubImage, match_multiple_templates, remap_tif_blockwise
-from hipp.kh9pc.fiducials import FiducialPattern, centers_xy_from_boxes
+from hipp.kh9pc.fiducial_patterns import FiducialPattern, centers_xy_from_boxes
 from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
-from hipp.kh9pc.restitution.poly import PolyStrategy
+from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 
 
 @dataclass

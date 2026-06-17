@@ -2,10 +2,10 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hipp.kh9pc.restitution.collimation import CollimationStrategy
-from hipp.kh9pc.restitution.fiducial import FiducialStrategy
-from hipp.kh9pc.restitution.flat import FlatStrategy
-from hipp.kh9pc.restitution.poly import PolyStrategy
+from hipp.kh9pc.restitution.collimation_strategy import CollimationStrategy
+from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
+from hipp.kh9pc.restitution.flat_strategy import FlatStrategy
+from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 from hipp.kh9pc.restitution.base import RestitutionStrategy, Transformation
 
 logger = logging.getLogger(__name__)

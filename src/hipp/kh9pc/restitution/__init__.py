@@ -1,7 +1,15 @@
-from hipp.kh9pc.restitution.collimation import CollimationStrategy
-from hipp.kh9pc.restitution.fiducial import FiducialStrategy
-from hipp.kh9pc.restitution.flat import FlatStrategy
-from hipp.kh9pc.restitution.mixed import MixedStrategy
-from hipp.kh9pc.restitution.poly import PolyStrategy
+from .collimation_strategy import CollimationStrategy
+from .fiducial_strategy import FiducialStrategy
+from .flat_strategy import FlatStrategy
+from .mixed_strategy import MixedStrategy
+from .poly_strategy import PolyStrategy
+from .vertical_detector import VerticalDetector
 
-__all__ = ["CollimationStrategy", "FiducialStrategy", "FlatStrategy", "PolyStrategy", "MixedStrategy"]
+__all__ = [
+    "CollimationStrategy",
+    "FiducialStrategy",
+    "FlatStrategy",
+    "PolyStrategy",
+    "MixedStrategy",
+    "VerticalDetector",
+]

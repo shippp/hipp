@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 import rasterio
 from rasterio.windows import Window
 
-from hipp.kh9pc.fitting import detect_ruptures
+from hipp.kh9pc.restitution.base import detect_ruptures
 from hipp.kh9pc.restitution.base import FittingClass
 from hipp.image import SubImage
 

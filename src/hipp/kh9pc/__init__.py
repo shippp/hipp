@@ -1,8 +1,15 @@
-from . import mosaic, qc
+from . import mosaic
+from . import quality_control as qc
 from .mosaic import image_mosaic
-from .restitution import CollimationStrategy, FiducialStrategy, FlatStrategy, MixedStrategy, PolyStrategy
+from .restitution import (
+    CollimationStrategy,
+    FiducialStrategy,
+    FlatStrategy,
+    MixedStrategy,
+    PolyStrategy,
+    VerticalDetector,
+)
 from .restitution.base import DetectionError
-from .restitution.vertical import VerticalDetector
 
 __all__ = [
     "mosaic",

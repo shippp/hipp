@@ -7,9 +7,9 @@ import rasterio
 from rasterio.windows import Window
 
 from hipp.image import SubImage, remap_tif_blockwise
-from hipp.kh9pc.fitting import detect_ruptures
+from hipp.kh9pc.restitution.base import detect_ruptures
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, RestitutionStrategy, Transformation
-from hipp.kh9pc.restitution.vertical import VerticalDetector
+from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
 
 
 @dataclass
