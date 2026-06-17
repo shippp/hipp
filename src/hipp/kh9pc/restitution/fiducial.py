@@ -4,7 +4,6 @@ from typing import Literal, Self
 
 import cv2
 import numpy as np
-import pandas as pd
 import rasterio
 from numpy.typing import NDArray
 from rasterio.windows import Window
@@ -13,25 +12,18 @@ from sklearn.linear_model import RANSACRegressor
 from sklearn.preprocessing import StandardScaler
 
 from hipp.image import SubImage, match_multiple_templates, remap_tif_blockwise
-from hipp.kh9pc.fiducials import KH9ImageSpec, centers_xy_from_boxes, compute_all_fiducial_pattern_scores
+from hipp.kh9pc.fiducials import FiducialPattern, centers_xy_from_boxes
+from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
 from hipp.kh9pc.restitution.poly import PolyStrategy
 
 
 @dataclass
-class Clustering:
-    features: NDArray[np.floating]
-    labels: NDArray[np.integer]
-    eps: float
-    weight: float
-    cluster_df: pd.DataFrame
-
-
-@dataclass
 class FiducialResult:
     boxes: NDArray[np.int_]
-    scores: NDArray[np.float64]
-    clustering: Clustering
+    scores: NDArray[np.floating]
+    patterns: list[FiducialPattern]
+    features: NDArray[np.floating]  # (N, 2): (matching_score, residual_to_edge)
 
     @property
     def centers_xy(self) -> NDArray[np.floating]:
@@ -94,8 +86,7 @@ class FiducialStrategy(RestitutionStrategy):
     nms_threshold: float = 0.1
     output_width: int | None = None
     output_height: int | None = DEFAULT_OUTPUT_HEIGHT
-    min_score_threshold: float = 0.9
-    horizontal_margins: tuple[float, float] = (0.02, 0.01)
+    min_score_threshold: float = 0.8
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -104,6 +95,12 @@ class FiducialStrategy(RestitutionStrategy):
         )
         self._results: dict[str, FiducialResult] = {}
         self.__transformation_: Transformation | None = None
+
+    @property
+    def _spec(self) -> KH9ImageSpec:
+        if self.kh9_image_spec is None:
+            raise RuntimeError("kh9_image_spec not initialized — call fit() first")
+        return self.kh9_image_spec
 
     # ------------------------------------------------------------------
     # Public properties
@@ -123,10 +120,9 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        for result in (self.top_, self.bottom_):
-            if not result.clustering.cluster_df["is_good"].any():
-                return True
-        return False
+        return not any(
+            p.final_score > self.min_score_threshold for result in (self.top_, self.bottom_) for p in result.patterns
+        )
 
     @property
     def transformation_(self) -> Transformation:
@@ -151,21 +147,17 @@ class FiducialStrategy(RestitutionStrategy):
 
     def _fit(self, raster_filepath: Path) -> Self:
         if self.kh9_image_spec is None:
-            self.kh9_image_spec = KH9ImageSpec.from_filename(raster_filepath)
+            self.kh9_image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
             self._templates = _load_kind(self.kh9_image_spec.fiducial_type)
 
         if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
             self.poly_strategy.fit(raster_filepath)
 
-        col_start, col_end = self.poly_strategy.vertical_detector.edges_
-        detected_width = col_end - col_start
-        margin_l, margin_r = self.horizontal_margins
-        scan_start = col_start + int(margin_l * detected_width)
-        scan_end = col_end - int(margin_r * detected_width)
+        _, col_end = self.poly_strategy.vertical_detector.edges_
 
         with rasterio.open(raster_filepath) as src:
             for side in ("top", "bottom"):
-                boxes, scores, ids = self._scan_side(src, scan_start, scan_end, side)
+                boxes, scores, ids = self._scan_side(src, 0, col_end, side)
 
                 # apply NMS to remove duplicate detection
                 indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), self.threshold, self.nms_threshold)
@@ -175,12 +167,9 @@ class FiducialStrategy(RestitutionStrategy):
                 if len(boxes) == 0:
                     raise DetectionError(f"no fiducials detected on {side} side of {raster_filepath.name}")
 
-                result = self._filter_outliers(boxes, scores, side)
+                patterns, features = self._search_patterns(boxes, scores, side)
 
-                if len(result.boxes) == 0:
-                    raise DetectionError(f"no inlier cluster found on {side} side of {raster_filepath.name}")
-
-                self._results[side] = result
+                self._results[side] = FiducialResult(boxes, scores, patterns, features)
 
         return self
 
@@ -262,96 +251,67 @@ class FiducialStrategy(RestitutionStrategy):
         features: NDArray[np.floating] = np.column_stack((scores, residuals))
         return centers_xy, features
 
-    @staticmethod
     def _score_clusters(
+        self,
         labels: NDArray[np.int_],
         centers_xy: NDArray[np.floating],
-        detected_width: int,
-    ) -> pd.DataFrame:
-        results = []
+        fiducial_pattern_type: type[FiducialPattern],
+    ) -> FiducialPattern:
+        result = fiducial_pattern_type(np.empty((0, 2), dtype=np.float64), self._spec.expected_size[0])
+
         for label in np.unique(labels):
             if label == -1:
                 continue
             mask = labels == label
             if mask.sum() < 5:
                 continue
-            pattern_scores = compute_all_fiducial_pattern_scores(centers_xy[mask], detected_width)
-            pattern, score = max(pattern_scores.items(), key=lambda item: item[1])
-            if score > 0.0:
-                results.append({"label": label, "pattern": pattern, "score": score})
-            else:
-                results.append({"label": label, "pattern": None, "score": 0.0})
 
-        return pd.DataFrame(results)
+            pattern = fiducial_pattern_type(centers_xy[mask], self._spec.expected_size[0])
+            if result.final_score < pattern.final_score:
+                result = pattern
+
+        return result
 
     def _grid_search_clustering(
         self,
         features: NDArray[np.floating],
         centers_xy: NDArray[np.floating],
-        detected_width: int,
-    ) -> Clustering:
+        fiducial_patterns_type: tuple[type[FiducialPattern], type[FiducialPattern]],
+    ) -> list[FiducialPattern]:
         X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
-        best_key: tuple[float, float] = (-1.0, -1.0)
-        best: Clustering | None = None
+        patterns: list[FiducialPattern] = [
+            pt(np.empty((0, 2), dtype=np.float64), self._spec.expected_size[0]) for pt in fiducial_patterns_type
+        ]
 
         for rw in np.linspace(0.5, 5, 20):
             X_weighted = (X_scaled * np.array([1.0, rw])).astype(np.float64)
             for eps in np.linspace(0.1, 5, 20):
                 labels: NDArray[np.int_] = DBSCAN(eps, min_samples=5).fit(X_weighted).labels_
-                df = self._score_clusters(labels, centers_xy, detected_width)
-                if df.empty:
-                    continue
-                top2 = df["score"].nlargest(2).tolist()
-                while len(top2) < 2:
-                    top2.append(0.0)
-                key = (top2[0], top2[1])
-                if key > best_key:
-                    best_key = key
-                    df["is_good"] = df["score"] >= self.min_score_threshold
-                    best = Clustering(features=features, labels=labels, eps=eps, weight=rw, cluster_df=df)
 
-        if best is None:
-            raise DetectionError("No valid cluster found during grid search")
+                for i, fiducial_pattern_type in enumerate(fiducial_patterns_type):
+                    pattern = self._score_clusters(labels, centers_xy, fiducial_pattern_type)
+                    if patterns[i].final_score < pattern.final_score:
+                        patterns[i] = pattern
 
-        return best
+        return patterns
 
-    def _filter_outliers(
+    def _search_patterns(
         self,
         boxes: NDArray[np.int_],
         scores: NDArray[np.float64],
         side: Literal["top", "bottom"],
-    ) -> FiducialResult:
-        """Identify the two fiducial pattern clusters among raw detections using DBSCAN with a grid search.
-
-        For each side (top/bottom) two distinct fiducial patterns coexist. This method clusters
-        detections in a 2-D feature space of (matching score, residual to the polynomial edge model),
-        then scores each cluster with ``compute_all_fiducial_pattern_scores`` and selects the
-        configuration that maximises the best cluster score, with the second-best as tiebreaker
-        (lexicographic comparison). The two top-scoring clusters are returned as inliers, each
-        labelled with its best matching fiducial pattern.
-
-        Parameters
-        ----------
-        boxes:
-            Detection boxes ``[x, y, w, h]`` in global raster coordinates, after NMS.
-        scores:
-            Corresponding template-matching scores.
-        side:
-            Which edge model to use for residual computation.
-
-        Returns
-        -------
-        FiducialResult
-            Inlier boxes and scores from the two selected clusters, pattern label per cluster,
-            and the full DBSCAN state at the best (eps, weight) parameters.
-        """
-        model = self.poly_strategy.top_.model if side == "top" else self.poly_strategy.bottom_.model
-        detected_width = int(self.poly_strategy.vertical_detector.detected_width_)
+    ) -> tuple[list[FiducialPattern], NDArray[np.floating]]:
+        if side == "top":
+            model = self.poly_strategy.top_.model
+            fiducial_patterns_type = self._spec.top_fiducial_patterns
+        else:
+            model = self.poly_strategy.bottom_.model
+            fiducial_patterns_type = self._spec.bottom_fiducial_patterns
 
         centers_xy, features = self._compute_detection_features(boxes, scores, model)
-        clustering = self._grid_search_clustering(features, centers_xy, detected_width)
+        patterns = self._grid_search_clustering(features, centers_xy, fiducial_patterns_type)
 
-        return FiducialResult(boxes=boxes, scores=scores, clustering=clustering)
+        return patterns, features
 
     def _compute_transformation(self) -> Transformation:
         raise NotImplementedError

@@ -1,156 +1,137 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
-import re
 
 import numpy as np
 
 from numpy.typing import NDArray
-from typing import ClassVar, Literal, get_args
-
-
-_PATERN_STR = Literal[
-    "regular_sparse", "regular_dense", "regular_mid", "segmented_mid", "segmented_dense", "serialized_time_word"
-]
-
-SCAN_PIXEL_SIZE_MM: float = 0.007
-"""Film distance in mm represented by one image pixel.
-
-film_distance_mm = pixel_distance * SCAN_PIXEL_SIZE_MM
-"""
+from typing import ClassVar
 
 
 @dataclass
-class KH9ImageSpec:
-    collimation_line: bool
-    fiducial_type: Literal["disk", "wagon_wheel"]
-    top_fiducial_patterns: tuple[_PATERN_STR, _PATERN_STR]
-    bottom_fiducial_patterns: tuple[_PATERN_STR, _PATERN_STR]
+class FiducialPattern(ABC):
+    points: NDArray[np.floating]
+    expected_width: int
 
-    @classmethod
-    def from_mission(cls, mission: str | int) -> "KH9ImageSpec":
-        mission = int(mission)
+    @property
+    def final_score(self) -> float:
+        if self.count == 0:
+            return 0.0
+        return float((self.spacing_score * self.coverage_score))
 
-        if mission < 1201 or mission > 1219:
-            raise ValueError("Unrecgnized mission")
+    @property
+    @abstractmethod
+    def spacing_score(self) -> float: ...
 
-        collimation_line = mission >= 1206
-        fiducial_type: Literal["disk", "wagon_wheel"] = "disk" if mission <= 1213 else "wagon_wheel"
+    @property
+    def coverage_score(self) -> float:
+        result = float((np.max(self.points[:, 0]) - np.min(self.points[:, 0])) / self.expected_width)
+        return min(result, 1.0)
 
-        # top profiles
-        top_fiducial_patterns: tuple[_PATERN_STR, _PATERN_STR]
-        if mission <= 1213:
-            top_fiducial_patterns = ("regular_sparse", "serialized_time_word")
-        elif mission <= 1217:
-            top_fiducial_patterns = ("segmented_mid", "serialized_time_word")
-        else:
-            top_fiducial_patterns = ("segmented_mid", "segmented_dense")
+    @property
+    def count(self) -> int:
+        return len(self.points)
 
-        # bottom profiles
-        bottom_fiducial_patterns: tuple[_PATERN_STR, _PATERN_STR]
-        if mission <= 1213:
-            bottom_fiducial_patterns = ("regular_dense", "regular_sparse")
-        else:
-            bottom_fiducial_patterns = ("regular_dense", "regular_mid")
-
-        return cls(collimation_line, fiducial_type, top_fiducial_patterns, bottom_fiducial_patterns)
-
-    @classmethod
-    def from_filename(cls, name: str | Path) -> "KH9ImageSpec":
-        pattern = re.compile(r"^(D3C)(\d{4})-(\d)(\d{5})([FA])(\d{3})$")
-        stem = Path(name).stem
-        m = pattern.match(stem)
-        if m is None:
-            raise ValueError(
-                f"Cannot parse KH-9 image ID from {name!r}. Expected D3C{{mission}}-{{n}}{{roll}}{{F|A}}{{frame}}."
-            )
-        mission: str = m.group(2)
-        return cls.from_mission(mission)
+    @property
+    def spacing(self) -> NDArray[np.floating]:
+        sorted_points = self.points[np.argsort(self.points[:, 0])]
+        return np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
 
 
-class FiducialConstants:
-    SPARSE_DISTANCE_PX: ClassVar[int] = 19014
-    MID_DISTANCE_PX: ClassVar[int] = round(SPARSE_DISTANCE_PX / 5)
-    DENSE_MAX_DISTANCE_PX: ClassVar[int] = 1480
+class RegularSparse(FiducialPattern):
+    SPACING: ClassVar[int] = 19014
+    MAX_DELTA: ClassVar[int] = 200
 
-    SEGMENTED_MID_GAP: ClassVar[int] = 3
-    SEGMENTED_DENSE_GAP: ClassVar[int] = 9
-
-    KEYWORD_RANGES: ClassVar[dict[str, tuple[int, int]]] = {
-        "sparse": (SPARSE_DISTANCE_PX - 200, SPARSE_DISTANCE_PX + 200),
-        "mid": (MID_DISTANCE_PX - 100, MID_DISTANCE_PX + 100),
-        "dense": (DENSE_MAX_DISTANCE_PX - 600, DENSE_MAX_DISTANCE_PX),
-    }
-
-    SEGMENTED_GAP_RATIO_TOLERANCE: ClassVar[float] = 1.5
-    """Allowed deviation from the expected gap-to-regular-spacing ratio for segmented patterns."""
-
-    @staticmethod
-    def is_valid_spacing(keyword: str, median_dist: float) -> bool:
-        lo, hi = FiducialConstants.KEYWORD_RANGES[keyword]
-        return lo <= median_dist <= hi
-
-    @staticmethod
-    def is_valid_gap_ratio(pattern: _PATERN_STR, regular_median: float, gap_median: float) -> bool:
-        """Check that the gap median is within tolerance of gap_factor × regular_median."""
-        if regular_median == 0:
-            return False
-        expected_ratio = FiducialConstants.segmented_gap(pattern)
-        return abs(gap_median / regular_median - expected_ratio) <= FiducialConstants.SEGMENTED_GAP_RATIO_TOLERANCE
-
-    @staticmethod
-    def segmented_gap(pattern: _PATERN_STR) -> int:
-        mapping = {
-            "segmented_dense": FiducialConstants.SEGMENTED_DENSE_GAP,
-            "segmented_mid": FiducialConstants.SEGMENTED_MID_GAP,
-        }
-
-        gap = mapping.get(pattern)
-        if gap is None:
-            raise ValueError(f"Unrecognized pattern : {pattern}")
-        return gap
+    @property
+    def spacing_score(self) -> float:
+        lo, hi = RegularSparse.SPACING - RegularSparse.MAX_DELTA, RegularSparse.SPACING + RegularSparse.MAX_DELTA
+        if not lo <= np.median(self.spacing) <= hi:
+            return 0.0
+        return float(coefficient_of_variation_score(self.spacing))
 
 
-def centers_xy_from_boxes(boxes: NDArray[np.int_]) -> NDArray[np.floating]:
-    """Return (N, 2) array of box centers from (N, 4) ``[x, y, w, h]`` boxes."""
-    return boxes[:, :2] + boxes[:, 2:] * 0.5
+class RegularMid(FiducialPattern):
+    SPACING: ClassVar[int] = round(RegularSparse.SPACING / 5)
+    MAX_DELTA: ClassVar[int] = 100
+
+    @property
+    def spacing_score(self) -> float:
+        lo, hi = RegularMid.SPACING - RegularMid.MAX_DELTA, RegularMid.SPACING + RegularMid.MAX_DELTA
+        if not lo <= np.median(self.spacing) <= hi:
+            return 0.0
+        return float(coefficient_of_variation_score(self.spacing))
 
 
-def compute_fiducial_pattern_score(pattern: _PATERN_STR, points: NDArray[np.floating], image_width: int) -> float:
-    if len(points) == 0 or pattern == "serialized_time_word":
+class RegularDense(FiducialPattern):
+    MAX_SPACING: ClassVar[int] = 1480
+    MIN_SPACING: ClassVar[int] = MAX_SPACING - 600
+
+    @property
+    def spacing_score(self) -> float:
+        lo, hi = RegularDense.MIN_SPACING, RegularDense.MAX_SPACING
+        if not lo <= np.median(self.spacing) <= hi:
+            return 0.0
+        return float(coefficient_of_variation_score(self.spacing))
+
+
+class SegmentedMid(FiducialPattern):
+    VALID_GAPS: ClassVar[tuple[int, ...]] = (2, 3)  # 1 or 2 missing markers between segments
+
+    @property
+    def spacing_score(self) -> float:
+        lo, hi = RegularMid.SPACING - RegularMid.MAX_DELTA, RegularMid.SPACING + RegularMid.MAX_DELTA
+        spacing = self.spacing
+        if not lo <= np.median(spacing) <= hi:
+            return 0.0
+
+        # 1.5× sits between 1× and 2× spacing, so it cleanly separates regular from gap spacings
+        split_threshold = np.median(spacing) * 1.5
+
+        regular_spacing = spacing[spacing < split_threshold]
+        gap_spacing = spacing[spacing > split_threshold]
+
+        if len(regular_spacing) == 0 or len(gap_spacing) == 0:
+            return 0.0
+
+        expected_count = int(sum(round(s / np.median(regular_spacing)) for s in spacing))
+        detection_rate = len(spacing) / expected_count
+
+        return float(coefficient_of_variation_score(regular_spacing) * detection_rate)
+
+
+class SegmentedDense(FiducialPattern):
+    GAP: ClassVar[int] = 9
+
+    @property
+    def spacing_score(self) -> float:
+        lo, hi = RegularDense.MIN_SPACING, RegularDense.MAX_SPACING
+        spacing = self.spacing
+        if not lo <= np.median(spacing) <= hi:
+            return 0.0
+
+        split_threshold = np.median(spacing) * SegmentedDense.GAP / 2
+
+        regular_spacing = spacing[spacing < split_threshold]
+        gap_spacing = spacing[spacing > split_threshold]
+
+        if len(regular_spacing) == 0 or len(gap_spacing) == 0:
+            return 0.0
+
+        expected_count = int(sum(round(s / np.median(regular_spacing)) for s in spacing))
+        detection_rate = len(spacing) / expected_count
+
+        return float(coefficient_of_variation_score(regular_spacing) * detection_rate)
+
+
+class SerializedTimeWord(FiducialPattern):
+    @property
+    def spacing_score(self) -> float:
+        # TODO
         return 0.0
 
-    sorted_points = points[np.argsort(points[:, 0])]
-    coverage_score = float((sorted_points[-1, 0] - sorted_points[0, 0]) / image_width)
-    distances = np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
-    median_dist = float(np.median(distances))
 
-    for keyword in FiducialConstants.KEYWORD_RANGES:
-        if keyword in pattern and not FiducialConstants.is_valid_spacing(keyword, median_dist):
-            return 0.0
-
-    if pattern.startswith("regular"):
-        return float((coefficient_of_variation_score(distances) * coverage_score) ** (1 / 2))
-
-    if pattern.startswith("segmented"):
-        split_threshold = median_dist * FiducialConstants.segmented_gap(pattern) / 2
-        regular_dist = distances[distances < split_threshold]
-        gap_dist = distances[distances > split_threshold]
-        if len(regular_dist) == 0 or len(gap_dist) == 0:
-            return 0.0
-        if not FiducialConstants.is_valid_gap_ratio(
-            pattern, float(np.median(regular_dist)), float(np.median(gap_dist))
-        ):
-            return 0.0
-        return float(
-            (coefficient_of_variation_score(regular_dist) * coefficient_of_variation_score(gap_dist) * coverage_score)
-            ** (1 / 3)
-        )
-
-    return 0.0
-
-
-def compute_all_fiducial_pattern_scores(points: NDArray[np.floating], image_width: int) -> dict[_PATERN_STR, float]:
-    return {p: compute_fiducial_pattern_score(p, points, image_width) for p in get_args(_PATERN_STR)}
+def centers_xy_from_boxes(boxes: NDArray[np.floating] | NDArray[np.integer]) -> NDArray[np.floating]:
+    """Return (N, 2) array of box centers from (N, 4) ``[x, y, w, h]`` boxes."""
+    return boxes[:, :2] + boxes[:, 2:] * 0.5
 
 
 def coefficient_of_variation_score(x: NDArray[np.floating]) -> float:
