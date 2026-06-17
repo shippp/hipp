@@ -7,173 +7,127 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 import rasterio
 from rasterio.windows import Window
 
-from hipp.kh9pc.restitution.base import detect_ruptures
-from hipp.kh9pc.restitution.base import FittingClass
 from hipp.image import SubImage
-
-
-@dataclass
-class VerticalEdgeResult:
-    position: int
-    rupture_local: int
-    sub_image: SubImage
-    profile: NDArray[np.integer]
-    gradient_pct: float
+from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
+from hipp.kh9pc.restitution.base import FittingClass, detect_ruptures
 
 
 logger = logging.getLogger(__name__)
 
-IMAGE_WIDTHS_MM: list[float] = [798.576, 1597.152, 2395.728, 3194.304]
-IMAGE_WIDTHS_PX: list[int] = [114082, 228165, 342247, 456329]
+
+@dataclass
+class VerticalEdgeResult:
+    """Detected edge: global position, local rupture index, sub-image, and column-sum profile."""
+
+    position: int
+    rupture_local: int
+    sub_image: SubImage
+    profile: NDArray[np.floating]
 
 
 @dataclass
 class VerticalDetector(FittingClass):
+    """Detects the left and right film frame edges from a KH-9 PC raster."""
+
     background_threshold: int = 20
-    width_fraction: float = 0.15
-    stride: int = 10
-    # tuple order: (left%, top%, right%, bottom%) — fractions of image width/height to ignore at each side
-    paddings_pct: tuple[float, float, float, float] = (0.0, 0.10, 0.0, 0.10)
-    window_size: int = 30
-    min_gradient_pct: float = 0.1
+    vertical_padding: float = 0.25
+    search_half_width: int = 5000
+    scale: float = 0.1
 
     def __post_init__(self) -> None:
+        """Initialise fitted-attribute slots."""
         super().__init__()
         self._results: dict[str, VerticalEdgeResult] = {}
         self._failed: bool = False
 
     @property
     def is_failed(self) -> bool:
+        """True if the last fit() call failed to detect one or both edges."""
         return self._failed
 
     @property
     def left_(self) -> VerticalEdgeResult:
+        """Detected left edge. Raises if fit() has not been called or failed."""
         if "left" not in self._results:
             raise RuntimeError("left edge not available — call fit() first")
         return self._results["left"]
 
     @property
     def right_(self) -> VerticalEdgeResult:
+        """Detected right edge. Raises if fit() has not been called or failed."""
         if "right" not in self._results:
             raise RuntimeError("right edge not available — call fit() first")
         return self._results["right"]
 
     @property
     def edges_(self) -> tuple[int, int]:
+        """(left_position, right_position) in full-raster pixel coordinates."""
         return self.left_.position, self.right_.position
 
     @property
     def detected_width_(self) -> int:
+        """Width between detected edges in full-raster pixels."""
         return self.right_.position - self.left_.position
 
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
+        """Detect left then right edge and populate results."""
         self._failed = False
         self._results = {}
+        image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
+        expected_width = image_spec.expected_size[0]
 
         with rasterio.open(raster_filepath) as src:
-            exp_width = expected_width(src)
-            logger.info("VerticalDetector: raster width=%d, effective image width=%d", src.width, exp_width)
+            left = self._detect_edge(src, col_off=0, reverse_scan=True, side="left")
+            if left is None:
+                self._failed = True
+                return self
+            self._results["left"] = left
 
-            pad_left = int(src.width * self.paddings_pct[0])
-            pad_top = int(src.height * self.paddings_pct[1])
-            pad_right = int(src.width * self.paddings_pct[2])
-            pad_bottom = int(src.height * self.paddings_pct[3])
-
-            row_off = pad_top
-            row_height = src.height - pad_top - pad_bottom
-
-            for side in ("left", "right"):
-                result = None
-                width_frac = self.width_fraction
-                while width_frac <= 0.5:
-                    window_width = int(src.width * width_frac)
-                    out_shape = (1, 1, window_width // self.stride)
-                    window = (
-                        Window(pad_left, row_off, window_width, row_height)
-                        if side == "left"
-                        else Window(src.width - window_width - pad_right, row_off, window_width, row_height)
-                    )
-                    sub_image = SubImage(src, window, out_shape)
-                    profile = sub_image.band.flatten()
-                    ruptures = detect_ruptures(profile, self.background_threshold, reverse_scan=(side == "left"))
-                    if width_frac > self.width_fraction:
-                        logger.warning(
-                            "VerticalDetector: no rupture found for %s edge at width_fraction=%.2f, retrying with %.2f",
-                            side,
-                            width_frac - 0.1,
-                            width_frac,
-                        )
-                    if len(ruptures) > 0:
-                        gradients_pct = compute_gradient_pcts(
-                            profile, ruptures, self.window_size, use_max=(side == "left")
-                        )
-                        # first rupture above min_gradient_pct threshold (fallback to first one)
-                        idx = next((i for i, x in enumerate(gradients_pct) if x > self.min_gradient_pct), 0)
-                        rupture_local = int(ruptures[idx])
-                        position = int(sub_image.to_global(np.array([rupture_local, 0.0]))[0])
-                        result = VerticalEdgeResult(
-                            position=position,
-                            rupture_local=rupture_local,
-                            sub_image=sub_image,
-                            profile=profile,
-                            gradient_pct=gradients_pct[idx],
-                        )
-                        break
-                    width_frac += 0.1
-
-                if result is None:
-                    self._failed = True
-                    return self
-                self._results[side] = result
-
-            logger.info(
-                "VerticalDetector: left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
-                self._results["left"].position,
-                self._results["right"].position,
-                self.detected_width_,
-                exp_width,
-                self.detected_width_ - exp_width,
+            right_center = left.position + expected_width
+            right = self._detect_edge(
+                src, col_off=right_center - self.search_half_width, reverse_scan=False, side="right"
             )
+            if right is None:
+                self._failed = True
+                return self
+            self._results["right"] = right
 
+        logger.info(
+            "VerticalDetector: left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
+            left.position,
+            right.position,
+            self.detected_width_,
+            expected_width,
+            self.detected_width_ - expected_width,
+        )
         return self
 
+    def _detect_edge(
+        self, src: rasterio.DatasetReader, col_off: int, reverse_scan: bool, side: str
+    ) -> VerticalEdgeResult | None:
+        """Detect a single edge in a window; return None and warn if no rupture found."""
+        sub = self._sub_image(src, col_off=col_off)
+        _, binary = cv2.threshold(sub.band, self.background_threshold, 1, cv2.THRESH_BINARY)
+        profile = np.sum(binary, axis=0)
+        ruptures = detect_ruptures(profile, 2, reverse_scan=reverse_scan)
+        if ruptures.size == 0:
+            logger.warning("VerticalDetector: no %s edge found", side)
+            return None
+        r_local = int(ruptures[0])
+        position = int(sub.to_global(np.array([r_local, 0.0]))[0])
+        return VerticalEdgeResult(position=position, rupture_local=r_local, sub_image=sub, profile=profile)
 
-def expected_width(raster: str | Path | rasterio.DatasetReader) -> int:
-    if not isinstance(raster, rasterio.DatasetReader):
-        with rasterio.open(raster) as src:
-            return expected_width(src)
-
-    expected_widths_px = sorted(IMAGE_WIDTHS_PX)
-    candidates = [w for w in expected_widths_px if w <= raster.width]
-    if not candidates:
-        raise ValueError(f"Image width {raster.width} is smaller than all known expected widths.")
-    return candidates[-1]
-
-
-def compute_gradient_pcts(
-    profile: NDArray[np.number],
-    ruptures: NDArray[np.integer],
-    window_size: int,
-    use_max: bool,
-) -> list[float]:
-    """Score each rupture by its local gradient relative to the global gradient extremum.
-
-    For a rising edge (use_max=True)  : score = max(window_gradient) / max(profile_gradient)
-    For a falling edge (use_max=False): score = min(window_gradient) / min(profile_gradient)
-    """
-    gradient = np.diff(profile.astype(np.float32))
-    global_stat = float(np.max(gradient)) if use_max else float(np.min(gradient))
-    if global_stat == 0:
-        return [0.0] * len(ruptures)
-
-    pcts: list[float] = []
-    for r in ruptures:
-        w = np.diff(profile[max(0, r - window_size) : r + window_size].astype(np.float32))
-        local_stat = float(np.max(w)) if use_max else float(np.min(w))
-        pcts.append(local_stat / global_stat)
-    return pcts
+    def _sub_image(self, src: rasterio.DatasetReader, col_off: int) -> SubImage:
+        """Read a downsampled window of width 2*search_half_width starting at col_off."""
+        padding_px = int(self.vertical_padding * src.height)
+        col_off = max(0, col_off)
+        width = min(src.width - col_off, 2 * self.search_half_width)
+        window = Window(col_off, padding_px, width, src.height - 2 * padding_px)
+        out_shape = (1, int(window.height * self.scale), int(window.width * self.scale))
+        return SubImage(src, window, out_shape)

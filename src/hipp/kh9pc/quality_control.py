@@ -28,12 +28,11 @@ def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
     for ax, side, result in zip(axes, ["left", "right"], [detector.left_, detector.right_]):
-        profile = result.sub_image.band.flatten()
-        ax.plot(profile, color="gray")
+        ax.plot(result.profile, color="gray")
         ax.axvline(x=result.rupture_local, color="red", label=f"rupture (local={result.rupture_local})")
-        ax.set_title(f"{side} band profile (global col={result.position})\nGradient:{result.gradient_pct:.2%}")
+        ax.set_title(f"{side} column-sum profile (global col={result.position})")
         ax.set_xlabel("local column index")
-        ax.set_ylabel("intensity")
+        ax.set_ylabel("column sum")
         ax.legend()
 
     return fig

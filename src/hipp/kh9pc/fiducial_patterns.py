@@ -129,6 +129,11 @@ class SerializedTimeWord(FiducialPattern):
         return 0.0
 
 
+########################################################################################
+#                                   UTILS FUNCTIONS
+########################################################################################
+
+
 def centers_xy_from_boxes(boxes: NDArray[np.floating] | NDArray[np.integer]) -> NDArray[np.floating]:
     """Return (N, 2) array of box centers from (N, 4) ``[x, y, w, h]`` boxes."""
     return boxes[:, :2] + boxes[:, 2:] * 0.5
@@ -142,3 +147,25 @@ def coefficient_of_variation_score(x: NDArray[np.floating]) -> float:
 
     coefficient_of_variation = np.std(x) / mean
     return float(1.0 / (1.0 + coefficient_of_variation))
+
+
+def compute_dst_points(
+    points: NDArray[np.floating], true_distance: float, y_dst: float | None = None
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    # compute y dst with median if not provideed
+    y_dst = y_dst or float(np.median(points[:, 1]))
+
+    # compute sorted spacing
+    sorted_points = points[np.argsort(points[:, 0])]
+    spacing = np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
+
+    # compute the median spacing with a filtering to remove gap between segement
+    median_spacing = np.median(spacing[spacing < 1.5 * true_distance])
+
+    idx = np.concatenate(([0], np.round(spacing / median_spacing)))
+    idx = np.cumulative_sum(idx)
+    dst_x = sorted_points[0, 0] + idx * true_distance
+
+    dst_points = np.column_stack([dst_x, np.full_like(dst_x, y_dst)])
+
+    return sorted_points, dst_points
