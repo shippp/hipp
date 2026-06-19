@@ -203,12 +203,12 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
 
 
 _PATTERN_COLORS: dict[str, str] = {
-    "RegularSparse": "red",
-    "RegularMid": "orange",
-    "RegularDense": "gold",
-    "SegmentedMid": "limegreen",
-    "SegmentedDense": "cyan",
-    "SerializedTimeWord": "violet",
+    "regulare_sparse": "red",
+    "regulare_mid": "orange",
+    "regular_dense": "gold",
+    "segmented_mid": "limegreen",
+    "segmented_dense": "cyan",
+    "serialized_time_word": "violet",
 }
 
 
@@ -246,11 +246,11 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
 
         legend_handles: list[Line2D] = []
 
-        for i, pattern in enumerate(result.patterns):
+        for i, (name, pattern) in enumerate(result.patterns.items()):
             if pattern.count == 0:
                 continue
             color = cmap(i % 10)
-            score = pattern.final_score
+            score = pattern.score
             star = " ★" if score > detector.min_score_threshold else ""
 
             indices = [coord_idx[k] for pt in pattern.points if (k := (float(pt[0]), float(pt[1]))) in coord_idx]
@@ -267,7 +267,7 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
                     color="w",
                     markerfacecolor=color,
                     markersize=6,
-                    label=f"{type(pattern).__name__}{star}  score={score:.3f}  n={pattern.count}",
+                    label=f"{name}{star}  score={score:.3f}  n={pattern.count}",
                 )
             )
 
@@ -299,8 +299,8 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
     fig.suptitle(f"Fiducial distortion — {detector.raster_filepath_.stem}", fontsize=12, fontweight="bold")
 
     for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
-        for pattern in result.patterns:
-            if pattern.final_score <= detector.min_score_threshold or pattern.count < 8:
+        for name, pattern in result.patterns.items():
+            if pattern.score <= detector.min_score_threshold or pattern.count < 8:
                 continue
             x = pattern.points[:, 0].astype(np.float64)
             y = pattern.points[:, 1].astype(np.float64)
@@ -309,7 +309,7 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
                 y - y.mean(),
                 s=8,
                 marker="x" if side == "bottom" else "o",
-                label=f"{side} · {type(pattern).__name__}  (n={len(x)})",
+                label=f"{side} · {name}  (n={len(x)})",
             )
 
     ax.axhline(0.0, color="gray", linewidth=0.8, linestyle=":")
@@ -325,7 +325,7 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
     """Detected fiducial centers overlaid on the top and bottom image strips, one scatter per valid pattern."""
     sides_results = [detector.top_, detector.bottom_]
     n_insets = max(
-        max(sum(1 for p in r.patterns if p.final_score > detector.min_score_threshold) for r in sides_results),
+        max(sum(1 for p in r.patterns.values() if p.score > detector.min_score_threshold) for r in sides_results),
         1,
     )
 
@@ -358,11 +358,11 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
             ax_handles: list[Line2D] = []
             inset_data: list[tuple[str, np.ndarray]] = []
 
-            for pattern in result.patterns:
-                if pattern.final_score <= detector.min_score_threshold:
+            for name, pattern in result.patterns.items():
+                if pattern.score <= detector.min_score_threshold:
                     continue
-                color = _PATTERN_COLORS.get(type(pattern).__name__, "white")
-                score = pattern.final_score
+                color = _PATTERN_COLORS.get(name, "white")
+                score = pattern.score
                 centers = pattern.points.astype(np.float64)
 
                 if len(centers) > 0:
@@ -376,7 +376,7 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
                             color="w",
                             markerfacecolor=color,
                             markersize=7,
-                            label=f"{side} {type(pattern).__name__}  |  score={score:.3f}  |  fiducials={pattern.count}  |  {_spacing_info(centers[:, 0])}",
+                            label=f"{side} {name}  |  score={score:.3f}  |  fiducials={pattern.count}  |  {_spacing_info(centers[:, 0])}",
                         )
                     )
                     mp = mean_patch_from_centers(src, centers)
@@ -420,10 +420,10 @@ def plot_fiducial_detected_boxes(detector: FiducialStrategy) -> tuple[Figure, Fi
         n = len(boxes)
 
         coord_to_pattern: dict[tuple[float, float], tuple[str, Any]] = {}
-        for i, pattern in enumerate(side_result.patterns):
+        for i, (name, pattern) in enumerate(side_result.patterns.items()):
             color = cmap(i % 10)
             for pt in pattern.points:
-                coord_to_pattern[(float(pt[0]), float(pt[1]))] = (type(pattern).__name__, color)
+                coord_to_pattern[(float(pt[0]), float(pt[1]))] = (name, color)
 
         _noise_color = (0.85, 0.85, 0.85, 1.0)
 

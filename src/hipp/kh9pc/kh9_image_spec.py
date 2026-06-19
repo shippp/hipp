@@ -5,15 +5,7 @@ import re
 import rasterio
 
 
-from hipp.kh9pc.fiducial_patterns import (
-    FiducialPattern,
-    RegularDense,
-    RegularMid,
-    RegularSparse,
-    SegmentedDense,
-    SegmentedMid,
-    SerializedTimeWord,
-)
+from hipp.kh9pc.fiducial_patterns import PATTERNS
 
 IMAGE_WIDTHS_PX: list[int] = [114082, 228165, 342247, 456329]
 IMAGE_HEIGHT_PX: int = 21771
@@ -24,8 +16,8 @@ class KH9ImageSpec:
     expected_size: tuple[int, int]
     collimation_line: bool
     fiducial_type: Literal["disk", "wagon_wheel"]
-    top_fiducial_patterns: tuple[type[FiducialPattern], type[FiducialPattern]]
-    bottom_fiducial_patterns: tuple[type[FiducialPattern], type[FiducialPattern]]
+    top_fiducial_patterns: tuple[PATTERNS, PATTERNS]
+    bottom_fiducial_patterns: tuple[PATTERNS, PATTERNS]
 
     @classmethod
     def from_raster_filepath(cls, filepath: str | Path) -> "KH9ImageSpec":
@@ -65,28 +57,28 @@ class KH9ImageSpec:
         return fiducial_type
 
     @staticmethod
-    def top_fiducial_patterns_from_mission(mission: int) -> tuple[type[FiducialPattern], type[FiducialPattern]]:
+    def top_fiducial_patterns_from_mission(mission: int) -> tuple[PATTERNS, PATTERNS]:
         if mission < 1201 or mission > 1219:
             raise ValueError("Unrecgnized mission")
-        top_fiducial_patterns: tuple[type[FiducialPattern], type[FiducialPattern]]
+        top_fiducial_patterns: tuple[PATTERNS, PATTERNS]
         if mission <= 1213:
-            top_fiducial_patterns = (RegularSparse, SerializedTimeWord)
+            top_fiducial_patterns = ("regulare_sparse", "serialized_time_word")
         elif mission <= 1217:
-            top_fiducial_patterns = (SegmentedMid, SerializedTimeWord)
+            top_fiducial_patterns = ("segmented_mid", "serialized_time_word")
         else:
-            top_fiducial_patterns = (SegmentedMid, SegmentedDense)
+            top_fiducial_patterns = ("segmented_mid", "segmented_dense")
         return top_fiducial_patterns
 
     @staticmethod
-    def bottom_fiducial_patterns_from_mission(mission: int) -> tuple[type[FiducialPattern], type[FiducialPattern]]:
+    def bottom_fiducial_patterns_from_mission(mission: int) -> tuple[PATTERNS, PATTERNS]:
         if mission < 1201 or mission > 1219:
             raise ValueError("Unrecgnized mission")
 
-        bottom_fiducial_patterns: tuple[type[FiducialPattern], type[FiducialPattern]]
+        bottom_fiducial_patterns: tuple[PATTERNS, PATTERNS]
         if mission <= 1213:
-            bottom_fiducial_patterns = (RegularDense, RegularSparse)
+            bottom_fiducial_patterns = ("regulare_sparse", "regular_dense")
         else:
-            bottom_fiducial_patterns = (RegularDense, RegularMid)
+            bottom_fiducial_patterns = ("regulare_mid", "regular_dense")
 
         return bottom_fiducial_patterns
 

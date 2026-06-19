@@ -347,7 +347,7 @@ def remap_tif_blockwise(
                 for dst_y0 in range(0, output_size[1], block_size)
             ]
             n_blocks = len(blocks)
-            log_every = max(1, n_blocks // 100000)
+            log_every = max(1, n_blocks // 10)
 
             for block_idx, (dst_x0, dst_y0) in enumerate(blocks):
                 if block_idx % log_every == 0:

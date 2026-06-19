@@ -1,132 +1,113 @@
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import numpy as np
 
 from numpy.typing import NDArray
-from typing import ClassVar
+from typing import Literal
+
+
+PATTERNS = Literal[
+    "regulare_sparse", "regulare_mid", "regular_dense", "segmented_mid", "segmented_dense", "serialized_time_word"
+]
 
 
 @dataclass
-class FiducialPattern(ABC):
+class DetectedPattern:
+    pattern: PATTERNS
     points: NDArray[np.floating]
     expected_width: int
-
-    @property
-    def final_score(self) -> float:
-        if self.count == 0:
-            return 0.0
-        return float((self.spacing_score * self.coverage_score))
-
-    @property
-    @abstractmethod
-    def spacing_score(self) -> float: ...
-
-    @property
-    def coverage_score(self) -> float:
-        result = float((np.max(self.points[:, 0]) - np.min(self.points[:, 0])) / self.expected_width)
-        return min(result, 1.0)
+    score: float
 
     @property
     def count(self) -> int:
         return len(self.points)
 
-    @property
-    def spacing(self) -> NDArray[np.floating]:
-        sorted_points = self.points[np.argsort(self.points[:, 0])]
-        return np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
 
-
-class RegularSparse(FiducialPattern):
-    SPACING: ClassVar[int] = 19014
-    MAX_DELTA: ClassVar[int] = 200
-
-    @property
-    def spacing_score(self) -> float:
-        lo, hi = RegularSparse.SPACING - RegularSparse.MAX_DELTA, RegularSparse.SPACING + RegularSparse.MAX_DELTA
-        if not lo <= np.median(self.spacing) <= hi:
-            return 0.0
-        return float(coefficient_of_variation_score(self.spacing))
-
-
-class RegularMid(FiducialPattern):
-    SPACING: ClassVar[int] = round(RegularSparse.SPACING / 5)
-    MAX_DELTA: ClassVar[int] = 100
-
-    @property
-    def spacing_score(self) -> float:
-        lo, hi = RegularMid.SPACING - RegularMid.MAX_DELTA, RegularMid.SPACING + RegularMid.MAX_DELTA
-        if not lo <= np.median(self.spacing) <= hi:
-            return 0.0
-        return float(coefficient_of_variation_score(self.spacing))
-
-
-class RegularDense(FiducialPattern):
-    MAX_SPACING: ClassVar[int] = 1480
-    MIN_SPACING: ClassVar[int] = MAX_SPACING - 600
-
-    @property
-    def spacing_score(self) -> float:
-        lo, hi = RegularDense.MIN_SPACING, RegularDense.MAX_SPACING
-        if not lo <= np.median(self.spacing) <= hi:
-            return 0.0
-        return float(coefficient_of_variation_score(self.spacing))
-
-
-class SegmentedMid(FiducialPattern):
-    VALID_GAPS: ClassVar[tuple[int, ...]] = (2, 3)  # 1 or 2 missing markers between segments
-
-    @property
-    def spacing_score(self) -> float:
-        lo, hi = RegularMid.SPACING - RegularMid.MAX_DELTA, RegularMid.SPACING + RegularMid.MAX_DELTA
-        spacing = self.spacing
-        if not lo <= np.median(spacing) <= hi:
-            return 0.0
-
-        # 1.5× sits between 1× and 2× spacing, so it cleanly separates regular from gap spacings
-        split_threshold = np.median(spacing) * 1.5
-
-        regular_spacing = spacing[spacing < split_threshold]
-        gap_spacing = spacing[spacing > split_threshold]
-
-        if len(regular_spacing) == 0 or len(gap_spacing) == 0:
-            return 0.0
-
-        expected_count = int(sum(round(s / np.median(regular_spacing)) for s in spacing))
-        detection_rate = len(spacing) / expected_count
-
-        return float(coefficient_of_variation_score(regular_spacing) * detection_rate)
-
-
-class SegmentedDense(FiducialPattern):
-    GAP: ClassVar[int] = 9
-
-    @property
-    def spacing_score(self) -> float:
-        lo, hi = RegularDense.MIN_SPACING, RegularDense.MAX_SPACING
-        spacing = self.spacing
-        if not lo <= np.median(spacing) <= hi:
-            return 0.0
-
-        split_threshold = np.median(spacing) * SegmentedDense.GAP / 2
-
-        regular_spacing = spacing[spacing < split_threshold]
-        gap_spacing = spacing[spacing > split_threshold]
-
-        if len(regular_spacing) == 0 or len(gap_spacing) == 0:
-            return 0.0
-
-        expected_count = int(sum(round(s / np.median(regular_spacing)) for s in spacing))
-        detection_rate = len(spacing) / expected_count
-
-        return float(coefficient_of_variation_score(regular_spacing) * detection_rate)
-
-
-class SerializedTimeWord(FiducialPattern):
-    @property
-    def spacing_score(self) -> float:
-        # TODO
+def coverage_score(points: NDArray[np.floating], expected_width: int) -> float:
+    if len(points) == 0:
         return 0.0
+    result = float((np.max(points[:, 0]) - np.min(points[:, 0])) / expected_width)
+    return min(result, 1.0)
+
+
+def compute_spacings(points: NDArray[np.floating]) -> NDArray[np.floating]:
+    sorted_points = points[np.argsort(points[:, 0])]
+    return np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
+
+
+def theorical_spacing_from_pattern(pattern: PATTERNS) -> int:
+    SPARSE_SPACING: int = 19014
+    MID_SPACING: int = round(SPARSE_SPACING / 5)
+    if "sparse" in pattern:
+        return SPARSE_SPACING
+    elif "mid" in pattern:
+        return MID_SPACING
+    else:
+        raise ValueError(f"No theorical spacing exist for the pattern {pattern}")
+
+
+def spacing_lo_hi_from_pattern(pattern: PATTERNS) -> tuple[int, int]:
+    DENSE_MAX_SPACING: int = 1480
+    if pattern == "serialized_time_word":
+        raise ValueError(f"No spacing lo hi existe for the pattern : {pattern}")
+    if "dense" in pattern:
+        return (DENSE_MAX_SPACING - 600, DENSE_MAX_SPACING)
+    else:
+        max_delta = 200 if "sparse" in pattern else 100
+        spacing = theorical_spacing_from_pattern(pattern)
+        return (spacing - max_delta, spacing + max_delta)
+
+
+def spacing_score_from_pattern(pattern: PATTERNS, points: NDArray[np.floating]) -> float:
+    if pattern == "serialized_time_word":
+        return 0.0
+
+    if len(points) == 0:
+        return 0.0
+
+    spacings = compute_spacings(points)
+    median_spacing = np.median(spacings)
+
+    # test if the distribution is in bounds of the pattern else return 0
+    lo, hi = spacing_lo_hi_from_pattern(pattern)
+    if not lo <= median_spacing <= hi:
+        return 0.0
+
+    # 1.5× sits between 1× and 2× spacing, so it cleanly separates regular from gap spacings
+    regular_spacings = spacings[spacings < median_spacing * 1.5]
+    expected_count = int(sum(round(s / median_spacing) for s in spacings))
+    detection_rate = len(spacings) / expected_count
+    return float(coefficient_of_variation_score(regular_spacings) * detection_rate)
+
+
+def evaluate_pattern(pattern: PATTERNS, points: NDArray[np.floating], expected_width: int) -> DetectedPattern:
+    return DetectedPattern(
+        pattern=pattern,
+        points=points,
+        expected_width=expected_width,
+        score=float(spacing_score_from_pattern(pattern, points) * coverage_score(points, expected_width)),
+    )
+
+
+def compute_global_src_and_dst_points(
+    top_pattern: DetectedPattern, bottom_pattern: DetectedPattern
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    # top and bottom fiducials distances
+    # computed with the median take on multiple images
+    Y_DIST: int = 23242
+
+    spacing = theorical_spacing_from_pattern(top_pattern.pattern)
+    if theorical_spacing_from_pattern(bottom_pattern.pattern) != spacing:
+        raise ValueError("Both pattern should have the same distribution (mid or sparse).")
+
+    mid_actual = float((np.median(top_pattern.points[:, 1]) + np.median(bottom_pattern.points[:, 1])) / 2)
+    top_y_dst = mid_actual - Y_DIST / 2
+    bottom_y_dst = mid_actual + Y_DIST / 2
+
+    top_src, top_dst = compute_src_and_dst_points(top_pattern.points, spacing, top_y_dst)
+    bot_src, bot_dst = compute_src_and_dst_points(bottom_pattern.points, spacing, bottom_y_dst)
+
+    return np.vstack((top_src, bot_src)), np.vstack((top_dst, bot_dst))
 
 
 ########################################################################################
@@ -149,7 +130,7 @@ def coefficient_of_variation_score(x: NDArray[np.floating]) -> float:
     return float(1.0 / (1.0 + coefficient_of_variation))
 
 
-def compute_dst_points(
+def compute_src_and_dst_points(
     points: NDArray[np.floating], true_distance: float, y_dst: float | None = None
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     # compute y dst with median if not provideed

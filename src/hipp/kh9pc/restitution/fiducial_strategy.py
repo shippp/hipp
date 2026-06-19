@@ -7,12 +7,20 @@ import numpy as np
 import rasterio
 from numpy.typing import NDArray
 from rasterio.windows import Window
+from skimage.transform import ThinPlateSplineTransform
 from sklearn.cluster import DBSCAN
 from sklearn.linear_model import RANSACRegressor
 from sklearn.preprocessing import StandardScaler
 
 from hipp.image import SubImage, match_multiple_templates, remap_tif_blockwise
-from hipp.kh9pc.fiducial_patterns import FiducialPattern, centers_xy_from_boxes
+from hipp.kh9pc.fiducial_patterns import (
+    PATTERNS,
+    DetectedPattern,
+    centers_xy_from_boxes,
+    compute_global_src_and_dst_points,
+    # compute_dst_points,
+    evaluate_pattern,
+)
 from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
 from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
@@ -22,7 +30,7 @@ from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 class FiducialResult:
     boxes: NDArray[np.int_]
     scores: NDArray[np.floating]
-    patterns: list[FiducialPattern]
+    patterns: dict[str, DetectedPattern]
     features: NDArray[np.floating]  # (N, 2): (matching_score, residual_to_edge)
 
     @property
@@ -65,7 +73,6 @@ class FiducialStrategy(RestitutionStrategy):
         (``fiducial_type`` field: ``"disk"`` for missions D3C1201–D3C1213,
         ``"wagon_wheel"`` for D3C1214–D3C1219). If ``None`` (default), the spec
         is inferred from the image filename at fit time via
-        ``KH9ImageSpec.from_filename()`` and stored in ``self.kh9_image_spec``.
     block_width:
         Width in pixels of each scanning block.
     threshold:
@@ -79,7 +86,6 @@ class FiducialStrategy(RestitutionStrategy):
     """
 
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
-    kh9_image_spec: KH9ImageSpec | None = None
     polynomial_degree: int = 7
     block_width: int = 512
     threshold: float = 0.5
@@ -90,17 +96,8 @@ class FiducialStrategy(RestitutionStrategy):
 
     def __post_init__(self) -> None:
         super().__init__()
-        self._templates: list[cv2.typing.MatLike] = (
-            _load_kind(self.kh9_image_spec.fiducial_type) if self.kh9_image_spec is not None else []
-        )
         self._results: dict[str, FiducialResult] = {}
         self.__transformation_: Transformation | None = None
-
-    @property
-    def _spec(self) -> KH9ImageSpec:
-        if self.kh9_image_spec is None:
-            raise RuntimeError("kh9_image_spec not initialized — call fit() first")
-        return self.kh9_image_spec
 
     # ------------------------------------------------------------------
     # Public properties
@@ -120,8 +117,13 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        return not any(
-            p.final_score > self.min_score_threshold for result in (self.top_, self.bottom_) for p in result.patterns
+        return not all(
+            any(
+                p.score > self.min_score_threshold
+                for name, p in result.patterns.items()
+                if "mid" in name or "sparse" in name
+            )
+            for result in (self.top_, self.bottom_)
         )
 
     @property
@@ -146,9 +148,8 @@ class FiducialStrategy(RestitutionStrategy):
     # ------------------------------------------------------------------
 
     def _fit(self, raster_filepath: Path) -> Self:
-        if self.kh9_image_spec is None:
-            self.kh9_image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
-            self._templates = _load_kind(self.kh9_image_spec.fiducial_type)
+        self.kh9_image_spec_ = KH9ImageSpec.from_raster_filepath(raster_filepath)
+        self.templates_ = _load_kind(self.kh9_image_spec_.fiducial_type)
 
         if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
             self.poly_strategy.fit(raster_filepath)
@@ -225,7 +226,7 @@ class FiducialStrategy(RestitutionStrategy):
             sub_image = SubImage(src, window)
             local_boxes, block_scores, block_ids = match_multiple_templates(
                 image=sub_image.band,
-                templates=self._templates,
+                templates=self.templates_,
                 threshold=self.threshold,
                 nms_threshold=self.nms_threshold,
             )
@@ -255,9 +256,10 @@ class FiducialStrategy(RestitutionStrategy):
         self,
         labels: NDArray[np.int_],
         centers_xy: NDArray[np.floating],
-        fiducial_pattern_type: type[FiducialPattern],
-    ) -> FiducialPattern:
-        result = fiducial_pattern_type(np.empty((0, 2), dtype=np.float64), self._spec.expected_size[0])
+        fiducial_pattern: PATTERNS,
+    ) -> DetectedPattern:
+        expected_width = self.kh9_image_spec_.expected_size[0]
+        result = evaluate_pattern(fiducial_pattern, np.empty((0, 2), dtype=np.float64), expected_width)
 
         for label in np.unique(labels):
             if label == -1:
@@ -266,9 +268,9 @@ class FiducialStrategy(RestitutionStrategy):
             if mask.sum() < 5:
                 continue
 
-            pattern = fiducial_pattern_type(centers_xy[mask], self._spec.expected_size[0])
-            if result.final_score < pattern.final_score:
-                result = pattern
+            detected_pattern = evaluate_pattern(fiducial_pattern, centers_xy[mask], expected_width)
+            if result.score < detected_pattern.score:
+                result = detected_pattern
 
         return result
 
@@ -276,22 +278,23 @@ class FiducialStrategy(RestitutionStrategy):
         self,
         features: NDArray[np.floating],
         centers_xy: NDArray[np.floating],
-        fiducial_patterns_type: tuple[type[FiducialPattern], type[FiducialPattern]],
-    ) -> list[FiducialPattern]:
+        fiducial_patterns: tuple[PATTERNS, PATTERNS],
+    ) -> dict[str, DetectedPattern]:
         X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
-        patterns: list[FiducialPattern] = [
-            pt(np.empty((0, 2), dtype=np.float64), self._spec.expected_size[0]) for pt in fiducial_patterns_type
-        ]
+        patterns: dict[str, DetectedPattern] = {
+            pt: evaluate_pattern(pt, np.empty((0, 2), dtype=np.float64), self.kh9_image_spec_.expected_size[0])
+            for pt in fiducial_patterns
+        }
 
         for rw in np.linspace(0.5, 5, 20):
             X_weighted = (X_scaled * np.array([1.0, rw])).astype(np.float64)
             for eps in np.linspace(0.1, 5, 20):
                 labels: NDArray[np.int_] = DBSCAN(eps, min_samples=5).fit(X_weighted).labels_
 
-                for i, fiducial_pattern_type in enumerate(fiducial_patterns_type):
-                    pattern = self._score_clusters(labels, centers_xy, fiducial_pattern_type)
-                    if patterns[i].final_score < pattern.final_score:
-                        patterns[i] = pattern
+                for pt in fiducial_patterns:
+                    pattern = self._score_clusters(labels, centers_xy, pt)
+                    if patterns[pt].score < pattern.score:
+                        patterns[pt] = pattern
 
         return patterns
 
@@ -300,18 +303,42 @@ class FiducialStrategy(RestitutionStrategy):
         boxes: NDArray[np.int_],
         scores: NDArray[np.float64],
         side: Literal["top", "bottom"],
-    ) -> tuple[list[FiducialPattern], NDArray[np.floating]]:
+    ) -> tuple[dict[str, DetectedPattern], NDArray[np.floating]]:
         if side == "top":
             model = self.poly_strategy.top_.model
-            fiducial_patterns_type = self._spec.top_fiducial_patterns
+            fiducial_patterns = self.kh9_image_spec_.top_fiducial_patterns
         else:
             model = self.poly_strategy.bottom_.model
-            fiducial_patterns_type = self._spec.bottom_fiducial_patterns
+            fiducial_patterns = self.kh9_image_spec_.bottom_fiducial_patterns
 
         centers_xy, features = self._compute_detection_features(boxes, scores, model)
-        patterns = self._grid_search_clustering(features, centers_xy, fiducial_patterns_type)
+        patterns = self._grid_search_clustering(features, centers_xy, fiducial_patterns)
 
         return patterns, features
 
     def _compute_transformation(self) -> Transformation:
-        raise NotImplementedError
+        if self.is_failed:
+            raise DetectionError("Can't compute the transformation with a failed estimation")
+
+        # use only primary patterns (sparse & mid) cause we know the theorical spacing
+        primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
+        primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
+
+        top_pattern = self.top_.patterns[primary_top_pattern]
+        bottom_pattern = self.bottom_.patterns[primary_bottom_pattern]
+
+        src_pts, dst_pts = compute_global_src_and_dst_points(top_pattern, bottom_pattern)
+
+        # inverse source destination (important)
+        deformation = ThinPlateSplineTransform().from_estimate(dst_pts, src_pts)
+
+        with rasterio.open(self.raster_filepath_) as src:
+            width, height = src.width, src.height
+
+        # test for the moment without any crop to detect an other time for quality control and qc
+        return Transformation(
+            self.raster_filepath_,
+            deformation,
+            crop_offset=(0, 0),
+            output_size=(width, height),
+        )
