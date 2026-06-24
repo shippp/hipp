@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 import numpy as np
 import rasterio
@@ -10,6 +10,7 @@ from skimage.transform import ThinPlateSplineTransform
 from sklearn.linear_model import RANSACRegressor
 
 from hipp.image import SubImage, remap_tif_blockwise
+from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import detect_ruptures, fit_ransac_poly
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, RestitutionStrategy, Transformation
 from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
@@ -65,6 +66,19 @@ class PolyStrategy(RestitutionStrategy):
         if self.__transformation_ is None:
             self.__transformation_ = self._compute_transformation()
         return self.__transformation_
+
+    @property
+    def metrics_(self) -> dict[str, Any]:
+        """Detection metrics: expected vs. detected height, merged with vertical detector metrics."""
+        expected_height = KH9ImageSpec.from_raster_filepath(self.raster_filepath_).expected_size[1]
+        x = np.linspace(*self.vertical_detector.edges_, self.grid_shape[0]).reshape(-1, 1)
+        heights = self.bottom_.model.predict(x) - self.top_.model.predict(x)
+        return {
+            **self.vertical_detector.metrics_,
+            "expected_height": expected_height,
+            "detected_height": float(np.mean(heights)),
+            "detected_height_std": float(np.std(heights)),
+        }
 
     def _fit(self, raster_filepath: Path) -> Self:
         if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:

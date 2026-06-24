@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import cv2
 import numpy as np
@@ -17,9 +17,11 @@ from hipp.kh9pc.fiducial_patterns import (
     PATTERNS,
     DetectedPattern,
     centers_xy_from_boxes,
+    compute_expected_fiducial_count,
     compute_global_src_and_dst_points,
-    # compute_dst_points,
+    compute_intra_segment_spacings,
     evaluate_pattern,
+    theorical_spacing_from_pattern,
 )
 from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
@@ -131,6 +133,37 @@ class FiducialStrategy(RestitutionStrategy):
         if self.__transformation_ is None:
             self.__transformation_ = self._compute_transformation()
         return self.__transformation_
+
+    @property
+    def metrics_(self) -> dict[str, Any]:
+        primary_top = self.kh9_image_spec_.top_fiducial_patterns[0]
+        primary_bottom = self.kh9_image_spec_.bottom_fiducial_patterns[0]
+        top_pattern = self.top_.patterns[primary_top]
+        bottom_pattern = self.bottom_.patterns[primary_bottom]
+        expected_width = self.kh9_image_spec_.expected_size[0]
+
+        top_spacings = (
+            compute_intra_segment_spacings(top_pattern.points) if len(top_pattern.points) > 1 else np.array([])
+        )
+        bot_spacings = (
+            compute_intra_segment_spacings(bottom_pattern.points) if len(bottom_pattern.points) > 1 else np.array([])
+        )
+
+        return {
+            **self.poly_strategy.metrics_,
+            "primary_top_pattern": primary_top,
+            "primary_bottom_pattern": primary_bottom,
+            "top_expected_fiducial_count": compute_expected_fiducial_count(primary_top, expected_width),
+            "top_detected_fiducial_count": top_pattern.count,
+            "top_true_spacing": theorical_spacing_from_pattern(primary_top),
+            "top_detected_mean_spacing": float(np.mean(top_spacings)) if len(top_spacings) else float("nan"),
+            "top_detected_std_spacing": float(np.std(top_spacings)) if len(top_spacings) else float("nan"),
+            "bottom_expected_fiducial_count": compute_expected_fiducial_count(primary_bottom, expected_width),
+            "bottom_detected_fiducial_count": bottom_pattern.count,
+            "bottom_true_spacing": theorical_spacing_from_pattern(primary_bottom),
+            "bottom_detected_mean_spacing": float(np.mean(bot_spacings)) if len(bot_spacings) else float("nan"),
+            "bottom_detected_std_spacing": float(np.std(bot_spacings)) if len(bot_spacings) else float("nan"),
+        }
 
     def transform(self, output_path: str | Path) -> None:
         tf = self.transformation_

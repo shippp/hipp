@@ -6,6 +6,7 @@ Description: VerticalDetector — detects left/right film frame edges.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -74,6 +75,12 @@ class VerticalDetector(FittingClass):
     def detected_width_(self) -> int:
         """Width between detected edges in full-raster pixels."""
         return self.right_.position - self.left_.position
+
+    @property
+    def metrics_(self) -> dict[str, Any]:
+        """Detection metrics: expected vs. detected edge width."""
+        expected_width = KH9ImageSpec.from_raster_filepath(self.raster_filepath_).expected_size[0]
+        return {"expected_width": expected_width, "detected_width": self.detected_width_}
 
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
         """Detect left then right edge and populate results."""

@@ -35,6 +35,14 @@ def compute_spacings(points: NDArray[np.floating]) -> NDArray[np.floating]:
     return np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
 
 
+def compute_intra_segment_spacings(points: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Return only intra-segment spacings, filtering out inter-segment gaps."""
+    spacings = compute_spacings(points)
+    if len(spacings) == 0:
+        return spacings
+    return spacings[spacings < np.median(spacings) * 1.5]  # type: ignore[return-value]
+
+
 def theorical_spacing_from_pattern(pattern: PATTERNS) -> int:
     SPARSE_SPACING: int = 19014
     MID_SPACING: int = round(SPARSE_SPACING / 5)
@@ -108,6 +116,12 @@ def compute_global_src_and_dst_points(
     bot_src, bot_dst = compute_src_and_dst_points(bottom_pattern.points, spacing, bottom_y_dst)
 
     return np.vstack((top_src, bot_src)), np.vstack((top_dst, bot_dst))
+
+
+def compute_expected_fiducial_count(pattern: PATTERNS, expected_width: int) -> int:
+    """Return expected number of fiducials across an image of expected_width pixels."""
+    spacing = theorical_spacing_from_pattern(pattern)
+    return round(expected_width / spacing) + 1
 
 
 ########################################################################################
