@@ -1,5 +1,8 @@
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+
+import pandas as pd
+from typing import Any, Iterator
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,6 +14,12 @@ from rasterio.warp import Resampling
 from rasterio.windows import Window
 
 from hipp.image import SubImage
+from hipp.kh9pc.fiducial_patterns import (
+    compute_expected_fiducial_count,
+    compute_intra_segment_spacings,
+    theorical_spacing_from_pattern,
+)
+from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import FittingClass, Transformation
 from hipp.kh9pc.restitution.collimation_strategy import CollimationStrategy
 from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
@@ -21,8 +30,6 @@ from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
 
 
 # --- Vertical ---
-
-
 def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
     """Band profiles with detected rupture positions for left and right edges."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
@@ -65,8 +72,6 @@ def plot_vertical_edges(
 
 
 # --- Flat ---
-
-
 def plot_flat_ruptures(detector: FlatStrategy) -> Figure:
     """Band profiles (collapsed horizontally) with detected rupture row for top and bottom."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
@@ -556,53 +561,130 @@ def plot_crop_area(transform: Transformation, figsize: tuple[int, int] = (6, 6))
 # --- Dispatch ---
 
 
-def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -> list[Figure]:
-    """Return all QC figures for a fitted FittingClass instance."""
-    if isinstance(fitting_class, VerticalDetector):
-        return [plot_vertical_edges(fitting_class), plot_vertical_ruptures(fitting_class)]
-    if isinstance(fitting_class, FlatStrategy):
-        return [
-            *get_figures(fitting_class.vertical_detector, plot_transformation=False),
-            plot_flat_edges(fitting_class),
-            plot_flat_ruptures(fitting_class),
-            *([plot_crop_area(fitting_class.transformation_)] if plot_transformation else []),
-        ]
-    if isinstance(fitting_class, PolyStrategy):
-        return [
-            *get_figures(fitting_class.vertical_detector, plot_transformation=False),
-            plot_poly_edges(fitting_class),
-            plot_poly_distortions(fitting_class),
-            *(
-                [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
-                if plot_transformation
-                else []
-            ),
-        ]
-    if isinstance(fitting_class, CollimationStrategy):
-        return [
-            *get_figures(fitting_class.poly_strategy, plot_transformation=False),
-            plot_collimation_edges(fitting_class),
-            plot_collimation_distortions(fitting_class),
-            *(
-                [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
-                if plot_transformation
-                else []
-            ),
-        ]
-    if isinstance(fitting_class, FiducialStrategy):
-        return [
-            *get_figures(fitting_class.poly_strategy, plot_transformation=False),
-            plot_fiducial_filtering(fitting_class),
-            plot_fiducial_distortions(fitting_class),
-            plot_fiducial_detected_profiles(fitting_class),
-            # *plot_fiducial_detected_boxes(fitting_class),
-            *(
-                [plot_deformation_grid(fitting_class.transformation_), plot_crop_area(fitting_class.transformation_)]
-                if plot_transformation
-                else []
-            ),
-        ]
-    if isinstance(fitting_class, MixedStrategy):
-        return get_figures(fitting_class.selected_strategy_, plot_transformation=plot_transformation)
+def save_figures(fitting_class: FittingClass, output_dir: str | Path) -> None:
+    output_dir = Path(output_dir)
+    for name, fig in get_figures(fitting_class):
+        (output_dir / name).mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_dir / name / f"{fitting_class.raster_filepath_.stem}.png")
+        plt.close(fig)
 
-    return []
+
+def _vertical_metrics(detector: VerticalDetector) -> dict[str, Any]:
+    expected_width = KH9ImageSpec.from_raster_filepath(detector.raster_filepath_).expected_size[0]
+    return {"expected_width": expected_width, "detected_width": detector.detected_width_}
+
+
+def _poly_metrics(strategy: PolyStrategy) -> dict[str, Any]:
+    expected_height = KH9ImageSpec.from_raster_filepath(strategy.raster_filepath_).expected_size[1]
+    x = np.linspace(*strategy.vertical_detector.edges_, strategy.grid_shape[0]).reshape(-1, 1)
+    heights = strategy.bottom_.model.predict(x) - strategy.top_.model.predict(x)
+    return {
+        **_vertical_metrics(strategy.vertical_detector),
+        "expected_height": expected_height,
+        "detected_height": float(np.mean(heights)),
+        "detected_height_std": float(np.std(heights)),
+    }
+
+
+def _fiducial_metrics(strategy: FiducialStrategy) -> dict[str, Any]:
+    primary_top = strategy.kh9_image_spec_.top_fiducial_patterns[0]
+    primary_bottom = strategy.kh9_image_spec_.bottom_fiducial_patterns[0]
+    top_pattern = strategy.top_.patterns[primary_top]
+    bottom_pattern = strategy.bottom_.patterns[primary_bottom]
+    expected_width = strategy.kh9_image_spec_.expected_size[0]
+
+    top_spacings = compute_intra_segment_spacings(top_pattern.points) if len(top_pattern.points) > 1 else np.array([])
+    bot_spacings = (
+        compute_intra_segment_spacings(bottom_pattern.points) if len(bottom_pattern.points) > 1 else np.array([])
+    )
+
+    return {
+        **_poly_metrics(strategy.poly_strategy),
+        "primary_top_pattern": primary_top,
+        "primary_bottom_pattern": primary_bottom,
+        "top_expected_fiducial_count": compute_expected_fiducial_count(primary_top, expected_width),
+        "top_detected_fiducial_count": top_pattern.count,
+        "top_true_spacing": theorical_spacing_from_pattern(primary_top),
+        "top_detected_mean_spacing": float(np.mean(top_spacings)) if len(top_spacings) else float("nan"),
+        "top_detected_std_spacing": float(np.std(top_spacings)) if len(top_spacings) else float("nan"),
+        "bottom_expected_fiducial_count": compute_expected_fiducial_count(primary_bottom, expected_width),
+        "bottom_detected_fiducial_count": bottom_pattern.count,
+        "bottom_true_spacing": theorical_spacing_from_pattern(primary_bottom),
+        "bottom_detected_mean_spacing": float(np.mean(bot_spacings)) if len(bot_spacings) else float("nan"),
+        "bottom_detected_std_spacing": float(np.std(bot_spacings)) if len(bot_spacings) else float("nan"),
+    }
+
+
+def get_metrics(fitting_class: FittingClass) -> dict[str, Any] | None:
+    """Return metrics for the effective strategy, or None if not supported."""
+    if isinstance(fitting_class, MixedStrategy):
+        return None if fitting_class.is_failed else get_metrics(fitting_class.selected_strategy_)
+    if isinstance(fitting_class, FiducialStrategy):
+        return {"strategy": "FiducialStrategy", **_fiducial_metrics(fitting_class)}
+    if isinstance(fitting_class, PolyStrategy):
+        return {"strategy": "PolyStrategy", **_poly_metrics(fitting_class)}
+    if isinstance(fitting_class, VerticalDetector):
+        return {"strategy": "VerticalDetector", **_vertical_metrics(fitting_class)}
+    return None
+
+
+def save_metrics(fitting_class: FittingClass, output_dir: str | Path) -> None:
+    """Write or update one row in metrics.csv, keyed by image name."""
+    metrics = get_metrics(fitting_class)
+    if metrics is None:
+        return
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "metrics.csv"
+    row = {"image": fitting_class.raster_filepath_.stem, "processed_at": datetime.now().isoformat(), **metrics}
+    df_new = pd.DataFrame([row])
+    if csv_path.exists():
+        df = pd.read_csv(csv_path)
+        df = df[df["image"] != row["image"]]
+        df = pd.concat([df, df_new], ignore_index=True)
+    else:
+        df = df_new
+    df.to_csv(csv_path, index=False)
+
+
+def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -> Iterator[tuple[str, Figure]]:
+    """Yield (name, figure) pairs for all QC plots of a fitted FittingClass instance."""
+    if isinstance(fitting_class, VerticalDetector):
+        yield "vertical_edges", plot_vertical_edges(fitting_class)
+        yield "vertical_ruptures", plot_vertical_ruptures(fitting_class)
+        return
+    if isinstance(fitting_class, FlatStrategy):
+        yield from get_figures(fitting_class.vertical_detector, plot_transformation=False)
+        yield "flat_edges", plot_flat_edges(fitting_class)
+        yield "flat_ruptures", plot_flat_ruptures(fitting_class)
+        if plot_transformation:
+            yield "crop_area", plot_crop_area(fitting_class.transformation_)
+        return
+    if isinstance(fitting_class, PolyStrategy):
+        yield from get_figures(fitting_class.vertical_detector, plot_transformation=False)
+        yield "poly_edges", plot_poly_edges(fitting_class)
+        yield "poly_distortions", plot_poly_distortions(fitting_class)
+        if plot_transformation:
+            yield "deformation_grid", plot_deformation_grid(fitting_class.transformation_)
+            yield "crop_area", plot_crop_area(fitting_class.transformation_)
+        return
+    if isinstance(fitting_class, CollimationStrategy):
+        yield from get_figures(fitting_class.poly_strategy, plot_transformation=False)
+        yield "collimation_edges", plot_collimation_edges(fitting_class)
+        yield "collimation_distortions", plot_collimation_distortions(fitting_class)
+        if plot_transformation:
+            yield "deformation_grid", plot_deformation_grid(fitting_class.transformation_)
+            yield "crop_area", plot_crop_area(fitting_class.transformation_)
+        return
+    if isinstance(fitting_class, FiducialStrategy):
+        yield from get_figures(fitting_class.poly_strategy, plot_transformation=False)
+        yield "fiducial_filtering", plot_fiducial_filtering(fitting_class)
+        yield "fiducial_distortions", plot_fiducial_distortions(fitting_class)
+        yield "fiducial_detected_profiles", plot_fiducial_detected_profiles(fitting_class)
+        # yield from zip(("fiducial_boxes_top", "fiducial_boxes_bottom"), plot_fiducial_detected_boxes(fitting_class))
+        if plot_transformation:
+            yield "deformation_grid", plot_deformation_grid(fitting_class.transformation_)
+            yield "crop_area", plot_crop_area(fitting_class.transformation_)
+        return
+    if isinstance(fitting_class, MixedStrategy):
+        yield from get_figures(fitting_class.selected_strategy_, plot_transformation=plot_transformation)

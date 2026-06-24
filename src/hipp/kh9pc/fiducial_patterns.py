@@ -40,7 +40,7 @@ def compute_intra_segment_spacings(points: NDArray[np.floating]) -> NDArray[np.f
     spacings = compute_spacings(points)
     if len(spacings) == 0:
         return spacings
-    return spacings[spacings < np.median(spacings) * 1.5]  # type: ignore[return-value]
+    return spacings[spacings < np.median(spacings) * 1.5]  # type: ignore[no-any-return]
 
 
 def theorical_spacing_from_pattern(pattern: PATTERNS) -> int:

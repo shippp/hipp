@@ -34,6 +34,7 @@ dependencies = [
   "scikit-image",
   "scikit-learn",
   "requests",
+  "click",
 ]
 
 [project.scripts]
@@ -85,6 +86,11 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
 ]
+
+[tool.mypy]
+[[tool.mypy.overrides]]
+module = "hipp.kh9pc.cli"
+disable_error_code = ["misc"]
 
 [tool.ruff]
 line-length = 120
