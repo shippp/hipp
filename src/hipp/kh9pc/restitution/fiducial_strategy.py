@@ -329,16 +329,19 @@ class FiducialStrategy(RestitutionStrategy):
 
         src_pts, dst_pts = compute_global_src_and_dst_points(top_pattern, bottom_pattern)
 
+        x_center = sum(self.poly_strategy.vertical_detector.edges_) / 2
+        y_center = (dst_pts[:, 1].min() + dst_pts[:, 1].max()) / 2
+
+        final_width, final_height = self.kh9_image_spec_.expected_size
+        crop_offset = (int(x_center - final_width / 2), int(y_center - final_height / 2))
+
         # inverse source destination (important)
         deformation = ThinPlateSplineTransform().from_estimate(dst_pts, src_pts)
-
-        with rasterio.open(self.raster_filepath_) as src:
-            width, height = src.width, src.height
 
         # test for the moment without any crop to detect an other time for quality control and qc
         return Transformation(
             self.raster_filepath_,
             deformation,
-            crop_offset=(0, 0),
-            output_size=(width, height),
+            crop_offset=crop_offset,
+            output_size=(final_width, final_height),
         )

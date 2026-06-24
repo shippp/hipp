@@ -388,8 +388,8 @@ def remap_tif_blockwise(
                     tf_ygrid = points_transformed[:, 1].reshape(ygrid.shape).astype(np.float32)
 
                 # Compute source window bounds with a padding to avoid artefact on edge caused of bicubic interpolation
-                src_x0 = int(np.floor(tf_xgrid.min())) - padding
-                src_y0 = int(np.floor(tf_ygrid.min())) - padding
+                src_x0 = max(0, int(np.floor(tf_xgrid.min())) - padding)
+                src_y0 = max(0, int(np.floor(tf_ygrid.min())) - padding)
                 src_x1 = int(np.ceil(tf_xgrid.max())) + padding
                 src_y1 = int(np.ceil(tf_ygrid.max())) + padding
 
