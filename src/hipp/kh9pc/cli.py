@@ -1,3 +1,4 @@
+# mypy: disable-error-code="misc"
 import logging
 import sys
 from pathlib import Path

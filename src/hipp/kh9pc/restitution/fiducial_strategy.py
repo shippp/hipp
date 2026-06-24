@@ -328,8 +328,13 @@ class FiducialStrategy(RestitutionStrategy):
 
         src_pts, dst_pts = compute_global_src_and_dst_points(top_pattern, bottom_pattern)
 
-        x_center = sum(self.poly_strategy.vertical_detector.edges_) / 2
         y_center = (dst_pts[:, 1].min() + dst_pts[:, 1].max()) / 2
+
+        # map vertical edges from src space to dst space to get a correct x_center
+        forward_tps = ThinPlateSplineTransform().from_estimate(src_pts, dst_pts)
+        col_left, col_right = self.poly_strategy.vertical_detector.edges_
+        edges_dst = forward_tps(np.array([[col_left, y_center], [col_right, y_center]], dtype=np.float32))
+        x_center = float((edges_dst[0, 0] + edges_dst[1, 0]) / 2)
 
         final_width, final_height = self.kh9_image_spec_.expected_size
         crop_offset = (int(x_center - final_width / 2), int(y_center - final_height / 2))
