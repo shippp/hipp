@@ -23,6 +23,29 @@ warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 logger = logging.getLogger(__name__)
 
 
+class LogProgressBar:
+    """Log-friendly progress bar that emits one line per character of width."""
+
+    def __init__(self, label: str, total: int, log: logging.Logger, width: int = 5) -> None:
+        self._label = label
+        self._total = total
+        self._log = log
+        self._width = width
+        self._last_step = -1
+
+    def update(self, i: int) -> None:
+        step = i * self._width // self._total
+        if step != self._last_step:
+            self._last_step = step
+            filled = i * self._width // self._total
+            bar = "#" * filled + "." * (self._width - filled)
+            self._log.info("%s  [%s]", self._label, bar)
+
+    def close(self) -> None:
+        bar = "#" * self._width
+        self._log.info("%s  [%s]", self._label, bar)
+
+
 def apply_clahe(
     image: cv2.typing.MatLike,
     clip_limit: float = 2.0,
@@ -347,11 +370,10 @@ def remap_tif_blockwise(
                 for dst_y0 in range(0, output_size[1], block_size)
             ]
             n_blocks = len(blocks)
-            log_every = max(1, n_blocks // 10)
+            pbar = LogProgressBar(f"remapping {Path(input_path).name}", n_blocks, logger)
 
             for block_idx, (dst_x0, dst_y0) in enumerate(blocks):
-                if block_idx % log_every == 0:
-                    logger.debug("  remapping %d%%", block_idx * 100 // n_blocks)
+                pbar.update(block_idx)
                 dst_x1 = min(dst_x0 + block_size, output_size[0])
                 dst_y1 = min(dst_y0 + block_size, output_size[1])
 
@@ -415,6 +437,8 @@ def remap_tif_blockwise(
                 # Write destination block
                 dst_window = Window(col_off=dst_x0, row_off=dst_y0, width=dst_x1 - dst_x0, height=dst_y1 - dst_y0)
                 dst.write(remapped_block, 1, window=dst_window)
+
+            pbar.close()
 
 
 def match_multiple_templates(

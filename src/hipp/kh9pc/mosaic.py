@@ -20,6 +20,8 @@ from rasterio.windows import Window
 from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
 
+from hipp.image import LogProgressBar
+
 
 @dataclass
 class ImageAlignment:
@@ -193,13 +195,13 @@ def write_mosaic(
     }
 
     n_blocks = (output_width // 256 + 1) * (output_height // 256 + 1)
-    log_every = max(1, n_blocks // 5)
 
     logger.info("Mosaicing %d images → %s (%d×%d px)", len(alignments), str(output_tif), output_width, output_height)
 
     with rasterio.open(output_tif, "w+", **profile) as dst:
         for i, alignment in enumerate(alignments):
             logger.info("[%d/%d] %s", i + 1, len(alignments), alignment.image_path.name)
+            pbar = LogProgressBar(f"mosaicing {alignment.image_path.name}", n_blocks, logger)
 
             adjusted_transform = T_offset @ alignment.absolute_transform
 
@@ -215,14 +217,14 @@ def write_mosaic(
                     transform=dst_transform,
                 ) as vrt:
                     for block_idx, (_, window) in enumerate(dst.block_windows(1)):
-                        if block_idx % log_every == 0:
-                            logger.debug("  %d%%", block_idx * 100 // n_blocks)
+                        pbar.update(block_idx)
                         warped = vrt.read(1, window=window)
                         mask = warped != 0
                         if not mask.any():
                             continue
                         existing = dst.read(1, window=window)
                         dst.write(np.where(mask, warped, existing), 1, window=window)
+            pbar.close()
 
     logger.info("Mosaic written to %s", str(output_tif))
 

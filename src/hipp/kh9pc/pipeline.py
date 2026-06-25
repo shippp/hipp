@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import shutil
 
@@ -80,6 +81,8 @@ def preprocess_kh9pc(
     if not keep_work:
         shutil.rmtree(work_dir)
 
+    logger.info("Finish preprocessing of %s", entity_id)
+
 
 def search_input_dir(input_dir: str | Path) -> list[Path | list[Path]]:
     """Scan a directory and return inputs ready for preprocess_kh9pc, one entry per image.
@@ -140,10 +143,10 @@ def batch_preprocess_kh9pc(
     if dry_run:
         return
 
-    def _run(inp: Path | list[Path]) -> None:
-        try:
-            preprocess_kh9pc(inp, output_dir, overwrite=overwrite, keep_work=keep_work)
-        except Exception:
-            logger.error("Failed to process %s", entity_id(inp), exc_info=True)
-
-    joblib.Parallel(n_jobs=n_jobs)(joblib.delayed(_run)(inp) for inp in inputs)
+    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+        futures = {executor.submit(preprocess_kh9pc, inp, output_dir, overwrite, keep_work): inp for inp in inputs}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                logger.error("Failed to process %s", entity_id(futures[future]), exc_info=True)

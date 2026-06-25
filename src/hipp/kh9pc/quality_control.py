@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from hipp.kh9pc.restitution.flat_strategy import FlatStrategy
 from hipp.kh9pc.restitution.mixed_strategy import MixedStrategy
 from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
+
+logger = logging.getLogger(__name__)
 
 
 # --- Vertical ---
@@ -561,14 +564,6 @@ def plot_crop_area(transform: Transformation, figsize: tuple[int, int] = (6, 6))
 # --- Dispatch ---
 
 
-def save_figures(fitting_class: FittingClass, output_dir: str | Path) -> None:
-    output_dir = Path(output_dir)
-    for name, fig in get_figures(fitting_class):
-        (output_dir / name).mkdir(parents=True, exist_ok=True)
-        fig.savefig(output_dir / name / f"{fitting_class.raster_filepath_.stem}.png")
-        plt.close(fig)
-
-
 def _vertical_metrics(detector: VerticalDetector) -> dict[str, Any]:
     expected_width = KH9ImageSpec.from_raster_filepath(detector.raster_filepath_).expected_size[0]
     return {"expected_width": expected_width, "detected_width": detector.detected_width_}
@@ -645,6 +640,21 @@ def save_metrics(fitting_class: FittingClass, output_dir: str | Path) -> None:
     else:
         df = df_new
     df.to_csv(csv_path, index=False)
+
+
+def save_figures(fitting_class: FittingClass, output_dir: str | Path) -> None:
+    output_dir = Path(output_dir)
+    gen = get_figures(fitting_class)
+    while True:
+        try:
+            name, fig = next(gen)
+            (output_dir / name).mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_dir / name / f"{fitting_class.raster_filepath_.stem}.png")
+            plt.close(fig)
+        except StopIteration:
+            break
+        except Exception as e:
+            logger.warning("Skipping QC figure: %s", e)
 
 
 def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -> Iterator[tuple[str, Figure]]:
