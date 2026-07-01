@@ -46,16 +46,21 @@ hipp/
 │   ├── fiducials.py # Fiducial marker detection, matching, transformation
 │   └── quality_control.py
 ├── kh9pc/           # KH-9 panoramic camera preprocessing
-│   ├── pipeline.py  # End-to-end orchestration (PipelineStep, KH9Pipeline, PipelineConfig)
-│   ├── image_mosaic.py   # ORB keypoint matching, RANSAC, image stitching (ImageAlignment)
-│   ├── batch.py          # Batch join_images
-│   ├── quality_control.py
-│   ├── utils.py
-│   └── restitution/      # Image rectification
-│       ├── types.py      # StepResult, StrategyAttempt data classes
-│       ├── strategy.py   # RectificationStrategy + Collimation/Poly/Flat strategies
-│       ├── vertical.py   # VerticalDetector (collimation line detection)
-│       └── plotters.py
+│   ├── pipeline.py       # preprocess_kh9pc / batch_preprocess_kh9pc (orchestration)
+│   ├── mosaic.py         # image_mosaic() — ORB keypoints + RANSAC Euclidean + WarpedVRT compositing
+│   ├── fiducial_patterns.py  # Fiducial pattern geometry, TPS control-point computation
+│   ├── kh9_image_spec.py     # KH9ImageSpec — per-mission dimensions, fiducial type, collimation flag
+│   ├── quality_control.py    # QC figure generation
+│   ├── cli.py            # Click CLI (preproc / batch-preproc commands)
+│   ├── __main__.py       # Entry point for `python -m hipp.kh9pc`
+│   └── restitution/      # Geometric correction strategies
+│       ├── base.py       # FittingClass ABC, DetectionError, detect_ruptures, fit_ransac_poly
+│       ├── vertical_detector.py   # VerticalDetector — left/right film-edge detection
+│       ├── poly_strategy.py       # PolyStrategy — RANSAC polynomial top/bottom edges
+│       ├── collimation_strategy.py # CollimationStrategy — refines poly via collimation peaks
+│       ├── flat_strategy.py       # FlatStrategy — fallback for missions without collimation lines
+│       ├── fiducial_strategy.py   # FiducialStrategy — TPS warp via template-matched fiducials
+│       └── mixed_strategy.py      # MixedStrategy — ordered fallback chain across strategies
 └── dataquery/       # USGS/NAGAP data download
 ```
 
@@ -68,34 +73,38 @@ hipp/
 4. `compute_transformations()` — estimates affine/similarity transforms
 5. `iter_image_restitution()` — crops, applies CLAHE, outputs standardized images
 
-**KH-9 pipeline** (`hipp.kh9pc.pipeline.KH9Pipeline`):
-1. Extract archive → list of TIF scan strips
-2. `join_images()` — stitch strips via ORB keypoints + RANSAC affine alignment
-3. Restitute (rectify):
-   - Detect vertical collimation edges (`VerticalDetector`)
-   - Detect horizontal edges with strategy fallback: `CollimationStrategy` → `PolyStrategy` → `FlatStrategy`
-   - Apply analytical inverse-map transform (bilinear interpolation between fitted polynomial curves via `build_inverse_map`)
-4. Generate QC reports
+**KH-9 pipeline** (`hipp.kh9pc.pipeline`):
+1. Extract archive (if `.tgz`) → list of TIF scan strips
+2. `image_mosaic()` — stitch strips via ORB keypoints + RANSAC Euclidean alignment + WarpedVRT block compositing
+3. `FiducialStrategy().fit(joined_image)` — template-match fiducials, compute TPS control points, build warp
+4. `strategy.transform(output_path)` — apply TPS inverse warp → restituted GeoTIFF
+5. QC quickviews + figures generated at each major step
 
-Valid `PipelineConfig.steps` names (in order): `extract`, `join_images`, `quickview_mosaic`, `restitution`, `quickview_final`, `qc_report`.
+Output layout under `output_dir/`:
+- `images/{entity_id}.tif` — final restituted image
+- `qc/mosaic_qv/`, `qc/restitution/`, `qc/final_qv/` — quickviews and QC figures
+- `work/joined_images/`, `work/joblibs/` — intermediates (preserved on failure for retry)
+- `logs/{entity_id}.log` — per-image log
 
-**CLI** (`python -m hipp.kh9pc`):
+**CLI** (`python -m hipp.kh9pc` or `hipp-kh9pc`):
 ```bash
-python -m hipp.kh9pc --input scan.tgz --output /out/images/DZB1215.tif --qc-dir /out/qc
-python -m hipp.kh9pc --input t1.tif t2.tif t3.tif --output /out/DZB1215.tif --qc-dir /out/qc
-python -m hipp.kh9pc --input scan.tgz --output /out/DZB1215.tif --qc-dir /out/qc --config cfg.toml
+hipp-kh9pc preproc -i scan.tgz -o /out/
+hipp-kh9pc preproc -i t1.tif t2.tif t3.tif -o /out/
+hipp-kh9pc batch-preproc -i /data/scans/ -o /out/ -j 4 -v
+hipp-kh9pc preproc --help
 ```
-`PipelineConfig.from_toml()` accepts keys: `overwrite`, `cleanup`, `steps`, and `output_height` (integer, default `22064`).
 
 ### Key Patterns
 
-- **`PipelineStep`**: declarative step class with `inputs`/`outputs`/`overwrite` — enables skip-if-done logic
-- **Strategy pattern** in `kh9pc/restitution/strategy.py`: multiple fallback strategies for edge detection; all inherit `RectificationStrategy` ABC which chains `_fit()` + `make_inverse_map()` + centering translation into `transform(output_height)`; strategies expose `detected_region() → ((col_off, row_top), (width, height))`
-- **Pandas Series for fiducials**: coordinate data stored with named keys like `corner_top_left_x`, `midside_left_x`
-- **`Intrinsics` class**: wraps focal length, pixel pitch, true fiducial coordinates in mm, principal point
-- **3×3 homogeneous matrices** throughout for image transforms
-- **Rasterio** for all geospatial raster I/O; **OpenCV** for image operations; `build_inverse_map` in `utils.py` for the analytical curve-interpolation warp
-- **Intermediate files persisted as `.joblib`**: `vertical.joblib`, `horizontal.joblib`, `alignments.joblib` — individual steps can be re-run by loading these directly
+- **`FittingClass` ABC** (`restitution/base.py`): all strategies inherit this. `fit(raster_filepath)` calls `_fit()` and records `raster_filepath_`. `is_failed` signals whether the result is usable. `transform(output_path)` applies the computed warp.
+- **Strategy hierarchy**: `VerticalDetector` → `PolyStrategy` (uses VerticalDetector) → `CollimationStrategy` (uses PolyStrategy) → `FiducialStrategy` (uses PolyStrategy + TPS); `FlatStrategy` is the fallback for missions without collimation lines; `MixedStrategy` chains them with ordered fallback.
+- **`KH9ImageSpec`** (`kh9_image_spec.py`): derived from filename entity ID (e.g. `D3C1210-…`), gives expected size, fiducial type (`disk` / `wagon_wheel`), collimation presence, and fiducial pattern names. Covers missions 1201–1219.
+- **`Transformation` dataclass**: carries the TPS `deformation`, `crop_offset`, and `output_size`; passed from `FiducialStrategy._compute_transformation()` to `transform()`.
+- **Intermediate files preserved on failure**: `work/joined_images/` and `work/joblibs/` are only deleted on successful completion (`keep_work=False`), so a re-run with `overwrite=False` resumes from the last completed step.
+- **`Pandas Series` for fiducials** (aerial module): coordinate data stored with named keys like `corner_top_left_x`, `midside_left_x`.
+- **`Intrinsics` class**: wraps focal length, pixel pitch, true fiducial coordinates in mm, principal point (aerial module).
+- **3×3 homogeneous matrices** throughout for image transforms.
+- **Rasterio** for all geospatial raster I/O; **OpenCV** for image operations and template matching.
 
 ### Notebooks
 
