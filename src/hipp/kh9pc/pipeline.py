@@ -1,6 +1,7 @@
 import logging
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 
@@ -13,6 +14,20 @@ from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
 from hipp.tools import extract_archive
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _log_to_file(path: Path) -> Generator[None, None, None]:
+    """Temporarily attach a FileHandler to the hipp logger."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, mode="w")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s"))
+    logging.getLogger("hipp").addHandler(handler)
+    try:
+        yield
+    finally:
+        logging.getLogger("hipp").removeHandler(handler)
+        handler.close()
 
 
 def preprocess_kh9pc(
@@ -35,6 +50,21 @@ def preprocess_kh9pc(
         logger.info("Skipping preprocess_kh9pc: %s (already exists, overwrite=False)", str(output_path))
         return
 
+    log_path = output_dir / "logs" / f"{entity_id}.log"
+    with _log_to_file(log_path):
+        _preprocess_kh9pc(input_paths, entity_id, output_path, qc_dir, work_dir, overwrite, keep_work)
+
+
+def _preprocess_kh9pc(
+    input_paths: Path | list[Path],
+    entity_id: str,
+    output_path: Path,
+    qc_dir: Path,
+    work_dir: Path,
+    overwrite: bool,
+    keep_work: bool,
+) -> None:
+    """Run the actual preprocessing steps (called inside a file-logging context)."""
     # START PREPROCESSING
     logger.info("Start preprocessing of %s", entity_id)
 
