@@ -6,14 +6,22 @@ from numpy.typing import NDArray
 from typing import Literal
 
 
-PATTERNS = Literal[
+Patterns = Literal[
     "regulare_sparse", "regulare_mid", "regular_dense", "segmented_mid", "segmented_dense", "serialized_time_word"
 ]
+
+# Physical spacings derived from KH-9 Hexagon panoramic camera documentation.
+# Original values are in inches; converted to pixels with a scan resolution of 0.007 mm/px:
+#   px = inches × 25.4 / 0.007
+SPARSE_SPACING: int = 19014  # 5.24"
+MID_SPACING: int = round(SPARSE_SPACING / 5)
+DENSE_MAX_SPACING: int = 1480  # 0.41"
+FIDUCIAL_ROW_SPACING: int = 23222  # 6.40"
 
 
 @dataclass
 class DetectedPattern:
-    pattern: PATTERNS
+    pattern: Patterns
     points: NDArray[np.floating]
     expected_width: int
     score: float
@@ -43,9 +51,7 @@ def compute_intra_segment_spacings(points: NDArray[np.floating]) -> NDArray[np.f
     return spacings[spacings < np.median(spacings) * 1.5]  # type: ignore[no-any-return]
 
 
-def theorical_spacing_from_pattern(pattern: PATTERNS) -> int:
-    SPARSE_SPACING: int = 19014
-    MID_SPACING: int = round(SPARSE_SPACING / 5)
+def theorical_spacing_from_pattern(pattern: Patterns) -> int:
     if "sparse" in pattern:
         return SPARSE_SPACING
     elif "mid" in pattern:
@@ -54,8 +60,7 @@ def theorical_spacing_from_pattern(pattern: PATTERNS) -> int:
         raise ValueError(f"No theorical spacing exist for the pattern {pattern}")
 
 
-def spacing_lo_hi_from_pattern(pattern: PATTERNS) -> tuple[int, int]:
-    DENSE_MAX_SPACING: int = 1480
+def spacing_lo_hi_from_pattern(pattern: Patterns) -> tuple[int, int]:
     if pattern == "serialized_time_word":
         raise ValueError(f"No spacing lo hi existe for the pattern : {pattern}")
     if "dense" in pattern:
@@ -66,7 +71,7 @@ def spacing_lo_hi_from_pattern(pattern: PATTERNS) -> tuple[int, int]:
         return (spacing - max_delta, spacing + max_delta)
 
 
-def spacing_score_from_pattern(pattern: PATTERNS, points: NDArray[np.floating]) -> float:
+def spacing_score_from_pattern(pattern: Patterns, points: NDArray[np.floating]) -> float:
     if pattern == "serialized_time_word":
         return 0.0
 
@@ -88,7 +93,7 @@ def spacing_score_from_pattern(pattern: PATTERNS, points: NDArray[np.floating]) 
     return float(coefficient_of_variation_score(regular_spacings) * detection_rate)
 
 
-def evaluate_pattern(pattern: PATTERNS, points: NDArray[np.floating], expected_width: int) -> DetectedPattern:
+def evaluate_pattern(pattern: Patterns, points: NDArray[np.floating], expected_width: int) -> DetectedPattern:
     return DetectedPattern(
         pattern=pattern,
         points=points,
@@ -97,33 +102,40 @@ def evaluate_pattern(pattern: PATTERNS, points: NDArray[np.floating], expected_w
     )
 
 
+def _actual_y_dist(pattern: DetectedPattern) -> float:
+    """Estimate vertical row distance from the actual median fiducial spacing."""
+    spacings = compute_intra_segment_spacings(pattern.points)
+    if len(spacings) == 0:
+        return float(FIDUCIAL_ROW_SPACING)
+    return float(np.median(spacings)) * (FIDUCIAL_ROW_SPACING / theorical_spacing_from_pattern(pattern.pattern))
+
+
 def compute_global_src_and_dst_points(
     top_pattern: DetectedPattern | None, bottom_pattern: DetectedPattern | None
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
     """Compute source and destination control points from top and bottom fiducial patterns.
 
-    If one pattern is None, it is synthesized from the other by offsetting points by Y_DIST along y.
+    If one pattern is None, it is synthesized from the other by offsetting points by a y_dist
+    derived from the actual median fiducial spacing of the detected pattern.
     """
-    # top and bottom fiducials distances
-    # computed with the median take on multiple images
-    Y_DIST: int = 23222
-
     if top_pattern is None and bottom_pattern is None:
         raise ValueError("At least one pattern is needed to compute points.")
 
     if top_pattern is None:
         assert bottom_pattern is not None  # juste for mypy
-        top_pattern = replace(bottom_pattern, points=bottom_pattern.points - np.array([0, Y_DIST]))
+        y_dist = _actual_y_dist(bottom_pattern)
+        top_pattern = replace(bottom_pattern, points=bottom_pattern.points - np.array([0, y_dist]))
     elif bottom_pattern is None:
-        bottom_pattern = replace(top_pattern, points=top_pattern.points + np.array([0, Y_DIST]))
+        y_dist = _actual_y_dist(top_pattern)
+        bottom_pattern = replace(top_pattern, points=top_pattern.points + np.array([0, y_dist]))
 
     spacing = theorical_spacing_from_pattern(top_pattern.pattern)
     if theorical_spacing_from_pattern(bottom_pattern.pattern) != spacing:
         raise ValueError("Both pattern should have the same distribution (mid or sparse).")
 
     mid_actual = float((np.median(top_pattern.points[:, 1]) + np.median(bottom_pattern.points[:, 1])) / 2)
-    top_y_dst = mid_actual - Y_DIST / 2
-    bottom_y_dst = mid_actual + Y_DIST / 2
+    top_y_dst = mid_actual - FIDUCIAL_ROW_SPACING / 2
+    bottom_y_dst = mid_actual + FIDUCIAL_ROW_SPACING / 2
 
     top_src, top_dst = compute_src_and_dst_points(top_pattern.points, spacing, top_y_dst)
     bot_src, bot_dst = compute_src_and_dst_points(bottom_pattern.points, spacing, bottom_y_dst)
@@ -131,7 +143,7 @@ def compute_global_src_and_dst_points(
     return np.vstack((top_src, bot_src)), np.vstack((top_dst, bot_dst))
 
 
-def compute_expected_fiducial_count(pattern: PATTERNS, expected_width: int) -> int:
+def compute_expected_fiducial_count(pattern: Patterns, expected_width: int) -> int:
     """Return expected number of fiducials across an image of expected_width pixels."""
     spacing = theorical_spacing_from_pattern(pattern)
     return round(expected_width / spacing) + 1

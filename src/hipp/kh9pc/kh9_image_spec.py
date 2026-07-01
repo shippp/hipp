@@ -5,7 +5,7 @@ import re
 import rasterio
 
 
-from hipp.kh9pc.fiducial_patterns import PATTERNS
+from hipp.kh9pc.fiducial_patterns import Patterns
 
 IMAGE_WIDTHS_PX: list[int] = [114082, 228165, 342247, 456329]
 IMAGE_HEIGHT_PX: int = 21771
@@ -16,8 +16,8 @@ class KH9ImageSpec:
     expected_size: tuple[int, int]
     collimation_line: bool
     fiducial_type: Literal["disk", "wagon_wheel"]
-    top_fiducial_patterns: tuple[PATTERNS, PATTERNS]
-    bottom_fiducial_patterns: tuple[PATTERNS, PATTERNS]
+    top_fiducial_patterns: tuple[Patterns, Patterns]
+    bottom_fiducial_patterns: tuple[Patterns, Patterns]
 
     @classmethod
     def from_raster_filepath(cls, filepath: str | Path) -> "KH9ImageSpec":
@@ -57,10 +57,10 @@ class KH9ImageSpec:
         return fiducial_type
 
     @staticmethod
-    def top_fiducial_patterns_from_mission(mission: int) -> tuple[PATTERNS, PATTERNS]:
+    def top_fiducial_patterns_from_mission(mission: int) -> tuple[Patterns, Patterns]:
         if mission < 1201 or mission > 1219:
             raise ValueError("Unrecgnized mission")
-        top_fiducial_patterns: tuple[PATTERNS, PATTERNS]
+        top_fiducial_patterns: tuple[Patterns, Patterns]
         if mission <= 1213:
             top_fiducial_patterns = ("regulare_sparse", "serialized_time_word")
         elif mission <= 1217:
@@ -70,11 +70,11 @@ class KH9ImageSpec:
         return top_fiducial_patterns
 
     @staticmethod
-    def bottom_fiducial_patterns_from_mission(mission: int) -> tuple[PATTERNS, PATTERNS]:
+    def bottom_fiducial_patterns_from_mission(mission: int) -> tuple[Patterns, Patterns]:
         if mission < 1201 or mission > 1219:
             raise ValueError("Unrecgnized mission")
 
-        bottom_fiducial_patterns: tuple[PATTERNS, PATTERNS]
+        bottom_fiducial_patterns: tuple[Patterns, Patterns]
         if mission <= 1213:
             bottom_fiducial_patterns = ("regulare_sparse", "regular_dense")
         else:

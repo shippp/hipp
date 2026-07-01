@@ -14,7 +14,7 @@ from sklearn.preprocessing import StandardScaler
 
 from hipp.image import SubImage, match_multiple_templates, remap_tif_blockwise
 from hipp.kh9pc.fiducial_patterns import (
-    PATTERNS,
+    Patterns,
     DetectedPattern,
     centers_xy_from_boxes,
     compute_global_src_and_dst_points,
@@ -254,7 +254,7 @@ class FiducialStrategy(RestitutionStrategy):
         self,
         labels: NDArray[np.int_],
         centers_xy: NDArray[np.floating],
-        fiducial_pattern: PATTERNS,
+        fiducial_pattern: Patterns,
     ) -> DetectedPattern:
         expected_width = self.kh9_image_spec_.expected_size[0]
         result = evaluate_pattern(fiducial_pattern, np.empty((0, 2), dtype=np.float64), expected_width)
@@ -276,7 +276,7 @@ class FiducialStrategy(RestitutionStrategy):
         self,
         features: NDArray[np.floating],
         centers_xy: NDArray[np.floating],
-        fiducial_patterns: tuple[PATTERNS, PATTERNS],
+        fiducial_patterns: tuple[Patterns, Patterns],
     ) -> dict[str, DetectedPattern]:
         X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
         patterns: dict[str, DetectedPattern] = {
