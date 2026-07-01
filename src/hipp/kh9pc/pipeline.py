@@ -1,3 +1,11 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: High-level pipeline orchestrating the full KH-9 PC preprocessing workflow:
+    archive extraction → image mosaicking → restitution → QC quickviews.
+    Exposes ``preprocess_kh9pc`` for single images and ``batch_preprocess_kh9pc`` for
+    parallel batch processing.
+"""
+
 import logging
 from collections.abc import Generator, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -33,6 +41,27 @@ def _log_to_file(path: Path) -> Generator[None, None, None]:
 def preprocess_kh9pc(
     input: str | Path | Sequence[str | Path], output_dir: str | Path, overwrite: bool = False, keep_work: bool = False
 ) -> None:
+    """Preprocess a single KH-9 PC scan from raw tiles to a restituted GeoTIFF.
+
+    Orchestrates four steps: optional archive extraction, image mosaicking,
+    restitution (geometric correction via fiducial markers), and QC quickview
+    generation. All intermediate files go under ``output_dir/work/``, all QC
+    figures under ``output_dir/qc/``, and the final image under
+    ``output_dir/images/<entity_id>.tif``. A per-image log is written to
+    ``output_dir/logs/<entity_id>.log``.
+
+    Parameters
+    ----------
+    input:
+        Either a single ``.tgz`` archive path or a list of pre-extracted tile
+        paths (``.tif``). The entity ID is derived from the filename stem.
+    output_dir:
+        Root output directory; subdirectories are created as needed.
+    overwrite:
+        If False (default), skip processing when the output image already exists.
+    keep_work:
+        If False (default), remove the working directory after successful processing.
+    """
     # standardize path
     input_paths: Path | list[Path] = Path(input) if isinstance(input, (str, Path)) else [Path(f) for f in input]
     output_dir = Path(output_dir)
@@ -153,7 +182,12 @@ def batch_preprocess_kh9pc(
     n_jobs: int = 1,
     dry_run: bool = False,
 ) -> None:
-    """Run preprocess_kh9pc on all images found in input_dir, logging failures without stopping the batch."""
+    """Run ``preprocess_kh9pc`` on all images found in ``input_dir`` in parallel.
+
+    Images already present in ``output_dir/images/`` are skipped unless ``overwrite``
+    is set. Failures are logged with a full traceback but do not abort the batch.
+    Pass ``dry_run=True`` to log what would be processed without executing anything.
+    """
     output_dir = Path(output_dir)
 
     def entity_id(inp: Path | list[Path]) -> str:

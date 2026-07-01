@@ -1,6 +1,8 @@
 """
-Copyright (c) 2025 HIPP developers
-Description: Functions to recreate in python the image_mosaic function from ASP
+Copyright (c) 2026 HIPP developers
+Description: Image mosaicking via sequential ORB keypoint matching and RANSAC-based
+    Euclidean alignment. Replaces the external ASP ``image_mosaic`` tool with a
+    pure-Python implementation using rasterio WarpedVRT for block-wise compositing.
 """
 
 import logging
@@ -69,6 +71,34 @@ def image_mosaic(
     ransac_max_trials: int = 1000,
     ransac_residual_threshold: float = 3.0,
 ) -> None:
+    """Stitch a sequence of image tiles into a single GeoTIFF mosaic.
+
+    Tiles are assumed to be ordered left-to-right. Alignment is computed
+    sequentially: each tile is matched to its left neighbour via ORB keypoints
+    extracted from the overlapping strip, then a RANSAC Euclidean transform is
+    estimated and accumulated into an absolute transform from the first tile.
+    The aligned tiles are then composited block-by-block; earlier tiles take
+    priority over later ones at overlap regions.
+
+    Skips writing if ``output_tif`` already exists and ``overwrite`` is False.
+
+    Parameters
+    ----------
+    image_paths:
+        Ordered list of tile paths (left to right).
+    output_tif:
+        Destination GeoTIFF path.
+    overlap_width:
+        Width in pixels of the overlap strip used for keypoint matching.
+    bloc_height:
+        Height of each horizontal block used during keypoint extraction.
+    nfeature_per_block:
+        Maximum ORB features detected per block.
+    ransac_max_trials:
+        Maximum RANSAC iterations for the Euclidean transform estimation.
+    ransac_residual_threshold:
+        Inlier distance threshold (pixels) for RANSAC.
+    """
     # standardize paths
     output_tif = Path(output_tif)
 
@@ -241,21 +271,10 @@ def image_mosaic_asp(
     cleanup: bool = True,
     dryrun: bool = False,
 ) -> None:
-    """
-    Mosaics a list of images into a single output image using the external 'image_mosaic' command.
+    """Mosaic tiles via the external ASP ``image_mosaic`` CLI tool.
 
-    Parameters
-    ----------
-    image_paths : list[str | Path]
-        List of paths to input image tiles.
-    output_image_path : str | Path
-        Path to the output mosaic image.
-    threads : int, optional
-        Number of threads to use for processing. Default is 0 (let the tool decide).
-    cleanup : bool, optional
-        Whether to remove temporary log and auxiliary files after processing. Default is True.
-    dryrun : bool, optional
-        If True, builds the command but does not execute it. Default is False.
+    Kept as a fallback/reference; prefer ``image_mosaic`` for the pure-Python implementation.
+    Pass ``cleanup=True`` (default) to remove the auxiliary log and ``.aux.xml`` files ASP leaves behind.
     """
     str_image_paths = list(sorted([str(f) for f in image_paths]))
 

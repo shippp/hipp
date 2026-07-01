@@ -1,3 +1,11 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: Quality control figures for all KH-9 PC restitution strategies.
+    Each ``plot_*`` function targets one fitted object and returns a matplotlib Figure.
+    ``get_figures`` dispatches to the right set of plots based on the strategy type,
+    and ``save_figures`` writes them all to disk.
+"""
+
 import logging
 from pathlib import Path
 
@@ -213,6 +221,7 @@ _PATTERN_COLORS: dict[str, str] = {
 
 
 def _coord_index(centers_xy: np.ndarray) -> dict[tuple[float, float], int]:
+    """Build a (cx, cy) → row-index lookup for fast pattern membership queries."""
     return {(float(cx), float(cy)): i for i, (cx, cy) in enumerate(centers_xy)}
 
 
@@ -557,6 +566,12 @@ def plot_crop_area(transform: Transformation, figsize: tuple[int, int] = (6, 6))
 
 
 def save_figures(fitting_class: FittingClass, output_dir: str | Path) -> None:
+    """Save all QC figures for a fitted strategy to ``output_dir/<figure_name>/<stem>.png``.
+
+    Each figure type gets its own sub-directory named after the plot (e.g.
+    ``poly_edges/``, ``deformation_grid/``). Errors on individual figures are
+    logged as warnings so a single bad plot never aborts the whole QC run.
+    """
     output_dir = Path(output_dir)
     gen = get_figures(fitting_class)
     while True:

@@ -1,3 +1,11 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: MixedStrategy — automatic strategy selection. Tries FiducialStrategy,
+    CollimationStrategy, PolyStrategy, and FlatStrategy in order and selects the first
+    non-failed result. Sub-strategy instances share a single PolyStrategy and
+    VerticalDetector to avoid redundant computation.
+"""
+
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MixedStrategy(RestitutionStrategy):
+    """Composite strategy that tries sub-strategies in priority order and picks the first that succeeds.
+
+    Default order: ``FiducialStrategy → CollimationStrategy → PolyStrategy → FlatStrategy``.
+    All sub-strategy instances share the same ``PolyStrategy`` (and transitively the same
+    ``VerticalDetector``) so common fitting work is done only once. If every strategy
+    fails, ``is_failed`` returns True and ``transform`` raises.
+    """
+
     strategies: list[RestitutionStrategy] = field(
         default_factory=lambda: [FiducialStrategy(), CollimationStrategy(), PolyStrategy(), FlatStrategy()]
     )
@@ -33,12 +49,14 @@ class MixedStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
+        """True if no strategy produced a usable result. Raises if ``fit()`` was not called."""
         if not self.is_fitted:
             raise RuntimeError("call fit() before")
         return self.__selected_strategy_ is None
 
     @property
     def selected_strategy_(self) -> RestitutionStrategy:
+        """The first strategy that succeeded. Raises if none did or fit was not called."""
         if not self.is_fitted:
             raise RuntimeError("call fit() before")
 
@@ -49,6 +67,7 @@ class MixedStrategy(RestitutionStrategy):
 
     @property
     def failed_strategies(self) -> list[RestitutionStrategy]:
+        """Strategies that were tried and failed before the selected one."""
         if not self.is_fitted:
             raise RuntimeError("call fit() before")
 
@@ -60,12 +79,15 @@ class MixedStrategy(RestitutionStrategy):
 
     @property
     def transformation_(self) -> Transformation:
+        """Delegates to the selected strategy's transformation."""
         return self.selected_strategy_.transformation_
 
     def transform(self, output_path: str | Path) -> None:
+        """Delegates to the selected strategy's ``transform``."""
         self.selected_strategy_.transform(output_path)
 
     def _fit(self, raster_filepath: Path) -> "MixedStrategy":
+        """Fit the shared VerticalDetector once, then try each strategy in order."""
         self.__selected_strategy_ = None
 
         vd = self.poly_strategy.vertical_detector

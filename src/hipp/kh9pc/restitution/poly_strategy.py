@@ -1,3 +1,11 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: PolyStrategy — polynomial edge fitting for KH-9 PC restitution. Samples
+    rupture points along the top and bottom film edges in a downsampled grid, fits a
+    RANSAC polynomial per edge, then applies a Thin Plate Spline warp to straighten
+    the curved edges.
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
@@ -17,6 +25,25 @@ from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
 
 @dataclass
 class PolyResult:
+    """Fitted polynomial edge model and diagnostics for one side (top or bottom).
+
+    Attributes
+    ----------
+    ruptures_local:
+        (N, 2) detected rupture coordinates in the sub-image pixel space.
+    ruptures_global:
+        (N, 2) same ruptures converted to full-raster pixel coordinates.
+    distortion:
+        (M, 2) array of ``[x, deviation_from_mean]`` sampled along the fitted curve,
+        used to visualise the edge curvature.
+    inlier_ratio:
+        Fraction of rupture points classified as inliers by RANSAC.
+    model:
+        Fitted ``RANSACRegressor`` wrapping the polynomial pipeline.
+    sub_image:
+        Downsampled strip from which ruptures were extracted (kept for QC).
+    """
+
     ruptures_local: NDArray[np.integer]
     ruptures_global: NDArray[np.integer]
     distortion: NDArray[np.floating]
@@ -27,6 +54,14 @@ class PolyResult:
 
 @dataclass
 class PolyStrategy(RestitutionStrategy):
+    """Restitution strategy based on polynomial edge fitting.
+
+    Detects rupture points along the top and bottom film edges in a downsampled
+    horizontal grid, fits a RANSAC polynomial per edge, then warps the image with
+    a Thin Plate Spline transform to map the curved edges to horizontal target lines.
+    Fails if the inlier ratio on either edge falls below ``min_inliers_threshold``.
+    """
+
     vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
     background_threshold: int = 20
     height_fraction: float = 0.15
@@ -46,27 +81,32 @@ class PolyStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
+        """True if either edge inlier ratio is below ``min_inliers_threshold``."""
         return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_threshold
 
     @property
     def top_(self) -> PolyResult:
+        """Fitted top edge result. Raises if ``fit()`` has not been called."""
         if "top" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["top"]
 
     @property
     def bottom_(self) -> PolyResult:
+        """Fitted bottom edge result. Raises if ``fit()`` has not been called."""
         if "bottom" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["bottom"]
 
     @property
     def transformation_(self) -> Transformation:
+        """TPS Transformation from curved edges to horizontal lines (computed lazily)."""
         if self.__transformation_ is None:
             self.__transformation_ = self._compute_transformation()
         return self.__transformation_
 
     def _fit(self, raster_filepath: Path) -> Self:
+        """Detect and fit polynomial models for the top and bottom edges."""
         if not self.vertical_detector.is_fitted or raster_filepath != self.vertical_detector.raster_filepath_:
             self.vertical_detector.fit(raster_filepath)
 
@@ -87,6 +127,7 @@ class PolyStrategy(RestitutionStrategy):
         return self
 
     def _process_side(self, sub_image: SubImage, side: str) -> PolyResult:
+        """Sample column-wise ruptures, fit a RANSAC polynomial, and compute the distortion curve."""
         res = []
         for i in range(sub_image.band.shape[1]):
             ruptures = detect_ruptures(sub_image.band[:, i], self.background_threshold, reverse_scan=(side == "top"))
@@ -126,6 +167,7 @@ class PolyStrategy(RestitutionStrategy):
         )
 
     def _compute_transformation(self) -> Transformation:
+        """Build a TPS Transformation that maps the fitted curved edges to horizontal target lines."""
         left, right = self.vertical_detector.edges_
         detected_width = self.vertical_detector.detected_width_
         output_width = self.output_width or detected_width
@@ -162,6 +204,7 @@ class PolyStrategy(RestitutionStrategy):
         )
 
     def transform(self, output_path: str | Path) -> None:
+        """Write the restituted image using the polynomial TPS warp."""
         tf = self.transformation_
 
         remap_tif_blockwise(

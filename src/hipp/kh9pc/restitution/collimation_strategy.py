@@ -1,3 +1,12 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: CollimationStrategy — refines the polynomial edge estimate using the physical
+    collimation lines printed on the KH-9 film. Collimation lines are narrow bright bands
+    whose peak can be located column-by-column with high accuracy, providing a stronger
+    geometric reference than the film-edge rupture alone. The fixed known distance between
+    collimation lines is used to set the output height precisely.
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
@@ -19,6 +28,24 @@ from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 
 @dataclass
 class CollimationResult:
+    """Fitted collimation line model and diagnostics for one side (top or bottom).
+
+    Attributes
+    ----------
+    peaks_local:
+        (N, 2) detected collimation peak coordinates in sub-image pixel space.
+    peaks_global:
+        (N, 2) same peaks converted to full-raster pixel coordinates.
+    distortion:
+        (N, 2) array of ``[x, deviation_from_mean]`` along the fitted collimation curve.
+    inlier_ratio:
+        Fraction of column peaks classified as inliers by RANSAC.
+    model:
+        Fitted ``RANSACRegressor`` wrapping the polynomial pipeline.
+    sub_image:
+        Narrow strip around the collimation line used for detection (kept for QC).
+    """
+
     peaks_local: NDArray[np.integer]
     peaks_global: NDArray[np.integer]
     distortion: NDArray[np.floating]
@@ -29,6 +56,16 @@ class CollimationResult:
 
 @dataclass
 class CollimationStrategy(RestitutionStrategy):
+    """Restitution strategy using physical collimation lines printed on the film.
+
+    Builds on a fitted ``PolyStrategy`` to narrow the search to a thin strip around
+    each expected edge, then locates the collimation line peak column-by-column
+    with sub-pixel accuracy. The result is fitted with a higher-degree RANSAC
+    polynomial, and the fixed physical distance between lines (``collimation_line_dist``)
+    sets the output height precisely rather than relying on the detected edge positions.
+    Fails if the inlier ratio on either side falls below ``min_inliers_threshold``.
+    """
+
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
     polynomial_degree: int = 5
     ransac_residual_threshold: float = 80.0
@@ -51,27 +88,32 @@ class CollimationStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
+        """True if either collimation line inlier ratio is below ``min_inliers_threshold``."""
         return min(self.top_.inlier_ratio, self.bottom_.inlier_ratio) < self.min_inliers_threshold
 
     @property
     def top_(self) -> CollimationResult:
+        """Fitted top collimation line result. Raises if ``fit()`` has not been called."""
         if "top" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["top"]
 
     @property
     def bottom_(self) -> CollimationResult:
+        """Fitted bottom collimation line result. Raises if ``fit()`` has not been called."""
         if "bottom" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["bottom"]
 
     @property
     def transformation_(self) -> Transformation:
+        """TPS Transformation from collimation curves to horizontal lines (computed lazily)."""
         if self.__transformation_ is None:
             self.__transformation_ = self._compute_transformation()
         return self.__transformation_
 
     def _fit(self, raster_filepath: Path) -> Self:
+        """Run PolyStrategy first, then detect collimation peaks in a narrow refinement strip."""
         if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
             self.poly_strategy.fit(raster_filepath)
 
@@ -96,6 +138,7 @@ class CollimationStrategy(RestitutionStrategy):
         return self
 
     def _process_side(self, sub_image: SubImage, side: str) -> CollimationResult:
+        """Detect collimation peaks column-by-column, fit a RANSAC polynomial, and compute the distortion curve."""
         _, w = sub_image.band.shape
 
         peaks_local = np.zeros((w, 2), dtype=int)
@@ -131,6 +174,7 @@ class CollimationStrategy(RestitutionStrategy):
         )
 
     def _compute_transformation(self) -> Transformation:
+        """Build a TPS Transformation using the fixed physical collimation line separation."""
         left, right = self.poly_strategy.vertical_detector.edges_
         detected_width = self.poly_strategy.vertical_detector.detected_width_
         output_width = self.output_width or detected_width
@@ -168,6 +212,7 @@ class CollimationStrategy(RestitutionStrategy):
         )
 
     def transform(self, output_path: str | Path) -> None:
+        """Write the restituted image using the collimation TPS warp."""
         tf = self.transformation_
 
         remap_tif_blockwise(
@@ -181,6 +226,13 @@ class CollimationStrategy(RestitutionStrategy):
 
 
 def detect_collimation_peak(x: NDArray[np.number], max_peak_width: int, sigma: int = 2) -> int:
+    """Locate the center of the collimation line in a 1D column profile.
+
+    Smooths the profile with a Gaussian, then finds the gradient peak pair
+    (rising + falling edge) whose separation is within ``max_peak_width``.
+    Returns the index of the intensity maximum between the two gradient peaks,
+    or the global maximum as a fallback when no compact peak is found.
+    """
     smooth = gaussian_filter1d(x, sigma=sigma)
 
     grad = np.gradient(smooth)

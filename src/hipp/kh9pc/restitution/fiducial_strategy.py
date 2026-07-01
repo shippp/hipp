@@ -1,3 +1,11 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: FiducialStrategy — highest-quality restitution strategy. Detects fiducial
+    markers above and below the image using template matching, clusters detections into
+    known pattern types via DBSCAN grid search, and fits a Thin Plate Spline transform
+    to map detected fiducial centers to their known physical positions.
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
@@ -27,6 +35,20 @@ from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 
 @dataclass
 class FiducialResult:
+    """Template matching results and pattern classifications for one film edge side.
+
+    Attributes
+    ----------
+    boxes:
+        (N, 4) detected bounding boxes in global raster coordinates ``[x, y, w, h]``.
+    scores:
+        (N,) template matching scores for each detection.
+    patterns:
+        Mapping from pattern name to its best ``DetectedPattern`` after DBSCAN grid search.
+    features:
+        (N, 2) feature matrix used for clustering: ``[matching_score, residual_to_edge_model]``.
+    """
+
     boxes: NDArray[np.int_]
     scores: NDArray[np.floating]
     patterns: dict[str, DetectedPattern]
@@ -34,6 +56,7 @@ class FiducialResult:
 
     @property
     def centers_xy(self) -> NDArray[np.floating]:
+        """(N, 2) center coordinates of all detected bounding boxes."""
         return centers_xy_from_boxes(self.boxes)
 
 
@@ -47,6 +70,7 @@ _KIND_TEMPLATES: dict[str, list[Path]] = {
 
 
 def _load_kind(kind: str) -> list[cv2.typing.MatLike]:
+    """Load all grayscale template images for *kind* (``"disk"`` or ``"wagon_wheel"``)."""
     paths = _KIND_TEMPLATES.get(kind, [])
     templates = [img for p in paths if (img := cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)) is not None]
     if not templates:
@@ -104,18 +128,21 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def top_(self) -> FiducialResult:
+        """Detection results for the top film edge. Raises if ``fit()`` has not been called."""
         if "top" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["top"]
 
     @property
     def bottom_(self) -> FiducialResult:
+        """Detection results for the bottom film edge. Raises if ``fit()`` has not been called."""
         if "bottom" not in self._results:
             raise RuntimeError("Call fit() before")
         return self._results["bottom"]
 
     @property
     def is_failed(self) -> bool:
+        """True if both primary patterns (top and bottom) score below ``min_score_threshold``."""
         primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
         primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
 
@@ -126,11 +153,13 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def transformation_(self) -> Transformation:
+        """TPS Transformation from detected fiducial positions to known physical positions (computed lazily)."""
         if self.__transformation_ is None:
             self.__transformation_ = self._compute_transformation()
         return self.__transformation_
 
     def transform(self, output_path: str | Path) -> None:
+        """Write the restituted image using the fiducial-based TPS warp."""
         tf = self.transformation_
         remap_tif_blockwise(
             tf.raster_filepath,
@@ -146,6 +175,7 @@ class FiducialStrategy(RestitutionStrategy):
     # ------------------------------------------------------------------
 
     def _fit(self, raster_filepath: Path) -> Self:
+        """Infer image spec, run PolyStrategy, then scan both sides for fiducial detections."""
         self.kh9_image_spec_ = KH9ImageSpec.from_raster_filepath(raster_filepath)
         self.templates_ = _load_kind(self.kh9_image_spec_.fiducial_type)
 
@@ -245,6 +275,7 @@ class FiducialStrategy(RestitutionStrategy):
         scores: NDArray[np.float64],
         model: RANSACRegressor,
     ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+        """Return (centers_xy, features) where features are [matching_score, residual_to_edge]."""
         centers_xy = centers_xy_from_boxes(boxes)
         residuals = np.abs(centers_xy[:, 1] - model.predict(centers_xy[:, 0].reshape(-1, 1)).ravel())
         features: NDArray[np.floating] = np.column_stack((scores, residuals))
@@ -256,6 +287,7 @@ class FiducialStrategy(RestitutionStrategy):
         centers_xy: NDArray[np.floating],
         fiducial_pattern: Patterns,
     ) -> DetectedPattern:
+        """Evaluate all DBSCAN clusters for one pattern type and return the highest-scoring one."""
         expected_width = self.kh9_image_spec_.expected_size[0]
         result = evaluate_pattern(fiducial_pattern, np.empty((0, 2), dtype=np.float64), expected_width)
 
@@ -278,6 +310,7 @@ class FiducialStrategy(RestitutionStrategy):
         centers_xy: NDArray[np.floating],
         fiducial_patterns: tuple[Patterns, Patterns],
     ) -> dict[str, DetectedPattern]:
+        """Grid search over DBSCAN (eps, residual weight) to maximise the score of each pattern."""
         X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
         patterns: dict[str, DetectedPattern] = {
             pt: evaluate_pattern(pt, np.empty((0, 2), dtype=np.float64), self.kh9_image_spec_.expected_size[0])
@@ -302,6 +335,7 @@ class FiducialStrategy(RestitutionStrategy):
         scores: NDArray[np.float64],
         side: Literal["top", "bottom"],
     ) -> tuple[dict[str, DetectedPattern], NDArray[np.floating]]:
+        """Compute detection features for one side and run grid-search clustering to classify patterns."""
         if side == "top":
             model = self.poly_strategy.top_.model
             fiducial_patterns = self.kh9_image_spec_.top_fiducial_patterns
@@ -315,6 +349,13 @@ class FiducialStrategy(RestitutionStrategy):
         return patterns, features
 
     def _compute_transformation(self) -> Transformation:
+        """Build the TPS Transformation from matched fiducial src→dst control points.
+
+        Only primary patterns (with known physical spacing) are used as control points.
+        If one side failed, its pattern is synthesised from the other using the known
+        physical row spacing. A forward TPS is used to map vertical edges into destination
+        space so the crop is centred correctly.
+        """
         if self.is_failed:
             raise DetectionError("Can't compute the transformation with a failed estimation")
 

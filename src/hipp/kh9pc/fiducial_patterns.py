@@ -1,3 +1,11 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: Fiducial pattern definitions, spacing constants, and scoring utilities for
+    KH-9 Hexagon panoramic camera images. Provides the building blocks for classifying
+    detected fiducial blobs into known pattern types (sparse, mid, dense, segmented,
+    time-word) and computing the control-point pairs used for geometric restitution.
+"""
+
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -21,6 +29,21 @@ FIDUCIAL_ROW_SPACING: int = 23222  # 6.40"
 
 @dataclass
 class DetectedPattern:
+    """A scored set of fiducial center points belonging to a single pattern type.
+
+    Attributes
+    ----------
+    pattern:
+        Pattern identifier (one of the ``Patterns`` literals).
+    points:
+        (N, 2) array of fiducial center coordinates in global raster pixels.
+    expected_width:
+        Full image width used to compute the coverage score.
+    score:
+        Combined quality metric in [0, 1]: product of spacing regularity and
+        spatial coverage. Higher is better; 0 means the pattern was not detected.
+    """
+
     pattern: Patterns
     points: NDArray[np.floating]
     expected_width: int
@@ -28,10 +51,12 @@ class DetectedPattern:
 
     @property
     def count(self) -> int:
+        """Number of detected fiducial centers in this pattern."""
         return len(self.points)
 
 
 def coverage_score(points: NDArray[np.floating], expected_width: int) -> float:
+    """Fraction of the expected image width covered by the x-span of detected points, clamped to [0, 1]."""
     if len(points) == 0:
         return 0.0
     result = float((np.max(points[:, 0]) - np.min(points[:, 0])) / expected_width)
@@ -39,6 +64,7 @@ def coverage_score(points: NDArray[np.floating], expected_width: int) -> float:
 
 
 def compute_spacings(points: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Euclidean distances between consecutive points sorted by x-coordinate."""
     sorted_points = points[np.argsort(points[:, 0])]
     return np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
 
@@ -52,6 +78,7 @@ def compute_intra_segment_spacings(points: NDArray[np.floating]) -> NDArray[np.f
 
 
 def theorical_spacing_from_pattern(pattern: Patterns) -> int:
+    """Return the nominal inter-fiducial spacing in pixels for sparse or mid patterns."""
     if "sparse" in pattern:
         return SPARSE_SPACING
     elif "mid" in pattern:
@@ -61,6 +88,7 @@ def theorical_spacing_from_pattern(pattern: Patterns) -> int:
 
 
 def spacing_lo_hi_from_pattern(pattern: Patterns) -> tuple[int, int]:
+    """Return the (low, high) pixel spacing bounds used to validate whether detected points match a pattern."""
     if pattern == "serialized_time_word":
         raise ValueError(f"No spacing lo hi existe for the pattern : {pattern}")
     if "dense" in pattern:
@@ -72,6 +100,12 @@ def spacing_lo_hi_from_pattern(pattern: Patterns) -> tuple[int, int]:
 
 
 def spacing_score_from_pattern(pattern: Patterns, points: NDArray[np.floating]) -> float:
+    """Score the regularity of detected point spacings against the expected pattern spacing.
+
+    Returns 0 if the median spacing falls outside the pattern's expected range.
+    Otherwise returns the product of the coefficient-of-variation score and the
+    detection rate (fraction of expected fiducials that were found).
+    """
     if pattern == "serialized_time_word":
         return 0.0
 
@@ -94,6 +128,7 @@ def spacing_score_from_pattern(pattern: Patterns, points: NDArray[np.floating]) 
 
 
 def evaluate_pattern(pattern: Patterns, points: NDArray[np.floating], expected_width: int) -> DetectedPattern:
+    """Build a ``DetectedPattern`` with a combined score (spacing regularity × coverage)."""
     return DetectedPattern(
         pattern=pattern,
         points=points,
@@ -160,6 +195,7 @@ def centers_xy_from_boxes(boxes: NDArray[np.floating] | NDArray[np.integer]) -> 
 
 
 def coefficient_of_variation_score(x: NDArray[np.floating]) -> float:
+    """Return 1 / (1 + CV) where CV = std/mean — close to 1 means very regular spacings."""
     mean = np.mean(x)
 
     if mean == 0:
@@ -172,14 +208,20 @@ def coefficient_of_variation_score(x: NDArray[np.floating]) -> float:
 def compute_src_and_dst_points(
     points: NDArray[np.floating], true_distance: float, y_dst: float | None = None
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
-    # compute y dst with median if not provideed
+    """Map detected fiducial points to regularised destination points on a uniform grid.
+
+    Points are sorted by x, then each spacing is snapped to the nearest integer
+    multiple of the median spacing to handle gaps between segments. The destination
+    x positions follow a perfectly uniform grid starting at the first detected point.
+    Returns (src_points, dst_points) both as (N, 2) arrays.
+    """
+    # use median y of detected points when no target row is specified
     y_dst = y_dst or float(np.median(points[:, 1]))
 
-    # compute sorted spacing
     sorted_points = points[np.argsort(points[:, 0])]
     spacing = np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
 
-    # compute the median spacing with a filtering to remove gap between segement
+    # filter out inter-segment gaps before computing the median (gaps are > 1.5× intra-segment spacing)
     median_spacing = np.median(spacing[spacing < 1.5 * true_distance])
 
     idx = np.concatenate(([0], np.round(spacing / median_spacing)))

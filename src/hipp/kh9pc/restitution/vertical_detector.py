@@ -1,6 +1,8 @@
 """
-Copyright (c) 2025 HIPP developers
-Description: VerticalDetector — detects left/right film frame edges.
+Copyright (c) 2026 HIPP developers
+Description: VerticalDetector — detects the left and right film frame edges of a KH-9 PC
+    scan by thresholding a downsampled column-sum profile and finding the first intensity
+    rupture on each side. Used as the first step by all restitution strategies.
 """
 
 import logging

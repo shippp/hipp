@@ -1,3 +1,8 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: Click CLI exposing ``preproc`` and ``batch-preproc`` commands for KH-9 PC preprocessing.
+"""
+
 # mypy: disable-error-code="misc"
 import logging
 import sys
@@ -9,6 +14,7 @@ from hipp.kh9pc.pipeline import batch_preprocess_kh9pc, preprocess_kh9pc
 
 
 def _configure_logging(verbosity: int) -> None:
+    """Set the ``hipp`` logger level based on a verbosity count (0=WARNING, 1=INFO, 2+=DEBUG)."""
     level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(verbosity, logging.DEBUG)
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stdout
