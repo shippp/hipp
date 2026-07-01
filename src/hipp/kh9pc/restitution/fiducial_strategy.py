@@ -116,13 +116,12 @@ class FiducialStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        return not all(
-            any(
-                p.score > self.min_score_threshold
-                for name, p in result.patterns.items()
-                if "mid" in name or "sparse" in name
-            )
-            for result in (self.top_, self.bottom_)
+        primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
+        primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
+
+        return (
+            self.top_.patterns[primary_top_pattern].score < self.min_score_threshold
+            and self.bottom_.patterns[primary_bottom_pattern].score < self.min_score_threshold
         )
 
     @property
@@ -323,10 +322,14 @@ class FiducialStrategy(RestitutionStrategy):
         primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
         primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
 
-        top_pattern = self.top_.patterns[primary_top_pattern]
-        bottom_pattern = self.bottom_.patterns[primary_bottom_pattern]
+        top = self.top_.patterns[primary_top_pattern]
+        bottom = self.bottom_.patterns[primary_bottom_pattern]
 
-        src_pts, dst_pts = compute_global_src_and_dst_points(top_pattern, bottom_pattern)
+        # provid only valid pattern else None
+        src_pts, dst_pts = compute_global_src_and_dst_points(
+            top if top.score >= self.min_score_threshold else None,
+            bottom if bottom.score >= self.min_score_threshold else None,
+        )
 
         y_center = (dst_pts[:, 1].min() + dst_pts[:, 1].max()) / 2
 

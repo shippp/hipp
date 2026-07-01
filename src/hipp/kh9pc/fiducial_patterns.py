@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -84,7 +84,7 @@ def spacing_score_from_pattern(pattern: PATTERNS, points: NDArray[np.floating]) 
     # 1.5× sits between 1× and 2× spacing, so it cleanly separates regular from gap spacings
     regular_spacings = spacings[spacings < median_spacing * 1.5]
     expected_count = int(sum(round(s / median_spacing) for s in spacings))
-    detection_rate = len(spacings) / expected_count
+    detection_rate = min(len(spacings), expected_count) / max(len(spacings), expected_count)
     return float(coefficient_of_variation_score(regular_spacings) * detection_rate)
 
 
@@ -98,11 +98,24 @@ def evaluate_pattern(pattern: PATTERNS, points: NDArray[np.floating], expected_w
 
 
 def compute_global_src_and_dst_points(
-    top_pattern: DetectedPattern, bottom_pattern: DetectedPattern
+    top_pattern: DetectedPattern | None, bottom_pattern: DetectedPattern | None
 ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Compute source and destination control points from top and bottom fiducial patterns.
+
+    If one pattern is None, it is synthesized from the other by offsetting points by Y_DIST along y.
+    """
     # top and bottom fiducials distances
     # computed with the median take on multiple images
-    Y_DIST: int = 23242
+    Y_DIST: int = 23222
+
+    if top_pattern is None and bottom_pattern is None:
+        raise ValueError("At least one pattern is needed to compute points.")
+
+    if top_pattern is None:
+        assert bottom_pattern is not None  # juste for mypy
+        top_pattern = replace(bottom_pattern, points=bottom_pattern.points - np.array([0, Y_DIST]))
+    elif bottom_pattern is None:
+        bottom_pattern = replace(top_pattern, points=top_pattern.points + np.array([0, Y_DIST]))
 
     spacing = theorical_spacing_from_pattern(top_pattern.pattern)
     if theorical_spacing_from_pattern(bottom_pattern.pattern) != spacing:
