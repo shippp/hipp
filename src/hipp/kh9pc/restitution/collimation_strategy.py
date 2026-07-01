@@ -128,6 +128,8 @@ class CollimationStrategy(RestitutionStrategy):
             top_edge = int(self.poly_strategy.top_.model.predict(np.array([[col_center]])).flat[0])
             bot_edge = int(self.poly_strategy.bottom_.model.predict(np.array([[col_center]])).flat[0])
 
+            # Both collimation lines lie inside the effective image content, not outside it.
+            # top window starts at top_edge and extends downward; bottom window ends at bot_edge and extends upward.
             for side, window in {
                 "top": Window(col_off, top_edge, window_width, window_height),
                 "bottom": Window(col_off, bot_edge - window_height, window_width, window_height),

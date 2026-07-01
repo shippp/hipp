@@ -84,6 +84,26 @@ def preprocess_kh9pc(
         _preprocess_kh9pc(input_paths, entity_id, output_path, qc_dir, work_dir, overwrite, keep_work)
 
 
+def _delete_entity_work_files(work_dir: Path, entity_id: str) -> None:
+    """Delete per-entity files from work_dir and remove empty parent directories."""
+    for path in [
+        work_dir / "joined_images" / f"{entity_id}.tif",
+        work_dir / "joblibs" / f"{entity_id}.joblib",
+        work_dir / "extracted" / entity_id,
+    ]:
+        if path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+    for subdir in (work_dir / d for d in ("joined_images", "joblibs", "extracted")):
+        if subdir.exists() and not any(subdir.iterdir()):
+            subdir.rmdir()
+
+    if work_dir.exists() and not any(work_dir.iterdir()):
+        work_dir.rmdir()
+
+
 def _preprocess_kh9pc(
     input_paths: Path | list[Path],
     entity_id: str,
@@ -94,7 +114,6 @@ def _preprocess_kh9pc(
     keep_work: bool,
 ) -> None:
     """Run the actual preprocessing steps (called inside a file-logging context)."""
-    # START PREPROCESSING
     logger.info("Start preprocessing of %s", entity_id)
 
     # STEP 1 : EXTRACTION (can be skipped if the input is a list)
@@ -126,7 +145,7 @@ def _preprocess_kh9pc(
 
     strategy.transform(output_path)
 
-    # QC STEP : QUICKVIEW (skipped if no qc dir is provideed)
+    # QC STEP : QUICKVIEW
     generate_quickview(
         output_path,
         qc_dir / "final_qv" / f"{entity_id}.jpg",
@@ -135,9 +154,9 @@ def _preprocess_kh9pc(
         overwrite=overwrite,
     )
 
-    # clean the work dir
+    # cleanup only on success — intermediate files are preserved on error to allow resuming
     if not keep_work:
-        shutil.rmtree(work_dir)
+        _delete_entity_work_files(work_dir, entity_id)
 
     logger.info("Finish preprocessing of %s", entity_id)
 

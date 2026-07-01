@@ -121,6 +121,7 @@ class FiducialStrategy(RestitutionStrategy):
         super().__init__()
         self._results: dict[str, FiducialResult] = {}
         self.__transformation_: Transformation | None = None
+        self.kh9_image_spec_: KH9ImageSpec | None = None
 
     # ------------------------------------------------------------------
     # Public properties
@@ -143,6 +144,8 @@ class FiducialStrategy(RestitutionStrategy):
     @property
     def is_failed(self) -> bool:
         """True if both primary patterns (top and bottom) score below ``min_score_threshold``."""
+        if self.kh9_image_spec_ is None:
+            raise RuntimeError("Call fit() before")
         primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
         primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
 
@@ -186,6 +189,7 @@ class FiducialStrategy(RestitutionStrategy):
 
         with rasterio.open(raster_filepath) as src:
             for side in ("top", "bottom"):
+                # scan from column 0, not col_left: fiducials can appear in the dark film margin before the effective image
                 boxes, scores, ids = self._scan_side(src, 0, col_end, side)
 
                 # apply NMS to remove duplicate detection
@@ -288,6 +292,7 @@ class FiducialStrategy(RestitutionStrategy):
         fiducial_pattern: Patterns,
     ) -> DetectedPattern:
         """Evaluate all DBSCAN clusters for one pattern type and return the highest-scoring one."""
+        assert self.kh9_image_spec_ is not None
         expected_width = self.kh9_image_spec_.expected_size[0]
         result = evaluate_pattern(fiducial_pattern, np.empty((0, 2), dtype=np.float64), expected_width)
 
@@ -311,6 +316,7 @@ class FiducialStrategy(RestitutionStrategy):
         fiducial_patterns: tuple[Patterns, Patterns],
     ) -> dict[str, DetectedPattern]:
         """Grid search over DBSCAN (eps, residual weight) to maximise the score of each pattern."""
+        assert self.kh9_image_spec_ is not None
         X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
         patterns: dict[str, DetectedPattern] = {
             pt: evaluate_pattern(pt, np.empty((0, 2), dtype=np.float64), self.kh9_image_spec_.expected_size[0])
@@ -336,6 +342,7 @@ class FiducialStrategy(RestitutionStrategy):
         side: Literal["top", "bottom"],
     ) -> tuple[dict[str, DetectedPattern], NDArray[np.floating]]:
         """Compute detection features for one side and run grid-search clustering to classify patterns."""
+        assert self.kh9_image_spec_ is not None
         if side == "top":
             model = self.poly_strategy.top_.model
             fiducial_patterns = self.kh9_image_spec_.top_fiducial_patterns
@@ -356,6 +363,7 @@ class FiducialStrategy(RestitutionStrategy):
         physical row spacing. A forward TPS is used to map vertical edges into destination
         space so the crop is centred correctly.
         """
+        assert self.kh9_image_spec_ is not None
         if self.is_failed:
             raise DetectionError("Can't compute the transformation with a failed estimation")
 

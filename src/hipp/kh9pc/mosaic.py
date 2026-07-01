@@ -249,6 +249,7 @@ def write_mosaic(
                     for block_idx, (_, window) in enumerate(dst.block_windows(1)):
                         pbar.update(block_idx)
                         warped = vrt.read(1, window=window)
+                        # no nodata metadata is set: valid pixels can legitimately be 0 (dark areas)
                         mask = warped != 0
                         if not mask.any():
                             continue

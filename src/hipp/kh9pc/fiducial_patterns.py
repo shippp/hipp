@@ -216,7 +216,7 @@ def compute_src_and_dst_points(
     Returns (src_points, dst_points) both as (N, 2) arrays.
     """
     # use median y of detected points when no target row is specified
-    y_dst = y_dst or float(np.median(points[:, 1]))
+    y_dst = y_dst if y_dst is not None else float(np.median(points[:, 1]))
 
     sorted_points = points[np.argsort(points[:, 0])]
     spacing = np.hypot(np.diff(sorted_points[:, 0]), np.diff(sorted_points[:, 1]))
@@ -225,7 +225,7 @@ def compute_src_and_dst_points(
     median_spacing = np.median(spacing[spacing < 1.5 * true_distance])
 
     idx = np.concatenate(([0], np.round(spacing / median_spacing)))
-    idx = np.cumulative_sum(idx)
+    idx = np.cumsum(idx)
     dst_x = sorted_points[0, 0] + idx * true_distance
 
     dst_points = np.column_stack([dst_x, np.full_like(dst_x, y_dst)])
