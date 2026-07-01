@@ -1,8 +1,6 @@
 import logging
-from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
 from typing import Any, Iterator
 
 import matplotlib.pyplot as plt
@@ -15,12 +13,6 @@ from rasterio.warp import Resampling
 from rasterio.windows import Window
 
 from hipp.image import SubImage
-from hipp.kh9pc.fiducial_patterns import (
-    compute_expected_fiducial_count,
-    compute_intra_segment_spacings,
-    theorical_spacing_from_pattern,
-)
-from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import FittingClass, Transformation
 from hipp.kh9pc.restitution.collimation_strategy import CollimationStrategy
 from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
@@ -562,84 +554,6 @@ def plot_crop_area(transform: Transformation, figsize: tuple[int, int] = (6, 6))
 
 
 # --- Dispatch ---
-
-
-def _vertical_metrics(detector: VerticalDetector) -> dict[str, Any]:
-    expected_width = KH9ImageSpec.from_raster_filepath(detector.raster_filepath_).expected_size[0]
-    return {"expected_width": expected_width, "detected_width": detector.detected_width_}
-
-
-def _poly_metrics(strategy: PolyStrategy) -> dict[str, Any]:
-    expected_height = KH9ImageSpec.from_raster_filepath(strategy.raster_filepath_).expected_size[1]
-    x = np.linspace(*strategy.vertical_detector.edges_, strategy.grid_shape[0]).reshape(-1, 1)
-    heights = strategy.bottom_.model.predict(x) - strategy.top_.model.predict(x)
-    return {
-        **_vertical_metrics(strategy.vertical_detector),
-        "expected_height": expected_height,
-        "detected_height": float(np.mean(heights)),
-        "detected_height_std": float(np.std(heights)),
-    }
-
-
-def _fiducial_metrics(strategy: FiducialStrategy) -> dict[str, Any]:
-    primary_top = strategy.kh9_image_spec_.top_fiducial_patterns[0]
-    primary_bottom = strategy.kh9_image_spec_.bottom_fiducial_patterns[0]
-    top_pattern = strategy.top_.patterns[primary_top]
-    bottom_pattern = strategy.bottom_.patterns[primary_bottom]
-    expected_width = strategy.kh9_image_spec_.expected_size[0]
-
-    top_spacings = compute_intra_segment_spacings(top_pattern.points) if len(top_pattern.points) > 1 else np.array([])
-    bot_spacings = (
-        compute_intra_segment_spacings(bottom_pattern.points) if len(bottom_pattern.points) > 1 else np.array([])
-    )
-
-    return {
-        **_poly_metrics(strategy.poly_strategy),
-        "primary_top_pattern": primary_top,
-        "primary_bottom_pattern": primary_bottom,
-        "top_expected_fiducial_count": compute_expected_fiducial_count(primary_top, expected_width),
-        "top_detected_fiducial_count": top_pattern.count,
-        "top_true_spacing": theorical_spacing_from_pattern(primary_top),
-        "top_detected_mean_spacing": float(np.mean(top_spacings)) if len(top_spacings) else float("nan"),
-        "top_detected_std_spacing": float(np.std(top_spacings)) if len(top_spacings) else float("nan"),
-        "bottom_expected_fiducial_count": compute_expected_fiducial_count(primary_bottom, expected_width),
-        "bottom_detected_fiducial_count": bottom_pattern.count,
-        "bottom_true_spacing": theorical_spacing_from_pattern(primary_bottom),
-        "bottom_detected_mean_spacing": float(np.mean(bot_spacings)) if len(bot_spacings) else float("nan"),
-        "bottom_detected_std_spacing": float(np.std(bot_spacings)) if len(bot_spacings) else float("nan"),
-    }
-
-
-def get_metrics(fitting_class: FittingClass) -> dict[str, Any] | None:
-    """Return metrics for the effective strategy, or None if not supported."""
-    if isinstance(fitting_class, MixedStrategy):
-        return None if fitting_class.is_failed else get_metrics(fitting_class.selected_strategy_)
-    if isinstance(fitting_class, FiducialStrategy):
-        return {"strategy": "FiducialStrategy", **_fiducial_metrics(fitting_class)}
-    if isinstance(fitting_class, PolyStrategy):
-        return {"strategy": "PolyStrategy", **_poly_metrics(fitting_class)}
-    if isinstance(fitting_class, VerticalDetector):
-        return {"strategy": "VerticalDetector", **_vertical_metrics(fitting_class)}
-    return None
-
-
-def save_metrics(fitting_class: FittingClass, output_dir: str | Path) -> None:
-    """Write or update one row in metrics.csv, keyed by image name."""
-    metrics = get_metrics(fitting_class)
-    if metrics is None:
-        return
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / "metrics.csv"
-    row = {"image": fitting_class.raster_filepath_.stem, "processed_at": datetime.now().isoformat(), **metrics}
-    df_new = pd.DataFrame([row])
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        df = df[df["image"] != row["image"]]
-        df = pd.concat([df, df_new], ignore_index=True)
-    else:
-        df = df_new
-    df.to_csv(csv_path, index=False)
 
 
 def save_figures(fitting_class: FittingClass, output_dir: str | Path) -> None:

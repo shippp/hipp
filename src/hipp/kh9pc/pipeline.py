@@ -8,7 +8,7 @@ import joblib
 
 from hipp.image import generate_quickview
 from hipp.kh9pc.mosaic import image_mosaic
-from hipp.kh9pc.quality_control import save_figures, save_metrics
+from hipp.kh9pc.quality_control import save_figures
 from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
 from hipp.tools import extract_archive
 
@@ -64,7 +64,6 @@ def preprocess_kh9pc(
 
     # QC STEP : RESTITUTION
     save_figures(strategy, qc_dir / "restitution")
-    save_metrics(strategy, qc_dir)
 
     strategy.transform(output_path)
 
