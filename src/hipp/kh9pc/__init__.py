@@ -1,13 +1,31 @@
-from . import collimation_lines, core, image_mosaic
+"""
+Copyright (c) 2026 HIPP developers
+Description: Public API for the KH-9 Panoramic Camera preprocessing module.
+"""
+
 from . import quality_control as qc
-from .batch import iter_collimation_rectification, join_images, join_images_asp
+from .pipeline import batch_preprocess_kh9pc, preprocess_kh9pc
+from .mosaic import image_mosaic
+from .restitution import (
+    CollimationStrategy,
+    FiducialStrategy,
+    FlatStrategy,
+    MixedStrategy,
+    PolyStrategy,
+    VerticalDetector,
+)
+from .restitution.base import DetectionError
 
 __all__ = [
-    "image_mosaic",
-    "join_images",
-    "join_images_asp",
-    "iter_collimation_rectification",
+    "batch_preprocess_kh9pc",
+    "preprocess_kh9pc",
     "qc",
-    "collimation_lines",
-    "core",
+    "image_mosaic",
+    "CollimationStrategy",
+    "DetectionError",
+    "FiducialStrategy",
+    "FlatStrategy",
+    "MixedStrategy",
+    "PolyStrategy",
+    "VerticalDetector",
 ]

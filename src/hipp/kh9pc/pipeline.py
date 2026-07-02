@@ -1,0 +1,234 @@
+"""
+Copyright (c) 2026 HIPP developers
+Description: High-level pipeline orchestrating the full KH-9 PC preprocessing workflow:
+    archive extraction → image mosaicking → restitution → QC quickviews.
+    Exposes ``preprocess_kh9pc`` for single images and ``batch_preprocess_kh9pc`` for
+    parallel batch processing.
+"""
+
+import logging
+from collections.abc import Generator, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
+from pathlib import Path
+import shutil
+
+import joblib
+
+from hipp.image import generate_quickview
+from hipp.kh9pc.mosaic import image_mosaic
+from hipp.kh9pc.quality_control import save_figures
+from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
+from hipp.tools import extract_archive
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _log_to_file(path: Path) -> Generator[None, None, None]:
+    """Temporarily attach a FileHandler to the hipp logger."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, mode="w")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s"))
+    logging.getLogger("hipp").addHandler(handler)
+    try:
+        yield
+    finally:
+        logging.getLogger("hipp").removeHandler(handler)
+        handler.close()
+
+
+def preprocess_kh9pc(
+    input: str | Path | Sequence[str | Path], output_dir: str | Path, overwrite: bool = False, keep_work: bool = False
+) -> None:
+    """Preprocess a single KH-9 PC scan from raw tiles to a restituted GeoTIFF.
+
+    Orchestrates four steps: optional archive extraction, image mosaicking,
+    restitution (geometric correction via fiducial markers), and QC quickview
+    generation. All intermediate files go under ``output_dir/work/``, all QC
+    figures under ``output_dir/qc/``, and the final image under
+    ``output_dir/images/<entity_id>.tif``. A per-image log is written to
+    ``output_dir/logs/<entity_id>.log``.
+
+    Parameters
+    ----------
+    input:
+        Either a single ``.tgz`` archive path or a list of pre-extracted tile
+        paths (``.tif``). The entity ID is derived from the filename stem.
+    output_dir:
+        Root output directory; subdirectories are created as needed.
+    overwrite:
+        If False (default), skip processing when the output image already exists.
+    keep_work:
+        If False (default), remove the working directory after successful processing.
+    """
+    # standardize path
+    input_paths: Path | list[Path] = Path(input) if isinstance(input, (str, Path)) else [Path(f) for f in input]
+    output_dir = Path(output_dir)
+
+    # extract entity id from input
+    entity_id = input_paths.stem if isinstance(input_paths, Path) else input_paths[0].stem.split("_")[0]
+
+    # create all path
+    output_path = output_dir / "images" / f"{entity_id}.tif"
+    qc_dir = output_dir / "qc"
+    work_dir = output_dir / "work"
+
+    # overwrite checking
+    if output_path.exists() and not overwrite:
+        logger.info("Skipping preprocess_kh9pc: %s (already exists, overwrite=False)", str(output_path))
+        return
+
+    log_path = output_dir / "logs" / f"{entity_id}.log"
+    with _log_to_file(log_path):
+        _preprocess_kh9pc(input_paths, entity_id, output_path, qc_dir, work_dir, overwrite, keep_work)
+
+
+def _delete_entity_work_files(work_dir: Path, entity_id: str) -> None:
+    """Delete per-entity files from work_dir and remove empty parent directories."""
+    for path in [
+        work_dir / "joined_images" / f"{entity_id}.tif",
+        work_dir / "joblibs" / f"{entity_id}.joblib",
+        work_dir / "extracted" / entity_id,
+    ]:
+        if path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+
+    for subdir in (work_dir / d for d in ("joined_images", "joblibs", "extracted")):
+        if subdir.exists() and not any(subdir.iterdir()):
+            subdir.rmdir()
+
+    if work_dir.exists() and not any(work_dir.iterdir()):
+        work_dir.rmdir()
+
+
+def _preprocess_kh9pc(
+    input_paths: Path | list[Path],
+    entity_id: str,
+    output_path: Path,
+    qc_dir: Path,
+    work_dir: Path,
+    overwrite: bool,
+    keep_work: bool,
+) -> None:
+    """Run the actual preprocessing steps (called inside a file-logging context)."""
+    logger.info("Start preprocessing of %s", entity_id)
+
+    # STEP 1 : EXTRACTION (can be skipped if the input is a list)
+    if isinstance(input_paths, Path):
+        tiles = extract_archive(input_paths, work_dir / "extracted" / entity_id, overwrite=overwrite)
+    else:
+        tiles = input_paths
+
+    # STEP 2 : JOIN_IMAGES
+    joined_image = work_dir / "joined_images" / f"{entity_id}.tif"
+    image_mosaic(tiles, joined_image, overwrite=overwrite)
+
+    # QC STEP : QUICKVIEW
+    generate_quickview(
+        joined_image,
+        qc_dir / "mosaic_qv" / f"{entity_id}.jpg",
+        scale_factor=0.1,
+        jpeg_quality=70,
+        overwrite=overwrite,
+    )
+
+    # STEP 3 : RESTITUTION
+    strategy = FiducialStrategy().fit(joined_image)
+    (work_dir / "joblibs").mkdir(parents=True, exist_ok=True)
+    joblib.dump(strategy, work_dir / "joblibs" / f"{entity_id}.joblib")
+
+    # QC STEP : RESTITUTION
+    save_figures(strategy, qc_dir / "restitution")
+
+    strategy.transform(output_path)
+
+    # QC STEP : QUICKVIEW
+    generate_quickview(
+        output_path,
+        qc_dir / "final_qv" / f"{entity_id}.jpg",
+        scale_factor=0.1,
+        jpeg_quality=70,
+        overwrite=overwrite,
+    )
+
+    # cleanup only on success — intermediate files are preserved on error to allow resuming
+    if not keep_work:
+        _delete_entity_work_files(work_dir, entity_id)
+
+    logger.info("Finish preprocessing of %s", entity_id)
+
+
+def search_input_dir(input_dir: str | Path) -> list[Path | list[Path]]:
+    """Scan a directory and return inputs ready for preprocess_kh9pc, one entry per image.
+
+    - .tgz files at root       → one Path per archive
+    - subdirectories with .tif → one list[Path] of tiles per subdir
+    - .tif files at root       → grouped by entity_id prefix into list[Path]
+    Mixed directories are supported.
+    """
+    from itertools import groupby
+
+    input_dir = Path(input_dir)
+    result: list[Path | list[Path]] = []
+
+    result.extend(sorted(input_dir.glob("*.tgz")))
+
+    for subdir in sorted(d for d in input_dir.iterdir() if d.is_dir()):
+        tiles = sorted(subdir.glob("*.tif"))
+        if tiles:
+            result.append(tiles)
+
+    loose = sorted(input_dir.glob("*.tif"))
+    if loose:
+
+        def _entity_id(p: Path) -> str:
+            return p.stem.split("_")[0]
+
+        for _, group in groupby(loose, key=_entity_id):
+            result.append(list(group))
+
+    return result
+
+
+def batch_preprocess_kh9pc(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    overwrite: bool = False,
+    keep_work: bool = False,
+    n_jobs: int = 1,
+    dry_run: bool = False,
+) -> None:
+    """Run ``preprocess_kh9pc`` on all images found in ``input_dir`` in parallel.
+
+    Images already present in ``output_dir/images/`` are skipped unless ``overwrite``
+    is set. Failures are logged with a full traceback but do not abort the batch.
+    Pass ``dry_run=True`` to log what would be processed without executing anything.
+    """
+    output_dir = Path(output_dir)
+
+    def entity_id(inp: Path | list[Path]) -> str:
+        return inp.stem if isinstance(inp, Path) else inp[0].stem.split("_")[0]
+
+    inputs = search_input_dir(input_dir)
+    done = [inp for inp in inputs if (output_dir / "images" / f"{entity_id(inp)}.tif").exists()]
+    todo = [inp for inp in inputs if inp not in done]
+
+    logger.info("Batch preprocess — %d images found in %s", len(inputs), input_dir)
+    logger.info("  output_dir : %s", output_dir)
+    logger.info("  n_jobs     : %d  |  keep_work : %s  |  overwrite : %s", n_jobs, keep_work, overwrite)
+    logger.info("  done       : %d  %s", len(done), [entity_id(i) for i in done])
+    logger.info("  remaining  : %d  %s", len(todo), [entity_id(i) for i in todo])
+
+    if dry_run:
+        return
+
+    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+        futures = {executor.submit(preprocess_kh9pc, inp, output_dir, overwrite, keep_work): inp for inp in inputs}
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                logger.error("Failed to process %s", entity_id(futures[future]), exc_info=True)

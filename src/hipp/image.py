@@ -3,6 +3,7 @@ Copyright (c) 2025 HIPP developers
 Description: some function for the image processing
 """
 
+import logging
 import warnings
 from pathlib import Path
 from typing import Callable
@@ -12,12 +13,37 @@ import numpy as np
 import rasterio
 from numpy.typing import NDArray
 from rasterio.errors import NotGeoreferencedWarning
-from rasterio.warp import Resampling, reproject
+from rasterio.warp import Resampling
 from rasterio.windows import Window
 from scipy.interpolate import RectBivariateSpline
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
+
+logger = logging.getLogger(__name__)
+
+
+class LogProgressBar:
+    """Log-friendly progress bar that emits one line per character of width."""
+
+    def __init__(self, label: str, total: int, log: logging.Logger, width: int = 5) -> None:
+        self._label = label
+        self._total = total
+        self._log = log
+        self._width = width
+        self._last_step = -1
+
+    def update(self, i: int) -> None:
+        step = i * self._width // self._total
+        if step != self._last_step:
+            self._last_step = step
+            filled = i * self._width // self._total
+            bar = "#" * filled + "." * (self._width - filled)
+            self._log.info("%s  [%s]", self._label, bar)
+
+    def close(self) -> None:
+        bar = "#" * self._width
+        self._log.info("%s  [%s]", self._label, bar)
 
 
 def apply_clahe(
@@ -78,11 +104,24 @@ def resize_img(
 
 
 def generate_quickview(
-    raster_filepath: str,
-    output_path: str,
+    raster_filepath: str | Path,
+    output_path: str | Path | None = None,
     scale_factor: float = 0.2,
     interpolation: int = Resampling.average,
+    jpeg_quality: int = 95,
+    overwrite: bool = False,
 ) -> None:
+    raster_filepath = Path(raster_filepath)
+
+    if output_path is None:
+        output_path = raster_filepath.parent / "quickviews" / raster_filepath.with_suffix(".jpg").name
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_path.exists() and not overwrite:
+        logger.info("Skipping generate_quickview: %s (already exists, overwrite=False)", str(output_path))
+        return
+
     with rasterio.open(raster_filepath) as src:
         width = int(src.width * scale_factor)
         height = int(src.height * scale_factor)
@@ -95,14 +134,17 @@ def generate_quickview(
     if count == 1:
         img_cv2 = qv_img[0]  # 2D array for single band
     else:
-        # transpose (b, H, W) -> (H, W, b) and transforme rgb to bgr
+        # transpose (b, H, W) -> (H, W, b) and convert rgb to bgr
         img_cv2 = cv2.cvtColor(np.transpose(qv_img, (1, 2, 0)), cv2.COLOR_RGB2BGR)
 
-    # If single band, make sure dtype is uint8
     if img_cv2.dtype != np.uint8:
         img_cv2 = img_cv2.astype(np.uint8)
 
-    cv2.imwrite(output_path, img_cv2)
+    encode_params = []
+    if output_path.suffix.lower() in (".jpg", ".jpeg"):
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+
+    cv2.imwrite(str(output_path), img_cv2, encode_params)
 
 
 def resize_raster_blockwise(
@@ -243,8 +285,6 @@ def remap_tif_blockwise(
     output_size: tuple[int, int] | None = None,
     block_size: int = 256,
     interpolation: int = cv2.INTER_CUBIC,
-    pbar: bool = True,
-    pbar_desc: str = "Remaping tif",
     padding: int = 2,
     lowres_step: int | None = None,
 ) -> None:
@@ -276,10 +316,6 @@ def remap_tif_blockwise(
     interpolation : int, default=cv2.INTER_CUBIC
         OpenCV interpolation flag (e.g., `cv2.INTER_LINEAR`, `cv2.INTER_CUBIC`, `cv2.INTER_NEAREST`).
         Defines how pixel values are interpolated during remapping.
-    pbar : bool, default=True
-        Whether to display a tqdm progress bar during processing.
-    pbar_desc : str, default="Remaping tif"
-        Description text displayed in the tqdm progress bar.
     padding : int, default=2
         Number of extra pixels to read around the computed source window, to reduce
         border artifacts caused by bicubic interpolation.
@@ -333,10 +369,11 @@ def remap_tif_blockwise(
                 for dst_x0 in range(0, output_size[0], block_size)
                 for dst_y0 in range(0, output_size[1], block_size)
             ]
-            # Wrap block iterator with a tqdm progress bar if enabled
-            iterator = tqdm(blocks, desc=pbar_desc, unit="block") if pbar else blocks
+            n_blocks = len(blocks)
+            pbar = LogProgressBar(f"remapping {Path(input_path).name}", n_blocks, logger)
 
-            for dst_x0, dst_y0 in iterator:
+            for block_idx, (dst_x0, dst_y0) in enumerate(blocks):
+                pbar.update(block_idx)
                 dst_x1 = min(dst_x0 + block_size, output_size[0])
                 dst_y1 = min(dst_y0 + block_size, output_size[1])
 
@@ -373,8 +410,8 @@ def remap_tif_blockwise(
                     tf_ygrid = points_transformed[:, 1].reshape(ygrid.shape).astype(np.float32)
 
                 # Compute source window bounds with a padding to avoid artefact on edge caused of bicubic interpolation
-                src_x0 = int(np.floor(tf_xgrid.min())) - padding
-                src_y0 = int(np.floor(tf_ygrid.min())) - padding
+                src_x0 = max(0, int(np.floor(tf_xgrid.min())) - padding)
+                src_y0 = max(0, int(np.floor(tf_ygrid.min())) - padding)
                 src_x1 = int(np.ceil(tf_xgrid.max())) + padding
                 src_y1 = int(np.ceil(tf_ygrid.max())) + padding
 
@@ -401,132 +438,124 @@ def remap_tif_blockwise(
                 dst_window = Window(col_off=dst_x0, row_off=dst_y0, width=dst_x1 - dst_x0, height=dst_y1 - dst_y0)
                 dst.write(remapped_block, 1, window=dst_window)
 
+            pbar.close()
 
-def warp_raster_pixels(
-    raster_filepath: str | Path,
-    output_raster_filepath: str | Path,
-    transformation_matrix: cv2.typing.MatLike,
-    output_size: None | tuple[int, int] = None,
-    max_workers: int = 5,
-    resampling: int = Resampling.cubic,
-    band_idx: int = 1,
-) -> None:
+
+def match_multiple_templates(
+    image: cv2.typing.MatLike,
+    templates: list[cv2.typing.MatLike],
+    threshold: float = 0.8,
+    method: int = cv2.TM_CCOEFF_NORMED,
+    nms_threshold: float = 0.3,
+) -> tuple[list[tuple[int, int, int, int]], list[float], list[int]]:
     """
-    Apply a pixel-wise affine warp to a raster band and save the result to a new file.
-
-    The function reprojects the selected raster band using a custom affine transformation
-    (e.g., translation, rotation, scaling) provided as a 2D transformation matrix.
-    The pixel grid of the output raster is updated to reflect the transformation, while
-    preserving the original spatial reference system.
+    Match multiple templates and return filtered detections.
 
     Parameters
     ----------
-    raster_filepath : str
-        Path to the input raster file.
-    output_raster_filepath : str
-        Path where the warped raster will be written.
-    transformation_matrix : cv2.typing.MatLike
-        A 2×3 affine-like transformation matrix (as used in OpenCV) defining the warp
-        to apply in pixel space.
-    output_size : tuple[int, int] or None, optional
-        Dimensions (width, height) of the output raster. If None (default), the input
-        raster dimensions are used.
-    max_workers : int, default 5
-        Number of threads to use during reprojection.
-    resampling : int, default rasterio.warp.Resampling.cubic
-        Resampling method applied during the warp (e.g., nearest, bilinear, cubic).
-    band_idx : int, default 1
-        Index of the raster band (1-based) to process.
+    image : np.ndarray
+        Input image.
+    templates : list of np.ndarray
+        List of templates.
+    threshold : float
+        Matching score threshold.
+    method : int
+        OpenCV template matching method.
+    nms_threshold : float
+        IoU threshold for NMS.
 
     Returns
     -------
-    None
-        The warped raster is written to `output_raster_filepath`.
-
-    Notes
-    -----
-    - Only one band is processed at a time. For multi-band rasters, call the function
-      once per band or extend it accordingly.
-    - The output transform is temporarily updated to apply the warp, then reset to the
-      original transform to keep the spatial reference consistent.
-    - No CRS transformation is performed; warping is done strictly in pixel space.
+    boxes : list of tuple
+        (x, y, w, h)
+    scores : list of float
+    template_ids : list of int
+        Index of template for each detection
     """
-    affine_transform = rasterio.Affine(*transformation_matrix[:2].flatten())
 
-    # create the parent output directory if necessary
-    Path(output_raster_filepath).parent.mkdir(exist_ok=True, parents=True)
+    all_boxes: list[tuple[int, int, int, int]] = []
+    all_scores: list[float] = []
+    all_template_ids: list[int] = []
 
-    with rasterio.open(raster_filepath) as src:
-        output_size = output_size if output_size else (src.width, src.height)
-        profile = src.profile.copy()
-        profile.update(
-            {
-                "width": output_size[0],
-                "height": output_size[1],
-                "transform": src.transform * ~affine_transform,
-                "compress": "lzw",
-                "BIGTIFF": "YES",
-            }
+    # --- Collect detections ---
+    for tid, template in enumerate(templates):
+        h, w = template.shape[:2]
+        if h > image.shape[0] or w > image.shape[1]:
+            continue
+        res = cv2.matchTemplate(image, template, method)
+
+        ys, xs = np.where(res >= threshold)
+
+        for x, y in zip(xs, ys):
+            all_boxes.append((int(x), int(y), int(w), int(h)))
+            all_scores.append(float(res[y, x]))
+            all_template_ids.append(tid)
+
+    if not all_boxes:
+        return [], [], []
+
+    # --- Apply global NMS ---
+    indices = cv2.dnn.NMSBoxes(
+        all_boxes,
+        all_scores,
+        score_threshold=threshold,
+        nms_threshold=nms_threshold,
+    )
+
+    if len(indices) == 0:
+        return [], [], []
+
+    indices_np = np.array(indices).reshape(-1)
+
+    boxes = [all_boxes[i] for i in indices_np]
+    scores = [all_scores[i] for i in indices_np]
+    template_ids = [all_template_ids[i] for i in indices_np]
+
+    return boxes, scores, template_ids
+
+
+class SubImage:
+    """A windowed view of a rasterio raster with coordinate conversion helpers.
+
+    Reads band 1 of a raster within a given window (optionally resampled) and
+    provides ``to_global`` / ``to_local`` to convert pixel coordinates between
+    the sub-image space and the full raster space.
+    """
+
+    def __init__(
+        self,
+        raster: str | Path | rasterio.DatasetReader,
+        window: Window | None,
+        out_shape: tuple[int, int, int] | None = None,
+        resampling: Resampling = Resampling.average,
+    ):
+        if isinstance(raster, rasterio.DatasetReader):
+            self._setup(raster, window, out_shape, resampling)
+        else:
+            with rasterio.open(raster) as src:
+                self._setup(src, window, out_shape, resampling)
+
+    def _setup(
+        self,
+        src: rasterio.DatasetReader,
+        window: Window | None,
+        out_shape: tuple[int, int, int] | None,
+        resampling: Resampling,
+    ) -> None:
+        self.window = window or Window(0, 0, src.width, src.height)
+        self.band = src.read(1, window=self.window, out_shape=out_shape, resampling=resampling)
+
+        actual_shape = self.band.shape  # (height, width) after read
+        self.out_shape = (1, actual_shape[0], actual_shape[1])
+        self._scale = np.array(
+            [self.window.width / actual_shape[1], self.window.height / actual_shape[0]], dtype=np.float64
         )
-        with rasterio.open(output_raster_filepath, "w", **profile) as dst:
-            reproject(
-                source=rasterio.band(src, band_idx),
-                destination=rasterio.band(dst, band_idx),
-                resampling=resampling,
-                num_threads=max_workers,
-            )
-            dst.transform = src.transform
+        self._offset = np.array([self.window.col_off, self.window.row_off], dtype=np.float64)
 
+    def to_global(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Convert local sub-image pixel coordinates to global raster coordinates."""
+        return pts * self._scale + self._offset
 
-def apply_clahe_to_tif_blockwise(
-    input_tif_path: str,
-    output_tif_path: str,
-    block_size: int = 256,
-    clip_limit: float = 2.0,
-    tile_grid_size: tuple[int, int] = (8, 8),
-) -> None:
-    """
-    Apply CLAHE on a GeoTIFF image block by block and save the result.
-
-    Args:
-        input_tif_path (str): Path to input .tif image.
-        output_tif_path (str): Path to save the output .tif image.
-        block_size (int): Size of the square block/window to process.
-        clip_limit (float): CLAHE clip limit parameter.
-        tile_grid_size (tuple[int, int]): CLAHE tile grid size.
-
-    """
-
-    # Open source image with rasterio
-    with rasterio.open(input_tif_path) as src:
-        profile = src.profile.copy()
-
-        # Update profile for output
-        profile.update(
-            dtype=rasterio.uint8,  # CLAHE output is uint8
-            count=src.count,
-            compress="lzw",
-            bigtiff="TRUE",
-        )
-
-        # Create CLAHE object from OpenCV
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-
-        with rasterio.open(output_tif_path, "w", **profile) as dst:
-            height = src.height
-            width = src.width
-
-            # Read only the first band (grayscale)
-            for row_off in range(0, height, block_size):
-                for col_off in range(0, width, block_size):
-                    # Define window dimensions (may be smaller on edges)
-                    win_width = min(block_size, width - col_off)
-                    win_height = min(block_size, height - row_off)
-
-                    window = Window(col_off, row_off, win_width, win_height)
-
-                    # Read block from source (as ndarray)
-                    block = src.read(1, window=window)
-
-                    # Write result block to destination
-                    dst.write(clahe.apply(block), 1, window=window)
+    def to_local(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+        """Convert global raster pixel coordinates to local sub-image coordinates."""
+        return (pts - self._offset) / self._scale

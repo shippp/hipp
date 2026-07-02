@@ -31,10 +31,14 @@ dependencies = [
   "matplotlib",
   "tqdm",
   "rasterio",
-  "scikit-image",
+  "scikit-image>=0.24",
   "scikit-learn",
-  "requests"
+  "requests",
+  "click",
 ]
+
+[project.scripts]
+hipp-kh9pc = "hipp.kh9pc.cli:main"
 
 [project.urls]
 Documentation = "https://github.com/godinlu/hipp#readme"
@@ -53,13 +57,15 @@ dependencies = [
   "pre-commit",
   "usgsxplore",
   "ipykernel",
+  "jupyter",
 ]
 [tool.hatch.envs.dev.scripts]
 check = [
   "ruff check .",
-  "mypy . --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
+  "mypy src/ --strict --ignore-missing-imports --no-warn-unused-ignores --allow-untyped-calls"
 ]
 kernel = "python -m ipykernel install --user --name hipp --display-name 'Python (hipp)'"
+lab = "jupyter lab --no-browser --ip=127.0.0.1 --port=8333"
 
 
 [tool.coverage.run]

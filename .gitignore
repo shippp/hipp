@@ -186,3 +186,5 @@ notebooks/data/*/*
 tests/aerial/data
 
 dev/
+*.local*
+.claude

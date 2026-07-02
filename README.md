@@ -72,20 +72,39 @@ See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
 
 ### Preprocessing of KH-9 Panoramic Camera Satellite Images
 
+Supports missions 1201–1219. Input is either a `.tgz` archive from USGS Earth Explorer or a list of pre-extracted scan strip `.tif` files.
+
 - **Image Joining**
-  - Joins split images into a single composite image
-  - Requires input images named sequentially (e.g. `ImageId_a`, `ImageId_b`, `ImageId_c`, …)
-  - A small overlap between image parts is required for proper stitching
-  - Performs stitching using matched keypoints and successive affine transformations for robust, geometry-aware merging.
+  - Joins scan strips into a single composite image
+  - ORB keypoint matching + RANSAC Euclidean alignment between consecutive strips
+  - Block-wise compositing via rasterio `WarpedVRT` for memory-efficient handling of large scans
 
-- **Image Restitutions**
-  - Estimates the top and bottom collimation lines using a second-degree polynomial fit.
-  - Determines the vertical boundaries (x1 and x2) of the region of interest (ROI).
-  - Computes the geometric transformation needed to crop and restitute the ROI using a Thin Plate Spline (TPS) deformation model.
+- **Image Restitution**
+  - Detects fiducial markers (disk-shaped for missions ≤ 1213, wagon-wheel for missions ≥ 1214) via template matching and DBSCAN clustering
+  - Builds a Thin Plate Spline (TPS) warp from matched fiducial positions to their known physical layout
+  - Fallback strategy chain for images with missing or low-confidence fiducials:
+    - `CollimationStrategy` — refines edges via collimation line peaks (missions 1206+)
+    - `PolyStrategy` — RANSAC polynomial fit of top/bottom film edges
+    - `FlatStrategy` — flat-edge approximation for older missions without collimation lines
 
-See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for example of full preprocessing.
+- **Quality Control**
+  - Quickview JPEGs of the joined mosaic and the final restituted image
+  - Per-image figures showing detected fiducials, edge fits, and warp quality
+  - Per-image log file; failures preserve intermediate files for inspection and retry
 
-See this [notebook](notebooks/kh9pc_collimation_rectification.ipynb) for a detailed example of collimation rectification.
+- **CLI**
+  ```bash
+  # Single image
+  hipp-kh9pc preproc -i scan.tgz -o /out/
+  hipp-kh9pc preproc -i t1.tif t2.tif t3.tif -o /out/
+
+  # Batch (parallel)
+  hipp-kh9pc batch-preproc -i /data/scans/ -o /out/ -j 4
+  ```
+
+See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for a full preprocessing example.
+
+See this [notebook](notebooks/kh9pc_collimation_rectification.ipynb) for a detailed walkthrough of the restitution strategies.
 
 ### Preprocessing of KH-9 Mapping Camera Satellite Images *(feature in development)*
 
