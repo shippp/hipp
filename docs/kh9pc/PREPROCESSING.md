@@ -19,7 +19,7 @@ The pipeline accepts two kinds of input:
 - a `.tgz` archive containing all the tif tiles for one image, extracted before processing;
 - a list of individual tif tile paths, already extracted.
 
-In both cases, tiles must be named `{entity_id}_<suffix>.tif` (e.g. `{entity_id}_a.tif`, `{entity_id}_b.tif`, ...), where `entity_id` is everything before the first underscore. The suffix itself is not validated — tiles are simply sorted alphabetically by filename to determine their left-to-right order for mosaicking, so any suffix that sorts correctly works.
+In both cases, tiles must be named `{entity_id}_<suffix>.tif` (e.g. `{entity_id}_a.tif`, `{entity_id}_b.tif`, ...), where `entity_id` is everything before the first underscore. The suffix itself is not validated — tiles are simply sorted case-insensitively by filename to determine their left-to-right order for mosaicking, so any suffix that sorts correctly works.
 
 ## 1. Mosaic images
 

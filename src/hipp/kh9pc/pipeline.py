@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 def _log_to_file(path: Path) -> Generator[None, None, None]:
     """Temporarily attach a FileHandler to the hipp logger."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(path, mode="w")
+    handler = logging.FileHandler(path, mode="a")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s"))
     logging.getLogger("hipp").addHandler(handler)
     try:
@@ -81,7 +81,11 @@ def preprocess_kh9pc(
 
     log_path = output_dir / "logs" / f"{entity_id}.log"
     with _log_to_file(log_path):
-        _preprocess_kh9pc(input_paths, entity_id, output_path, qc_dir, work_dir, overwrite, keep_work)
+        try:
+            _preprocess_kh9pc(input_paths, entity_id, output_path, qc_dir, work_dir, overwrite, keep_work)
+        except Exception:
+            logger.error("Failed to preprocess %s", entity_id, exc_info=True)
+            raise
 
 
 def _delete_entity_work_files(work_dir: Path, entity_id: str) -> None:
@@ -119,6 +123,7 @@ def _preprocess_kh9pc(
     # STEP 1 : EXTRACTION (can be skipped if the input is a list)
     if isinstance(input_paths, Path):
         tiles = extract_archive(input_paths, work_dir / "extracted" / entity_id, overwrite=overwrite)
+        tiles = sorted(tiles, key=lambda p: p.name.lower())
     else:
         tiles = input_paths
 
@@ -177,11 +182,11 @@ def search_input_dir(input_dir: str | Path) -> list[Path | list[Path]]:
     result.extend(sorted(input_dir.glob("*.tgz")))
 
     for subdir in sorted(d for d in input_dir.iterdir() if d.is_dir()):
-        tiles = sorted(subdir.glob("*.tif"))
+        tiles = sorted(subdir.glob("*.tif"), key=lambda p: p.name.lower())
         if tiles:
             result.append(tiles)
 
-    loose = sorted(input_dir.glob("*.tif"))
+    loose = sorted(input_dir.glob("*.tif"), key=lambda p: p.name.lower())
     if loose:
 
         def _entity_id(p: Path) -> str:

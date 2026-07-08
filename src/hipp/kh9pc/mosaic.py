@@ -357,12 +357,15 @@ def _extract_global_matches_from_overlap(
         height_b = src_b.height
 
         if height_a != height_b:
-            raise ValueError(
-                f"Both images must have the same height for block-wise matching ({height_a} != {height_b})."
+            logger.warning(
+                "Image heights differ for block-wise matching (%d != %d); matching only over the common height.",
+                height_a,
+                height_b,
             )
+        height = min(height_a, height_b)
 
-        for i in range(0, height_a, bloc_height):
-            current_block_height = min(bloc_height, height_a - i)
+        for i in range(0, height, bloc_height):
+            current_block_height = min(bloc_height, height - i)
 
             window_a = Window(
                 col_off=width_a - overlap_width, row_off=i, width=overlap_width, height=current_block_height
