@@ -53,6 +53,11 @@ class FittingClass(ABC):
         return self.__raster_filepath_ is not None
 
     @property
+    def logging_prefix(self) -> str:
+        """Standard log prefix ``"[ClassName] raster.tif"`` for this instance."""
+        return f"[{self.__class__.__name__}] {self.raster_filepath_.name}"
+
+    @property
     @abstractmethod
     def is_failed(self) -> bool:
         """True if the last ``fit()`` produced an unusable result."""
@@ -60,16 +65,10 @@ class FittingClass(ABC):
 
     def fit(self, raster_filepath: str | Path) -> Self:
         """Run ``_fit`` on *raster_filepath*, log start/end, and record the source path."""
-        raster_filepath = Path(raster_filepath)
-        logger.info("[%s] %s - start fit...", self.__class__.__name__, raster_filepath.name)
-        fit_res = self._fit(raster_filepath)
-        self.__raster_filepath_ = raster_filepath
-        logger.info(
-            "[%s] %s - finish fit : [%s]",
-            self.__class__.__name__,
-            raster_filepath.name,
-            "FAILED" if self.is_failed else "SUCCESS",
-        )
+        self.__raster_filepath_ = Path(raster_filepath)
+        logger.info("%s - start fit...", self.logging_prefix)
+        fit_res = self._fit(self.__raster_filepath_)
+        logger.info("%s - finish fit : [%s]", self.logging_prefix, "FAILED" if self.is_failed else "SUCCESS")
         return fit_res
 
     @abstractmethod
