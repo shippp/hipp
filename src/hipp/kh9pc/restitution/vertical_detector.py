@@ -41,6 +41,7 @@ class VerticalDetector(FittingClass):
     vertical_padding: float = 0.25
     search_half_width: int = 5000
     scale: float = 0.1
+    left_search_max_attempts: int = 5
 
     def __post_init__(self) -> None:
         """Initialise fitted-attribute slots."""
@@ -85,7 +86,7 @@ class VerticalDetector(FittingClass):
         expected_width = image_spec.expected_size[0]
 
         with rasterio.open(raster_filepath) as src:
-            left = self._detect_edge(src, col_off=0, reverse_scan=True, side="left")
+            left = self._detect_left_edge(src)
             if left is None:
                 self._failed = True
                 return self
@@ -101,7 +102,8 @@ class VerticalDetector(FittingClass):
             self._results["right"] = right
 
         logger.info(
-            "VerticalDetector: left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
+            "%s - left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
+            self.logging_prefix,
             left.position,
             right.position,
             self.detected_width_,
@@ -109,6 +111,23 @@ class VerticalDetector(FittingClass):
             self.detected_width_ - expected_width,
         )
         return self
+
+    def _detect_left_edge(self, src: rasterio.DatasetReader) -> VerticalEdgeResult | None:
+        """Detect the left edge, shifting the search window rightward by search_half_width on failure."""
+        for attempt in range(self.left_search_max_attempts):
+            col_off = attempt * self.search_half_width
+            if attempt > 0:
+                logger.info(
+                    "%s - retrying left edge detection (attempt %d/%d) with search window shifted to col_off=%d",
+                    self.logging_prefix,
+                    attempt + 1,
+                    self.left_search_max_attempts,
+                    col_off,
+                )
+            edge = self._detect_edge(src, col_off=col_off, reverse_scan=True, side="left")
+            if edge is not None:
+                return edge
+        return None
 
     def _detect_edge(
         self, src: rasterio.DatasetReader, col_off: int, reverse_scan: bool, side: str
@@ -119,7 +138,7 @@ class VerticalDetector(FittingClass):
         profile = np.sum(binary, axis=0)
         ruptures = detect_ruptures(profile, 2, reverse_scan=reverse_scan)
         if ruptures.size == 0:
-            logger.warning("VerticalDetector: no %s edge found", side)
+            logger.warning("%s - no %s edge found", self.logging_prefix, side)
             return None
         r_local = int(ruptures[0])
         position = int(sub.to_global(np.array([r_local, 0.0]))[0])
