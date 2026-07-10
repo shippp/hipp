@@ -40,7 +40,7 @@ def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
     for ax, side, result in zip(axes, ["left", "right"], [detector.left_, detector.right_]):
         ax.plot(result.profile, color="gray")
         ax.axvline(x=result.edge_local, color="red", label=f"edge (local={result.edge_local})")
-        ax.set_title(f"{side} profile (global col={result.position}, ratio={result.gradient_ratio:.2f})")
+        ax.set_title(f"{side} profile \n(global col={result.position}, ratio={result.gradient_ratio:.2f})")
         ax.set_xlabel("local column index")
         ax.set_ylabel("intensity")
         ax.legend()
