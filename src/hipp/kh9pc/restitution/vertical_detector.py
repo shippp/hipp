@@ -81,37 +81,49 @@ class VerticalDetector(FittingClass):
         return self.right_.position - self.left_.position
 
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
-        """Detect left then right edge, retrying with a shifted search window on failure."""
+        """Detect the left edge, retrying with a shifted search window on failure, then the right edge
+        in a single window centered on the left edge plus the expected width."""
         self._failed = False
+        self._results = {}
         image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
         expected_width = image_spec.expected_size[0]
 
         with rasterio.open(raster_filepath) as src:
             for attempt in range(self.max_attempts):
-                self._results = {}
                 col_off = attempt * self.search_window_width // 2
                 try:
-                    for side, side_col_off in [("left", col_off), ("right", col_off + expected_width)]:
-                        sub_image = self._sub_image(src, side_col_off)
-                        self._results[side] = self._detect_edge(sub_image, side)
-
+                    sub_image = self._sub_image(src, col_off)
+                    self._results["left"] = self._detect_edge(sub_image, "left")
+                    break
                 except DetectionError as e:
-                    logger.info("%s - attempt %d/%d failed: %s", self.logging_prefix, attempt + 1, self.max_attempts, e)
-                    continue
-
-                logger.info(
-                    "%s - left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
-                    self.logging_prefix,
-                    self.left_.position,
-                    self.right_.position,
-                    self.detected_width_,
-                    expected_width,
-                    self.detected_width_ - expected_width,
+                    logger.info(
+                        "%s - left attempt %d/%d failed: %s", self.logging_prefix, attempt + 1, self.max_attempts, e
+                    )
+            else:
+                self._failed = True
+                logger.warning(
+                    "%s - failed to detect left edge after %d attempts", self.logging_prefix, self.max_attempts
                 )
                 return self
 
-        self._failed = True
-        logger.warning("%s - failed to detect vertical edges after %d attempts", self.logging_prefix, self.max_attempts)
+            right_target = self.left_.position + expected_width
+            try:
+                sub_image = self._sub_image(src, right_target - self.search_window_width // 2)
+                self._results["right"] = self._detect_edge(sub_image, "right")
+            except DetectionError as e:
+                self._failed = True
+                logger.warning("%s - failed to detect right edge: %s", self.logging_prefix, e)
+                return self
+
+        logger.info(
+            "%s - left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
+            self.logging_prefix,
+            self.left_.position,
+            self.right_.position,
+            self.detected_width_,
+            expected_width,
+            self.detected_width_ - expected_width,
+        )
         return self
 
     def _detect_edge(self, sub_image: SubImage, side: str) -> VerticalEdgeResult:
