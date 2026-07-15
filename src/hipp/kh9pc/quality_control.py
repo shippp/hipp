@@ -51,25 +51,22 @@ def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
 
 def plot_vertical_edges(
     detector: VerticalDetector,
-    margin_fraction: float = 0.03,
+    window_width: int = 10000,
     out_height: int = 800,
 ) -> Figure:
     """Thumbnails around the left and right edge positions."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
     with rasterio.open(detector.raster_filepath_) as src:
-        margin = int(src.width * margin_fraction)
-
         for ax, side, edge_col in zip(axes, ["left", "right"], detector.edges_):
-            col_off = max(0, edge_col - margin)
-            col_end = min(src.width, edge_col + margin)
-            window = Window(col_off, 0, col_end - col_off, src.height)
+            window = Window(edge_col - window_width // 2, 0, window_width, src.height)
             scale = out_height / window.height
             out_shape = (1, out_height, int(window.width * scale))
-            band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
+            sub_image = SubImage(src, window=window, out_shape=out_shape)
 
-            ax.imshow(band, cmap="gray", aspect="auto")
-            ax.axvline(x=(edge_col - col_off) * scale, color="red")
+            ax.imshow(sub_image.band, cmap="gray", aspect="auto")
+
+            ax.axvline(x=sub_image.to_local_x(edge_col), color="red")
             ax.set_title(f"{side} edge (col={edge_col})")
             ax.axis("off")
 

@@ -43,7 +43,6 @@ class VerticalDetector(FittingClass):
     search_window_width: int = 10000
     downsample_scale: float = 0.01
     gradient_ratio_threshold: float = 0.3
-    max_attempts: int = 5
 
     def __post_init__(self) -> None:
         """Initialise fitted-attribute slots."""
@@ -89,30 +88,18 @@ class VerticalDetector(FittingClass):
         expected_width = image_spec.expected_size[0]
 
         with rasterio.open(raster_filepath) as src:
-            for attempt in range(self.max_attempts):
-                col_off = attempt * self.search_window_width // 2
-                try:
-                    sub_image = self._sub_image(src, col_off)
-                    self._results["left"] = self._detect_edge(sub_image, "left")
-                    break
-                except DetectionError as e:
-                    logger.info(
-                        "%s - left attempt %d/%d failed: %s", self.logging_prefix, attempt + 1, self.max_attempts, e
-                    )
-            else:
-                self._failed = True
-                logger.warning(
-                    "%s - failed to detect left edge after %d attempts", self.logging_prefix, self.max_attempts
-                )
-                return self
-
-            right_target = self.left_.position + expected_width
             try:
-                sub_image = self._sub_image(src, right_target - self.search_window_width // 2)
+                sub_image = self._sub_image(src, 0, int(src.width - expected_width))
+                self._results["left"] = self._detect_edge(sub_image, "left")
+
+                right_target = self.left_.position + expected_width
+
+                sub_image = self._sub_image(src, right_target - self.search_window_width // 2, self.search_window_width)
                 self._results["right"] = self._detect_edge(sub_image, "right")
+
             except DetectionError as e:
                 self._failed = True
-                logger.warning("%s - failed to detect right edge: %s", self.logging_prefix, e)
+                logger.warning("%s - failed to detect edges: %s", self.logging_prefix, e)
                 return self
 
         logger.info(
@@ -140,7 +127,7 @@ class VerticalDetector(FittingClass):
         if side == "right":
             edge_idx = len(signal) - 1 - edge_idx
 
-        position = int(sub_image.to_global(np.array([edge_idx, 0.0]))[0])
+        position = int(sub_image.to_global_x(edge_idx))
         return VerticalEdgeResult(
             position=position,
             edge_local=edge_idx,
@@ -149,11 +136,11 @@ class VerticalDetector(FittingClass):
             profile=profile,
         )
 
-    def _sub_image(self, src: rasterio.DatasetReader, col_off: int) -> SubImage:
+    def _sub_image(self, src: rasterio.DatasetReader, col_off: int, window_width: int) -> SubImage:
         window = Window(
             max(0, col_off),
             int(self.vertical_padding * src.height),
-            self.search_window_width,
+            window_width,
             int(src.height * (1 - 2 * self.vertical_padding)),
         )
         return SubImage(src, window=window, out_shape=(1, 1, int(window.width * self.downsample_scale)))

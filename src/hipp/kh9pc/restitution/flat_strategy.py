@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
 
-import numpy as np
 import rasterio
 from rasterio.windows import Window
 
@@ -117,7 +116,7 @@ class FlatStrategy(RestitutionStrategy):
         if len(ruptures) == 0:
             raise RuntimeError(f"No rupture detected on the {side} edge.")
         rupture_local = int(ruptures[0])
-        position = int(sub_image.to_global(np.array([0.0, rupture_local]))[1])
+        position = int(sub_image.to_global_y(rupture_local))
         return FlatResult(position=position, rupture_local=rupture_local, sub_image=sub_image)
 
     def _compute_transformation(self) -> Transformation:

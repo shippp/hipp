@@ -542,7 +542,8 @@ class SubImage:
         out_shape: tuple[int, int, int] | None,
         resampling: Resampling,
     ) -> None:
-        self.window = window or Window(0, 0, src.width, src.height)
+        full_extent = Window(0, 0, src.width, src.height)
+        self.window = (window or full_extent).intersection(full_extent)
         self.band = src.read(1, window=self.window, out_shape=out_shape, resampling=resampling)
 
         actual_shape = self.band.shape  # (height, width) after read
@@ -559,3 +560,19 @@ class SubImage:
     def to_local(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
         """Convert global raster pixel coordinates to local sub-image coordinates."""
         return (pts - self._offset) / self._scale
+
+    def to_global_x(self, x: NDArray[np.floating] | float) -> NDArray[np.floating] | float:
+        """Convert local sub-image x coordinate(s) to global raster x coordinate(s)."""
+        return x * float(self._scale[0]) + float(self._offset[0])
+
+    def to_global_y(self, y: NDArray[np.floating] | float) -> NDArray[np.floating] | float:
+        """Convert local sub-image y coordinate(s) to global raster y coordinate(s)."""
+        return y * float(self._scale[1]) + float(self._offset[1])
+
+    def to_local_x(self, x: NDArray[np.floating] | float) -> NDArray[np.floating] | float:
+        """Convert global raster x coordinate(s) to local sub-image x coordinate(s)."""
+        return (x - float(self._offset[0])) / float(self._scale[0])
+
+    def to_local_y(self, y: NDArray[np.floating] | float) -> NDArray[np.floating] | float:
+        """Convert global raster y coordinate(s) to local sub-image y coordinate(s)."""
+        return (y - float(self._offset[1])) / float(self._scale[1])
