@@ -80,8 +80,9 @@ class VerticalDetector(FittingClass):
         return self.right_.position - self.left_.position
 
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
-        """Detect the left edge, retrying with a shifted search window on failure, then the right edge
-        in a single window centered on the left edge plus the expected width."""
+        """Detect the left edge in one window spanning the full possible leader range, then the right
+        edge in a window centered on the left edge plus the expected width. Raises DetectionError
+        (caught here, setting ``is_failed``) if either edge cannot be located."""
         self._failed = False
         self._results = {}
         image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
