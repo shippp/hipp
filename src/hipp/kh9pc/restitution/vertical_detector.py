@@ -1,15 +1,16 @@
 """
 Copyright (c) 2026 HIPP developers
 Description: VerticalDetector — detects the left and right film frame edges of a KH-9 PC
-    scan by thresholding a downsampled column-sum profile and finding the first intensity
-    rupture on each side. Used as the first step by all restitution strategies.
+    scan. For each side, a downsampled 1-row intensity profile is searched for the longest
+    constant-minimum plateau (the film background/leader), then the strongest intensity
+    gradient just after that plateau's end is taken as the edge. Used as the first step by
+    all restitution strategies.
 """
 
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 from numpy.typing import NDArray
 import rasterio
@@ -17,7 +18,7 @@ from rasterio.windows import Window
 
 from hipp.image import SubImage
 from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
-from hipp.kh9pc.restitution.base import FittingClass, detect_ruptures
+from hipp.kh9pc.restitution.base import FittingClass, DetectionError
 
 
 logger = logging.getLogger(__name__)
@@ -25,10 +26,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VerticalEdgeResult:
-    """Detected edge: global position, local rupture index, sub-image, and column-sum profile."""
+    """Detected edge: global position, local edge index, sub-image, and intensity profile."""
 
     position: int
-    rupture_local: int
+    edge_local: int
+    gradient_ratio: float
     sub_image: SubImage
     profile: NDArray[np.floating]
 
@@ -37,11 +39,10 @@ class VerticalEdgeResult:
 class VerticalDetector(FittingClass):
     """Detects the left and right film frame edges from a KH-9 PC raster."""
 
-    background_threshold: int = 20
     vertical_padding: float = 0.25
-    search_half_width: int = 5000
-    scale: float = 0.1
-    left_search_max_attempts: int = 5
+    search_window_width: int = 10000
+    downsample_scale: float = 0.01
+    gradient_ratio_threshold: float = 0.3
 
     def __post_init__(self) -> None:
         """Initialise fitted-attribute slots."""
@@ -79,76 +80,115 @@ class VerticalDetector(FittingClass):
         return self.right_.position - self.left_.position
 
     def _fit(self, raster_filepath: Path) -> "VerticalDetector":
-        """Detect left then right edge and populate results."""
+        """Detect the left edge in one window spanning the full possible leader range, then the right
+        edge in a window centered on the left edge plus the expected width. Raises DetectionError
+        (caught here, setting ``is_failed``) if either edge cannot be located."""
         self._failed = False
         self._results = {}
         image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
         expected_width = image_spec.expected_size[0]
 
         with rasterio.open(raster_filepath) as src:
-            left = self._detect_left_edge(src)
-            if left is None:
-                self._failed = True
-                return self
-            self._results["left"] = left
+            try:
+                sub_image = self._sub_image(src, 0, int(src.width - expected_width))
+                self._results["left"] = self._detect_edge(sub_image, "left")
 
-            right_center = left.position + expected_width
-            right = self._detect_edge(
-                src, col_off=right_center - self.search_half_width, reverse_scan=False, side="right"
-            )
-            if right is None:
+                right_target = self.left_.position + expected_width
+
+                sub_image = self._sub_image(src, right_target - self.search_window_width // 2, self.search_window_width)
+                self._results["right"] = self._detect_edge(sub_image, "right")
+
+            except DetectionError as e:
                 self._failed = True
+                logger.warning("%s - failed to detect edges: %s", self.logging_prefix, e)
                 return self
-            self._results["right"] = right
 
         logger.info(
             "%s - left=%d, right=%d, detected width=%d (expected=%d, diff=%+d px)",
             self.logging_prefix,
-            left.position,
-            right.position,
+            self.left_.position,
+            self.right_.position,
             self.detected_width_,
             expected_width,
             self.detected_width_ - expected_width,
         )
         return self
 
-    def _detect_left_edge(self, src: rasterio.DatasetReader) -> VerticalEdgeResult | None:
-        """Detect the left edge, shifting the search window rightward by search_half_width on failure."""
-        for attempt in range(self.left_search_max_attempts):
-            col_off = attempt * self.search_half_width
-            if attempt > 0:
-                logger.info(
-                    "%s - retrying left edge detection (attempt %d/%d) with search window shifted to col_off=%d",
-                    self.logging_prefix,
-                    attempt + 1,
-                    self.left_search_max_attempts,
-                    col_off,
-                )
-            edge = self._detect_edge(src, col_off=col_off, reverse_scan=True, side="left")
-            if edge is not None:
-                return edge
-        return None
+    def _detect_edge(self, sub_image: SubImage, side: str) -> VerticalEdgeResult:
+        """Locate the edge within one sub-image, reversing the scan direction for the right side."""
+        profile = sub_image.band.flatten()
+        signal = profile[::-1] if side == "right" else profile
 
-    def _detect_edge(
-        self, src: rasterio.DatasetReader, col_off: int, reverse_scan: bool, side: str
-    ) -> VerticalEdgeResult | None:
-        """Detect a single edge in a window; return None and warn if no rupture found."""
-        sub = self._sub_image(src, col_off=col_off)
-        _, binary = cv2.threshold(sub.band, self.background_threshold, 1, cv2.THRESH_BINARY)
-        profile = np.sum(binary, axis=0)
-        ruptures = detect_ruptures(profile, 2, reverse_scan=reverse_scan)
-        if ruptures.size == 0:
-            logger.warning("%s - no %s edge found", self.logging_prefix, side)
-            return None
-        r_local = int(ruptures[0])
-        position = int(sub.to_global(np.array([r_local, 0.0]))[0])
-        return VerticalEdgeResult(position=position, rupture_local=r_local, sub_image=sub, profile=profile)
+        _, plateau_end_idx = find_longest_min_segment(signal)
+        result = find_first_strong_gradient(signal, plateau_end_idx, self.gradient_ratio_threshold)
+        if result is None:
+            raise DetectionError("No edge detected")
+        edge_idx, gradient_ratio = result
 
-    def _sub_image(self, src: rasterio.DatasetReader, col_off: int) -> SubImage:
-        """Read a downsampled window of width 2*search_half_width starting at col_off."""
-        padding_px = int(self.vertical_padding * src.height)
-        col_off = max(0, col_off)
-        width = min(src.width - col_off, 2 * self.search_half_width)
-        window = Window(col_off, padding_px, width, src.height - 2 * padding_px)
-        out_shape = (1, int(window.height * self.scale), int(window.width * self.scale))
-        return SubImage(src, window, out_shape)
+        if side == "right":
+            edge_idx = len(signal) - 1 - edge_idx
+
+        position = int(sub_image.to_global_x(edge_idx))
+        return VerticalEdgeResult(
+            position=position,
+            edge_local=edge_idx,
+            gradient_ratio=gradient_ratio,
+            sub_image=sub_image,
+            profile=profile,
+        )
+
+    def _sub_image(self, src: rasterio.DatasetReader, col_off: int, window_width: int) -> SubImage:
+        window = Window(
+            max(0, col_off),
+            int(self.vertical_padding * src.height),
+            window_width,
+            int(src.height * (1 - 2 * self.vertical_padding)),
+        )
+        return SubImage(src, window=window, out_shape=(1, 1, int(window.width * self.downsample_scale)))
+
+
+def find_longest_min_segment(signal: NDArray[np.floating]) -> tuple[int, int]:
+    """Find the longest contiguous segment where the signal equals its minimum value.
+
+    Returns the (start, end) index pair of that segment.
+    """
+    signal = np.asarray(signal)
+
+    mask = signal == signal.min()
+
+    padded = np.concatenate(([False], mask, [False]))
+    changes = np.diff(padded.astype(np.int8))
+
+    starts = np.where(changes == 1)[0]
+    ends = np.where(changes == -1)[0] - 1
+
+    longest = np.argmax(ends - starts)
+    return int(starts[longest]), int(ends[longest])
+
+
+def find_first_strong_gradient(
+    signal: NDArray[np.floating], plateau_end_idx: int, ratio_threshold: float = 0.3
+) -> tuple[int, float] | None:
+    """Scan forward from plateau_end_idx for the peak of the first gradient rise above the threshold.
+
+    plateau_end_idx is expected to be the end of the background plateau, where the signal is
+    still flat (zero gradient); the rising edge into image content follows right after it.
+    threshold = ratio_threshold * gradient.max(). Once the threshold is crossed, the scan keeps
+    climbing to the following index as long as its gradient is higher, so it lands on the peak
+    of the rise rather than its first crossing.
+
+    Returns (index, gradient_ratio) of the peak, or None if the threshold is never crossed.
+    """
+    signal = np.asarray(signal)
+
+    gradient = np.gradient(signal)
+    gradient_max = gradient.max()
+    threshold = ratio_threshold * gradient_max
+
+    for i in range(plateau_end_idx, len(signal)):
+        if gradient[i] > threshold:
+            while i + 1 < len(signal) and gradient[i + 1] >= gradient[i] and gradient[i] < gradient_max:
+                i += 1
+            return i, gradient[i] / gradient_max
+
+    return None

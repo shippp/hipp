@@ -73,21 +73,23 @@ The fitted top and bottom polynomial models are not applied on their own — the
 
 ### 2.3 Detect left and right edges
 
-This detector runs first and provides the horizontal bounds reused by the other restitution steps ([2.1](#21-detect-top-and-bottom-fiducial-marks), [2.2](#22-detect-top-and-bottom-edges)). For each side, a wide vertical strip (2 × 5000 px by default) is read around the expected edge position, cropped top and bottom by 25% of the image height to avoid the fiducial areas, and downsampled for speed. Pixels are thresholded against the background level and summed column by column, giving a profile of how many bright (image) pixels each column contains.
+This detector runs first and provides the horizontal bounds reused by the other restitution steps ([2.1](#21-detect-top-and-bottom-fiducial-marks), [2.2](#22-detect-top-and-bottom-edges)). For each side, a vertical strip is read, cropped top and bottom by 25% of the image height to avoid the fiducial areas, and downsampled to a single-row intensity profile (1% of the window width by default) for speed. The left window spans from column 0 up to `src.width - expected_width`, i.e. the full range in which the left edge could physically sit given the mission's expected image width (from `KH9ImageSpec`), and is searched once. Once the left edge is found, the right window is opened once, a fixed width (10000 px by default) centered on the left edge position plus the expected image width, rather than scanning the whole image — this keeps the detection fast and avoids catching the wrong frame boundary. For the right side, the profile is reversed before processing so both sides are treated the same way, scanning from the film background outward into the image content.
 
-The left edge is searched starting from column 0; if no rupture is found in that window, the search window is shifted right by its own width (5000 px by default) and retried, up to 5 attempts before giving up. The right edge is searched once, in a window centered on the position expected from the nominal image width (the actual raster width snapped down to the nearest known 1/2/3/4-frame scan width), rather than scanning the whole image — this keeps the detection fast and avoids catching the wrong frame boundary. In both cases, the profile is scanned from the image side outward, and the first column where the count of bright pixels drops below a small threshold is taken as the edge position.
+Within each profile, the longest contiguous segment sitting at the signal's minimum value is taken as the background/leader plateau (the film area outside the image, which is uniformly dark). Starting right after that plateau, the profile's gradient is scanned forward for the first rise that crosses a threshold (a fraction of the profile's peak gradient, 0.3 by default); the scan keeps climbing while the gradient keeps increasing, so it lands on the peak of the rise rather than its first crossing. That peak marks the transition from background to image content and is taken as the edge position, with the peak-to-max gradient ratio kept as a rough confidence score.
+
+If either side fails to cross the gradient threshold, detection aborts immediately.
 
 ![Left and right edge thumbnails](img/kh9pc-vertical-edges.png)
 *Detected left and right edge column (red line) on cropped thumbnails around each side.*
 
-![Left and right column-sum profiles](img/kh9pc-vertical-ruptures.png)
-*Column-sum profile used to locate each edge: the rupture is the column where the bright-pixel count drops off.*
+![Left and right intensity profiles](img/kh9pc-vertical-ruptures.png)
+*Downsampled intensity profile used to locate each edge: the background plateau (minimum, constant) followed by the gradient rise into image content, whose peak marks the edge.*
 
 ### 2.4 Failure handling
 
 Each detector in the restitution chain can fail independently:
 
-- **Left/right edges** ([2.3](#23-detect-left-and-right-edges)): the left edge retries with a shifted search window before giving up, while the right edge is only tried once. If no rupture is found on either side, fitting aborts immediately with an exception — every other detector depends on these bounds.
+- **Left/right edges** ([2.3](#23-detect-left-and-right-edges)): the left edge is searched once, in a window spanning its full possible range given the mission's expected width. The right edge is then searched once, in a window centered on the left edge plus the expected width. Neither side is retried — if either fails, fitting aborts immediately with an exception — every other detector depends on these bounds.
 - **Top/bottom edges** ([2.2](#22-detect-top-and-bottom-edges)): a side with no rupture points at all aborts fitting. Otherwise, a low RANSAC inlier ratio only flags the polynomial fit as unreliable; the fitted model is still used to bound the fiducial search windows in [2.1](#21-detect-top-and-bottom-fiducial-marks), since the fiducial marks — not the edges — are the actual source of truth for restitution.
 - **Fiducial marks** ([2.1](#21-detect-top-and-bottom-fiducial-marks)): a side with zero template-matching detections aborts fitting. Otherwise, a side only counts as usable once its primary pattern (the one with a known physical spacing) reaches a minimum matching score. If just one side falls short, its control points are synthesized from the other side using the known vertical spacing between fiducial rows, and restitution proceeds. Only if **both** sides fall short is the image marked as failed, in which case computing the TPS transform raises an error.
 

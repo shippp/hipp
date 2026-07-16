@@ -39,38 +39,38 @@ def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
 
     for ax, side, result in zip(axes, ["left", "right"], [detector.left_, detector.right_]):
         ax.plot(result.profile, color="gray")
-        ax.axvline(x=result.rupture_local, color="red", label=f"rupture (local={result.rupture_local})")
-        ax.set_title(f"{side} column-sum profile (global col={result.position})")
+        ax.axvline(x=result.edge_local, color="red", label=f"edge (local={result.edge_local})")
+        ax.set_title(f"{side} profile \n(global col={result.position}, ratio={result.gradient_ratio:.2f})")
         ax.set_xlabel("local column index")
-        ax.set_ylabel("column sum")
+        ax.set_ylabel("intensity")
         ax.legend()
 
+    fig.suptitle(detector.raster_filepath_.stem, fontsize=12, fontweight="bold")
     return fig
 
 
 def plot_vertical_edges(
     detector: VerticalDetector,
-    margin_fraction: float = 0.03,
-    plot_res: float = 0.05,
+    window_width: int = 10000,
+    out_height: int = 800,
 ) -> Figure:
     """Thumbnails around the left and right edge positions."""
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
     with rasterio.open(detector.raster_filepath_) as src:
-        margin = int(src.width * margin_fraction)
-
         for ax, side, edge_col in zip(axes, ["left", "right"], detector.edges_):
-            col_off = max(0, edge_col - margin)
-            col_end = min(src.width, edge_col + margin)
-            window = Window(col_off, 0, col_end - col_off, src.height)
-            out_shape = (1, int(src.height * plot_res), int(window.width * plot_res))
-            band = src.read(1, window=window, out_shape=out_shape, resampling=Resampling.average)
+            window = Window(edge_col - window_width // 2, 0, window_width, src.height)
+            scale = out_height / window.height
+            out_shape = (1, out_height, int(window.width * scale))
+            sub_image = SubImage(src, window=window, out_shape=out_shape)
 
-            ax.imshow(band, cmap="gray", aspect="auto")
-            ax.axvline(x=(edge_col - col_off) * plot_res, color="red")
+            ax.imshow(sub_image.band, cmap="gray", aspect="auto")
+
+            ax.axvline(x=sub_image.to_local_x(edge_col), color="red")
             ax.set_title(f"{side} edge (col={edge_col})")
             ax.axis("off")
 
+    fig.suptitle(detector.raster_filepath_.stem, fontsize=12, fontweight="bold")
     return fig
 
 
