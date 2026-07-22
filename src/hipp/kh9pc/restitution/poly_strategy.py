@@ -48,7 +48,7 @@ class PolyStrategy(RestitutionStrategy):
     downsample_scale: tuple[float, float] = (0.001, 0.1)
     polynomial_degree: int = 2
     background_threshold: int = 20
-    ransac_residual_threshold: float = 200.0
+    ransac_residual_threshold: float = 800.0
     ransac_max_trials: int = 1000
 
     max_relative_error: float = 0.05
@@ -208,7 +208,7 @@ class PolyStrategy(RestitutionStrategy):
 
 
 def find_edge_on_vec(vec: NDArray[np.floating], threshold: float = 20.0, reverse_scan: bool = False) -> int | None:
-    """Locate the film edge in a 1D column profile as the steepest gradient before the background threshold crossing.
+    """Locate the film edge in a 1D column profile as the background threshold crossing.
 
     Returns None if the profile never drops below *threshold*.
     """
@@ -220,15 +220,12 @@ def find_edge_on_vec(vec: NDArray[np.floating], threshold: float = 20.0, reverse
     if not mask.any():
         return None
 
-    rupture = np.argmax(mask)
+    rupture = int(np.argmax(mask))
 
     if rupture < 2:
         return None
 
-    grad = np.gradient(vec[:rupture])
-    edge = int(np.argmin(grad))
-
-    return len(vec) - edge - 1 if reverse_scan else edge
+    return len(vec) - rupture - 1 if reverse_scan else rupture
 
 
 def find_edge_points(img: cv2.typing.MatLike, threshold: float = 20, reverse_scan: bool = False) -> NDArray[np.integer]:
