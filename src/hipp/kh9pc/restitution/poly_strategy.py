@@ -1,31 +1,32 @@
 """
 Copyright (c) 2026 HIPP developers
 Description: PolyStrategy — polynomial edge fitting for KH-9 PC restitution. Samples
-    rupture points along the top and bottom film edges in a downsampled grid, fits a
-    RANSAC polynomial per edge, then applies a Thin Plate Spline warp to straighten
-    the curved edges.
+    edge points along the top and bottom film edges in a downsampled grid, fits a
+    RANSAC polynomial per edge, then applies an affine warp to straighten the
+    detected edges.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
 
+import cv2
 import numpy as np
 import rasterio
 from numpy.typing import NDArray
 from rasterio.windows import Window
 from skimage.transform import AffineTransform
 from sklearn.linear_model import RANSACRegressor
-import cv2
 
 from hipp.image import SubImage, remap_tif_blockwise
-from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import RestitutionStrategy, Transformation, fit_ransac_poly
 from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
 
 
 @dataclass
 class PolyResult:
+    """Fitted polynomial edge model and diagnostics for one side (top or bottom)."""
+
     edge_points_global: NDArray[np.integer]
     edge_points_local: NDArray[np.integer]
     model: RANSACRegressor
@@ -36,10 +37,11 @@ class PolyResult:
 class PolyStrategy(RestitutionStrategy):
     """Restitution strategy based on polynomial edge fitting.
 
-    Detects rupture points along the top and bottom film edges in a downsampled
+    Detects edge points along the top and bottom film edges in a downsampled
     horizontal grid, fits a RANSAC polynomial per edge, then warps the image with
-    a Thin Plate Spline transform to map the curved edges to horizontal target lines.
-    Fails if the inlier ratio on either edge falls below ``min_inliers_threshold``.
+    an affine transform to map the detected edges to horizontal target lines.
+    Fails if the top/bottom gap strays too far from the expected image height,
+    in mean or in standard deviation (see ``compute_metrics``).
     """
 
     vertical_detector: VerticalDetector = field(default_factory=VerticalDetector)
@@ -61,7 +63,7 @@ class PolyStrategy(RestitutionStrategy):
 
     @property
     def is_failed(self) -> bool:
-        """True if either edge inlier ratio is below ``min_inliers_threshold``."""
+        """True if the top/bottom gap's relative error or std exceeds ``max_relative_error``/``max_std``."""
         relative_error, std_dist = self.compute_metrics()
 
         return (relative_error > self.max_relative_error) or (std_dist > self.max_std)
@@ -82,7 +84,7 @@ class PolyStrategy(RestitutionStrategy):
 
     @property
     def transformation_(self) -> Transformation:
-        """TPS Transformation from curved edges to horizontal lines (computed lazily)."""
+        """Affine Transformation from detected edges to horizontal lines (computed lazily)."""
         if self.__transformation_ is None:
             self.__transformation_ = self._compute_transformation()
         return self.__transformation_
@@ -94,7 +96,7 @@ class PolyStrategy(RestitutionStrategy):
 
         col_off, _ = self.vertical_detector.edges_
         window_width = self.vertical_detector.detected_width_
-        expected_height = KH9ImageSpec.from_raster_filepath(raster_filepath).expected_size[1]
+        expected_height = self.spec_.expected_size[1]
 
         with rasterio.open(raster_filepath) as src:
             window_height = src.height - expected_height
@@ -137,7 +139,7 @@ class PolyStrategy(RestitutionStrategy):
         """Build an affine Transformation that maps the fitted curved edges to horizontal target lines."""
         left, right = self.vertical_detector.edges_
         detected_width = self.vertical_detector.detected_width_
-        output_width, output_height = KH9ImageSpec.from_raster_filepath(self.raster_filepath_).expected_size
+        output_width, output_height = self.spec_.expected_size
 
         x = np.linspace(left, right, self.n_points)
 
@@ -154,8 +156,8 @@ class PolyStrategy(RestitutionStrategy):
         dst = np.column_stack((np.concatenate((x, x)), np.concatenate((y_top_dst, y_bot_dst))))
 
         # inverse source destination (important)
-        deformation = AffineTransform()
-        if not deformation.estimate(dst, src):
+        deformation = AffineTransform().from_estimate(dst, src)
+        if not deformation:
             raise RuntimeError("Affine transformation estimation failed.")
 
         # ---- CENTERING TO OUTPUT ----
@@ -172,7 +174,7 @@ class PolyStrategy(RestitutionStrategy):
         )
 
     def transform(self, output_path: str | Path) -> None:
-        """Write the restituted image using the polynomial TPS warp."""
+        """Write the restituted image using the polynomial affine warp."""
         tf = self.transformation_
 
         remap_tif_blockwise(
@@ -180,11 +182,14 @@ class PolyStrategy(RestitutionStrategy):
             output_path,
             tf.inverse_remap,
             tf.output_size,
-            block_size=2**13,
-            lowres_step=100,
         )
 
     def compute_metrics(self) -> tuple[float, float]:
+        """Compare the fitted top/bottom gap to the expected image height.
+
+        Returns the relative error between the mean gap and the expected height,
+        and the gap's standard deviation across the detected width.
+        """
         start, end = self.vertical_detector.edges_
 
         X = np.linspace(start, end, 100).reshape(-1, 1)
@@ -194,7 +199,7 @@ class PolyStrategy(RestitutionStrategy):
 
         dist = y_bottom - y_top
 
-        true_height = KH9ImageSpec.from_raster_filepath(self.raster_filepath_).expected_size[1]
+        true_height = self.spec_.expected_size[1]
 
         relative_error = np.abs(np.mean(dist) - true_height) / true_height
         std_dist = np.std(dist)
@@ -203,6 +208,10 @@ class PolyStrategy(RestitutionStrategy):
 
 
 def find_edge_on_vec(vec: NDArray[np.floating], threshold: float = 20.0, reverse_scan: bool = False) -> int | None:
+    """Locate the film edge in a 1D column profile as the steepest gradient before the background threshold crossing.
+
+    Returns None if the profile never drops below *threshold*.
+    """
     if reverse_scan:
         vec = vec[::-1]
 
@@ -223,6 +232,7 @@ def find_edge_on_vec(vec: NDArray[np.floating], threshold: float = 20.0, reverse
 
 
 def find_edge_points(img: cv2.typing.MatLike, threshold: float = 20, reverse_scan: bool = False) -> NDArray[np.integer]:
+    """Run ``find_edge_on_vec`` on every column of *img*, returning the ``(col, row)`` of each detected edge."""
     res = []
     for i in range(img.shape[1]):
         edge = find_edge_on_vec(img[:, i].astype(np.float64), threshold, reverse_scan)

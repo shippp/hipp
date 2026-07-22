@@ -141,10 +141,12 @@ def plot_poly_edges(detector: PolyStrategy) -> Figure:
         local_pred = result.sub_image.to_local(global_pred)
         ax.plot(local_pred[:, 0], local_pred[:, 1], color="blue", linewidth=1, label="model")
 
-        ax.set_title(f"{side} edge")
+        inlier_pct = 100 * inlier_mask.mean()
+        ax.set_title(f"{side} edge (inliers={inlier_pct:.1f}%)")
         ax.legend(loc="best", fontsize=8)
         ax.axis("off")
 
+    fig.suptitle(detector.raster_filepath_.stem, fontsize=12, fontweight="bold")
     return fig
 
 

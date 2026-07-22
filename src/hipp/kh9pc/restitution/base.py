@@ -18,6 +18,8 @@ from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
+from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_OUTPUT_HEIGHT: int = 22064
@@ -39,6 +41,7 @@ class FittingClass(ABC):
 
     def __init__(self) -> None:
         self.__raster_filepath_: Path | None = None
+        self.__spec_: KH9ImageSpec | None = None
 
     @property
     def raster_filepath_(self) -> Path:
@@ -46,6 +49,13 @@ class FittingClass(ABC):
         if self.__raster_filepath_ is None:
             raise RuntimeError("Call fit() before.")
         return self.__raster_filepath_
+
+    @property
+    def spec_(self) -> KH9ImageSpec:
+        """KH9ImageSpec derived from ``raster_filepath_``, computed once per ``fit()`` call."""
+        if self.__spec_ is None:
+            self.__spec_ = KH9ImageSpec.from_raster_filepath(self.raster_filepath_)
+        return self.__spec_
 
     @property
     def is_fitted(self) -> bool:
@@ -66,6 +76,7 @@ class FittingClass(ABC):
     def fit(self, raster_filepath: str | Path) -> Self:
         """Run ``_fit`` on *raster_filepath*, log start/end, and record the source path."""
         self.__raster_filepath_ = Path(raster_filepath)
+        self.__spec_ = None
         logger.info("%s - start fit...", self.logging_prefix)
         fit_res = self._fit(self.__raster_filepath_)
         logger.info("%s - finish fit : [%s]", self.logging_prefix, "FAILED" if self.is_failed else "SUCCESS")

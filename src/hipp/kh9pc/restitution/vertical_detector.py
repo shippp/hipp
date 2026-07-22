@@ -17,7 +17,6 @@ import rasterio
 from rasterio.windows import Window
 
 from hipp.image import SubImage
-from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import FittingClass, DetectionError
 
 
@@ -85,8 +84,7 @@ class VerticalDetector(FittingClass):
         (caught here, setting ``is_failed``) if either edge cannot be located."""
         self._failed = False
         self._results = {}
-        image_spec = KH9ImageSpec.from_raster_filepath(raster_filepath)
-        expected_width = image_spec.expected_size[0]
+        expected_width = self.spec_.expected_size[0]
 
         with rasterio.open(raster_filepath) as src:
             try:

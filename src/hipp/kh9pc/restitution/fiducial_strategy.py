@@ -28,7 +28,6 @@ from hipp.kh9pc.fiducial_patterns import (
     compute_global_src_and_dst_points,
     evaluate_pattern,
 )
-from hipp.kh9pc.kh9_image_spec import KH9ImageSpec
 from hipp.kh9pc.restitution.base import DEFAULT_OUTPUT_HEIGHT, DetectionError, RestitutionStrategy, Transformation
 from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
 
@@ -91,11 +90,6 @@ class FiducialStrategy(RestitutionStrategy):
     ----------
     poly_strategy:
         Fitted (or to-be-fitted) strategy that provides the horizontal edge models.
-    kh9_image_spec:
-        Image specification describing which fiducial template set to use
-        (``fiducial_type`` field: ``"disk"`` for missions D3C1201–D3C1213,
-        ``"wagon_wheel"`` for D3C1214–D3C1219). If ``None`` (default), the spec
-        is inferred from the image filename at fit time via
     block_width:
         Width in pixels of each scanning block.
     threshold:
@@ -109,7 +103,6 @@ class FiducialStrategy(RestitutionStrategy):
     """
 
     poly_strategy: PolyStrategy = field(default_factory=PolyStrategy)
-    polynomial_degree: int = 7
     block_width: int = 512
     threshold: float = 0.5
     nms_threshold: float = 0.1
@@ -121,7 +114,6 @@ class FiducialStrategy(RestitutionStrategy):
         super().__init__()
         self._results: dict[str, FiducialResult] = {}
         self.__transformation_: Transformation | None = None
-        self.kh9_image_spec_: KH9ImageSpec | None = None
 
     # ------------------------------------------------------------------
     # Public properties
@@ -144,10 +136,8 @@ class FiducialStrategy(RestitutionStrategy):
     @property
     def is_failed(self) -> bool:
         """True if both primary patterns (top and bottom) score below ``min_score_threshold``."""
-        if self.kh9_image_spec_ is None:
-            raise RuntimeError("Call fit() before")
-        primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
-        primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
+        primary_top_pattern = self.spec_.top_fiducial_patterns[0]
+        primary_bottom_pattern = self.spec_.bottom_fiducial_patterns[0]
 
         return (
             self.top_.patterns[primary_top_pattern].score < self.min_score_threshold
@@ -179,8 +169,7 @@ class FiducialStrategy(RestitutionStrategy):
 
     def _fit(self, raster_filepath: Path) -> Self:
         """Infer image spec, run PolyStrategy, then scan both sides for fiducial detections."""
-        self.kh9_image_spec_ = KH9ImageSpec.from_raster_filepath(raster_filepath)
-        self.templates_ = _load_kind(self.kh9_image_spec_.fiducial_type)
+        self.templates_ = _load_kind(self.spec_.fiducial_type)
 
         if not self.poly_strategy.is_fitted or raster_filepath != self.poly_strategy.raster_filepath_:
             self.poly_strategy.fit(raster_filepath)
@@ -292,8 +281,7 @@ class FiducialStrategy(RestitutionStrategy):
         fiducial_pattern: Patterns,
     ) -> DetectedPattern:
         """Evaluate all DBSCAN clusters for one pattern type and return the highest-scoring one."""
-        assert self.kh9_image_spec_ is not None
-        expected_width = self.kh9_image_spec_.expected_size[0]
+        expected_width = self.spec_.expected_size[0]
         result = evaluate_pattern(fiducial_pattern, np.empty((0, 2), dtype=np.float64), expected_width)
 
         for label in np.unique(labels):
@@ -316,10 +304,9 @@ class FiducialStrategy(RestitutionStrategy):
         fiducial_patterns: tuple[Patterns, Patterns],
     ) -> dict[str, DetectedPattern]:
         """Grid search over DBSCAN (eps, residual weight) to maximise the score of each pattern."""
-        assert self.kh9_image_spec_ is not None
         X_scaled: NDArray[np.floating] = StandardScaler().fit_transform(features)
         patterns: dict[str, DetectedPattern] = {
-            pt: evaluate_pattern(pt, np.empty((0, 2), dtype=np.float64), self.kh9_image_spec_.expected_size[0])
+            pt: evaluate_pattern(pt, np.empty((0, 2), dtype=np.float64), self.spec_.expected_size[0])
             for pt in fiducial_patterns
         }
 
@@ -342,13 +329,12 @@ class FiducialStrategy(RestitutionStrategy):
         side: Literal["top", "bottom"],
     ) -> tuple[dict[str, DetectedPattern], NDArray[np.floating]]:
         """Compute detection features for one side and run grid-search clustering to classify patterns."""
-        assert self.kh9_image_spec_ is not None
         if side == "top":
             model = self.poly_strategy.top_.model
-            fiducial_patterns = self.kh9_image_spec_.top_fiducial_patterns
+            fiducial_patterns = self.spec_.top_fiducial_patterns
         else:
             model = self.poly_strategy.bottom_.model
-            fiducial_patterns = self.kh9_image_spec_.bottom_fiducial_patterns
+            fiducial_patterns = self.spec_.bottom_fiducial_patterns
 
         centers_xy, features = self._compute_detection_features(boxes, scores, model)
         patterns = self._grid_search_clustering(features, centers_xy, fiducial_patterns)
@@ -363,13 +349,12 @@ class FiducialStrategy(RestitutionStrategy):
         physical row spacing. A forward TPS is used to map vertical edges into destination
         space so the crop is centred correctly.
         """
-        assert self.kh9_image_spec_ is not None
         if self.is_failed:
             raise DetectionError("Can't compute the transformation with a failed estimation")
 
         # use only primary patterns (sparse & mid) cause we know the theorical spacing
-        primary_top_pattern = self.kh9_image_spec_.top_fiducial_patterns[0]
-        primary_bottom_pattern = self.kh9_image_spec_.bottom_fiducial_patterns[0]
+        primary_top_pattern = self.spec_.top_fiducial_patterns[0]
+        primary_bottom_pattern = self.spec_.bottom_fiducial_patterns[0]
 
         top = self.top_.patterns[primary_top_pattern]
         bottom = self.bottom_.patterns[primary_bottom_pattern]
@@ -388,7 +373,7 @@ class FiducialStrategy(RestitutionStrategy):
         edges_dst = forward_tps(np.array([[col_left, y_center], [col_right, y_center]], dtype=np.float32))
         x_center = float((edges_dst[0, 0] + edges_dst[1, 0]) / 2)
 
-        final_width, final_height = self.kh9_image_spec_.expected_size
+        final_width, final_height = self.spec_.expected_size
         crop_offset = (int(x_center - final_width / 2), int(y_center - final_height / 2))
 
         # inverse source destination (important)
