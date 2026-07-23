@@ -85,7 +85,7 @@ class KH9ImageSpec:
             raise ValueError("Unrecgnized mission")
         top_fiducial_patterns: tuple[Patterns, Patterns]
         if mission <= 1213:
-            top_fiducial_patterns = ("regulare_sparse", "serialized_time_word")
+            top_fiducial_patterns = ("regular_sparse", "serialized_time_word")
         elif mission <= 1217:
             top_fiducial_patterns = ("segmented_mid", "serialized_time_word")
         else:
@@ -100,9 +100,9 @@ class KH9ImageSpec:
 
         bottom_fiducial_patterns: tuple[Patterns, Patterns]
         if mission <= 1213:
-            bottom_fiducial_patterns = ("regulare_sparse", "regular_dense")
+            bottom_fiducial_patterns = ("regular_sparse", "regular_dense")
         else:
-            bottom_fiducial_patterns = ("regulare_mid", "regular_dense")
+            bottom_fiducial_patterns = ("regular_mid", "regular_dense")
 
         return bottom_fiducial_patterns
 

@@ -15,7 +15,7 @@ from typing import Literal
 
 
 Patterns = Literal[
-    "regulare_sparse", "regulare_mid", "regular_dense", "segmented_mid", "segmented_dense", "serialized_time_word"
+    "regular_sparse", "regular_mid", "regular_dense", "segmented_mid", "segmented_dense", "serialized_time_word"
 ]
 
 # Physical spacings derived from KH-9 Hexagon panoramic camera documentation.

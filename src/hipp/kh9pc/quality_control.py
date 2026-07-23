@@ -217,8 +217,8 @@ def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
 
 
 _PATTERN_COLORS: dict[str, str] = {
-    "regulare_sparse": "red",
-    "regulare_mid": "orange",
+    "regular_sparse": "red",
+    "regular_mid": "orange",
     "regular_dense": "gold",
     "segmented_mid": "limegreen",
     "segmented_dense": "cyan",
