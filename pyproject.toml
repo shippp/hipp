@@ -91,6 +91,10 @@ exclude_lines = [
 line-length = 120
 
 [tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: real-data tests hitting files on /mnt/summer; excluded by default, run with `pytest -m slow`",
+]
 filterwarnings = [
     "error",
     "ignore::UserWarning",
