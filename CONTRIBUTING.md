@@ -42,12 +42,17 @@ pytest
 
 ### Formatting and linting
 
-Install the `pre-commit` hooks by running (see [pre-commit documentation](https://pre-commit.com/)). Which will use `.pre-commit-config.yaml` to verify spelling errors, import sorting, type checking, formatting and linting:
+Install the `pre-commit` hooks by running (see [pre-commit documentation](https://pre-commit.com/)). Which will use `.pre-commit-config.yaml` to run ruff linting (including import sorting) and formatting on every commit:
 ```bash
 hatch run dev:pre-commit install
 
 # if you are already in the hatch shell
 pre-commit install
+```
+
+Type checking is not part of the hooks; run it, together with the linter, before opening a pull request:
+```bash
+hatch run dev:check
 ```
 
 

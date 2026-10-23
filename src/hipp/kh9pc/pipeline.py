@@ -1,27 +1,91 @@
 """
 Copyright (c) 2026 HIPP developers
 Description: High-level pipeline orchestrating the full KH-9 PC preprocessing workflow:
-    archive extraction → image mosaicking → restitution → QC quickviews.
+    archive extraction → image mosaicking → edge and fiducial detection → restitution (warp + georeferencing).
     Exposes ``preprocess_kh9pc`` for single images and ``batch_preprocess_kh9pc`` for
     parallel batch processing.
 """
 
+import glob
 import logging
-from collections.abc import Generator, Sequence
+import shutil
+from collections import Counter
+from collections.abc import Generator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from pathlib import Path
-import shutil
-
-import joblib
+from typing import Literal
 
 from hipp.image import generate_quickview
+from hipp.kh9pc import quality_control as qc
+from hipp.kh9pc.detection.base import DetectionError, JsonModel
+from hipp.kh9pc.detection.detect_fiducials import FiducialDetectionResult, detect_fiducials
+from hipp.kh9pc.detection.detect_poly_horizontal_edges import PolyDetectionResult, detect_poly_horizontal_edges
+from hipp.kh9pc.detection.detect_vertical_edges import detect_vertical_edges
+from hipp.kh9pc.georeferencing import read_corners, set_corner_gcps
 from hipp.kh9pc.mosaic import image_mosaic
-from hipp.kh9pc.quality_control import save_figures
-from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
-from hipp.tools import extract_archive
+from hipp.kh9pc.transformations import apply_transformation, compute_fiducial_transformation
+from hipp.tools import atomic_output, extract_archive, resolve_wildcards, skip_existing
 
 logger = logging.getLogger(__name__)
+
+
+Step = Literal["extract", "mosaic", "vertical", "poly", "fiducials", "transformation", "restitution"]
+
+STEP_OUTPUTS: dict[Step, list[str]] = {
+    "extract": ["{work_dir}/{entity_id}/extracted"],
+    "mosaic": ["{work_dir}/{entity_id}/{entity_id}.tif"],
+    "vertical": ["{work_dir}/{entity_id}/vertical_detection_result.json"],
+    "poly": ["{work_dir}/{entity_id}/poly_detection_result.json"],
+    "fiducials": ["{work_dir}/{entity_id}/fiducial_detection_result.json"],
+    "transformation": ["{work_dir}/{entity_id}/transformation.json"],
+    "restitution": ["{output_dir}/{entity_id}.tif"],
+}
+
+LOG_FILE = "{work_dir}/{entity_id}/preprocess.log"
+STATUS_FILE = "{work_dir}/{entity_id}/status.json"
+ARCHIVE_FILE = "{archive_dir}/{entity_id}.tgz"
+
+Status = Literal["done", "failed", "incomplete", "todo"]
+
+
+class RunStatus(JsonModel):
+    """State of the last preprocessing run of one entity."""
+
+    state: Literal["running", "failed", "done"]
+    error: str | None = None
+
+
+# step outputs removed after a successful run, per ``clean`` level
+CLEAN_STEPS: dict[Literal["none", "heavy", "all"], list[Step]] = {
+    "none": [],
+    "heavy": ["extract", "mosaic"],
+    "all": ["extract", "mosaic", "vertical", "poly", "fiducials", "transformation"],
+}
+
+PLOTS_OUTPUTS: dict[Step, list[str]] = {
+    "mosaic": ["{plot_dir}/{entity_id}/mosaic_qv.jpg"],
+    "vertical": [
+        "{plot_dir}/{entity_id}/vertical_edges.png",
+        "{plot_dir}/{entity_id}/vertical_ruptures.png",
+    ],
+    "poly": [
+        "{plot_dir}/{entity_id}/poly_edges.png",
+        "{plot_dir}/{entity_id}/poly_distortions.png",
+    ],
+    "fiducials": [
+        "{plot_dir}/{entity_id}/fiducial_filtering.png",
+        "{plot_dir}/{entity_id}/fiducial_detected_profiles.png",
+        "{plot_dir}/{entity_id}/fiducial_distortions.png",
+        "{plot_dir}/{entity_id}/fiducial_detected_boxes_top.png",
+        "{plot_dir}/{entity_id}/fiducial_detected_boxes_bottom.png",
+    ],
+    "transformation": [
+        "{plot_dir}/{entity_id}/crop_area.png",
+        "{plot_dir}/{entity_id}/deformation_grid.png",
+    ],
+    "restitution": ["{plot_dir}/{entity_id}/final_qv.jpg", "{plot_dir}/{entity_id}/georeferencing.png"],
+}
 
 
 @contextmanager
@@ -30,210 +94,217 @@ def _log_to_file(path: Path) -> Generator[None, None, None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(path, mode="a")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s"))
-    logging.getLogger("hipp").addHandler(handler)
+    hipp_logger = logging.getLogger("hipp")
+    previous_level = hipp_logger.level
+    # without logging configured (plain API use) the hipp logger stays at WARNING and the file would miss INFO lines
+    if hipp_logger.getEffectiveLevel() > logging.INFO:
+        hipp_logger.setLevel(logging.INFO)
+    hipp_logger.addHandler(handler)
     try:
         yield
     finally:
-        logging.getLogger("hipp").removeHandler(handler)
+        hipp_logger.removeHandler(handler)
+        hipp_logger.setLevel(previous_level)
         handler.close()
 
 
 def preprocess_kh9pc(
-    input: str | Path | Sequence[str | Path], output_dir: str | Path, overwrite: bool = False, keep_work: bool = False
+    entity_id: str,
+    archive_dir: str | Path,
+    output_dir: str | Path,
+    work_dir: str | Path,
+    scenes_metadata_file: str | Path,
+    plot_dir: str | Path | None = None,
+    overwrite: bool = False,
+    clean: Literal["none", "heavy", "all"] = "heavy",
 ) -> None:
-    """Preprocess a single KH-9 PC scan from raw tiles to a restituted GeoTIFF.
+    """Preprocess the archive of *entity_id* into a restituted GeoTIFF, following the ``STEP_OUTPUTS`` layout.
 
-    Orchestrates four steps: optional archive extraction, image mosaicking,
-    restitution (geometric correction via fiducial markers), and QC quickview
-    generation. All intermediate files go under ``output_dir/work/``, all QC
-    figures under ``output_dir/qc/``, and the final image under
-    ``output_dir/images/<entity_id>.tif``. A per-image log is written to
-    ``output_dir/logs/<entity_id>.log``.
-
-    Parameters
-    ----------
-    input:
-        Either a single ``.tgz`` archive path or a list of pre-extracted tile
-        paths (``.tif``). The entity ID is derived from the filename stem.
-    output_dir:
-        Root output directory; subdirectories are created as needed.
-    overwrite:
-        If False (default), skip processing when the output image already exists.
-    keep_work:
-        If False (default), remove the working directory after successful processing.
+    The GeoTIFF gets corner GCPs from the USGS *scenes_metadata_file*. QC plots and quickviews are written to
+    *plot_dir* if given, the log to ``LOG_FILE``. Skipped if the output already exists and *overwrite* is False.
+    Raises DetectionError if the poly or fiducial detection is not trustworthy.
     """
-    # standardize path
-    input_paths: Path | list[Path] = Path(input) if isinstance(input, (str, Path)) else [Path(f) for f in input]
-    output_dir = Path(output_dir)
+    fields = {"entity_id": entity_id, "archive_dir": archive_dir, "output_dir": output_dir, "work_dir": work_dir}
+    # every step has a single output
+    outputs = {step: Path(resolve_wildcards(templates, **fields)[0]) for step, templates in STEP_OUTPUTS.items()}
 
-    # extract entity id from input
-    entity_id = input_paths.stem if isinstance(input_paths, Path) else input_paths[0].stem.split("_")[0]
-
-    # create all path
-    output_path = output_dir / "images" / f"{entity_id}.tif"
-    qc_dir = output_dir / "qc"
-    work_dir = output_dir / "work"
-
-    # overwrite checking
-    if output_path.exists() and not overwrite:
-        logger.info("Skipping preprocess_kh9pc: %s (already exists, overwrite=False)", str(output_path))
+    if skip_existing(outputs["restitution"], overwrite):
         return
 
-    log_path = output_dir / "logs" / f"{entity_id}.log"
-    with _log_to_file(log_path):
+    plots: dict[Step, list[Path]] = {}
+    if plot_dir is not None:
+        plots = {
+            step: [Path(p) for p in resolve_wildcards(templates, **fields, plot_dir=plot_dir)]
+            for step, templates in PLOTS_OUTPUTS.items()
+        }
+
+    with _log_to_file(Path(resolve_wildcards([LOG_FILE], **fields)[0])):
+        logger.info("%s - start preprocessing", entity_id)
+        status_file = resolve_wildcards([STATUS_FILE], **fields)[0]
+        RunStatus(state="running").save(status_file)
         try:
-            _preprocess_kh9pc(input_paths, entity_id, output_path, qc_dir, work_dir, overwrite, keep_work)
-        except Exception:
-            logger.error("Failed to preprocess %s", entity_id, exc_info=True)
+            archive = resolve_wildcards([ARCHIVE_FILE], **fields)[0]
+            extract_archive(archive, outputs["extract"], overwrite=overwrite)
+
+            tiles = sorted(
+                (p for p in outputs["extract"].rglob("*") if p.suffix.lower() in (".tif", ".tiff")),
+                key=lambda p: p.name.lower(),
+            )
+            if not tiles:
+                raise FileNotFoundError(f"no .tif tiles found in {outputs['extract']} (extracted from {archive})")
+            image_mosaic(tiles, outputs["mosaic"], overwrite=overwrite)
+            if plots:
+                (mosaic_qv,) = plots["mosaic"]
+                generate_quickview(outputs["mosaic"], mosaic_qv, scale_factor=0.1, jpeg_quality=70, overwrite=overwrite)
+
+            detect_vertical_edges(outputs["mosaic"], outputs["vertical"], overwrite=overwrite)
+            if plots:
+                edges_png, ruptures_png = plots["vertical"]
+                qc.plot_vertical_edges(outputs["vertical"], edges_png, overwrite=overwrite)
+                qc.plot_vertical_ruptures(outputs["vertical"], ruptures_png, overwrite=overwrite)
+
+            detect_poly_horizontal_edges(outputs["mosaic"], outputs["poly"], outputs["vertical"], overwrite=overwrite)
+            if plots:
+                edges_png, distortions_png = plots["poly"]
+                qc.plot_poly_edges(outputs["poly"], edges_png, overwrite=overwrite)
+                qc.plot_poly_distortions(outputs["poly"], distortions_png, overwrite=overwrite)
+            # checked after plotting so a failed fit still gets its QC figures
+            poly = PolyDetectionResult.load(outputs["poly"])
+            if poly.failure_reason:
+                raise DetectionError(f"poly detection failed: {poly.failure_reason}")
+
+            detect_fiducials(outputs["mosaic"], outputs["fiducials"], outputs["poly"], overwrite=overwrite)
+            if plots:
+                filtering_png, profiles_png, distortions_png, boxes_top_png, boxes_bottom_png = plots["fiducials"]
+                qc.plot_fiducial_filtering(outputs["fiducials"], filtering_png, overwrite=overwrite)
+                qc.plot_fiducial_detected_profiles(outputs["fiducials"], profiles_png, overwrite=overwrite)
+                qc.plot_fiducial_distortions(outputs["fiducials"], distortions_png, overwrite=overwrite)
+                qc.plot_fiducial_detected_boxes(outputs["fiducials"], boxes_top_png, "top", overwrite=overwrite)
+                qc.plot_fiducial_detected_boxes(outputs["fiducials"], boxes_bottom_png, "bottom", overwrite=overwrite)
+            fiducials = FiducialDetectionResult.load(outputs["fiducials"])
+            if fiducials.failure_reason:
+                raise DetectionError(f"fiducial detection failed: {fiducials.failure_reason}")
+
+            compute_fiducial_transformation(outputs["fiducials"], outputs["transformation"], overwrite=overwrite)
+            if plots:
+                crop_png, grid_png = plots["transformation"]
+                qc.plot_crop_area(outputs["transformation"], crop_png, overwrite=overwrite)
+                qc.plot_deformation_grid(outputs["transformation"], grid_png, overwrite=overwrite)
+
+            # read before the warp so a scene missing from the metadata fails in seconds, not after it
+            corners = read_corners(entity_id, scenes_metadata_file)
+            # one atomic output for warp + GCPs: the full raster is written once and never exists without its GCPs
+            with atomic_output(outputs["restitution"]) as tmp:
+                apply_transformation(outputs["transformation"], tmp, overwrite=True)
+                set_corner_gcps(tmp, corners)
+            if plots:
+                final_qv, georef_png = plots["restitution"]
+                generate_quickview(
+                    outputs["restitution"], final_qv, scale_factor=0.1, jpeg_quality=70, overwrite=overwrite
+                )
+                qc.plot_georeferencing(outputs["restitution"], georef_png, overwrite=overwrite)
+        except Exception as error:
+            logger.exception("%s - preprocessing failed", entity_id)
+            RunStatus(state="failed", error=f"{type(error).__name__}: {error}").save(status_file)
             raise
+        RunStatus(state="done").save(status_file)
+        logger.info("%s - finish preprocessing", entity_id)
+
+    # only reached on success: a failed entity keeps its work files to resume from
+    # remove the listed outputs only, so the cleaning follows the layout whatever the folder structure
+    for step in CLEAN_STEPS[clean]:
+        if outputs[step].is_dir():
+            shutil.rmtree(outputs[step])
+        else:
+            outputs[step].unlink(missing_ok=True)
 
 
-def _delete_entity_work_files(work_dir: Path, entity_id: str) -> None:
-    """Delete per-entity files from work_dir and remove empty parent directories."""
-    for path in [
-        work_dir / "joined_images" / f"{entity_id}.tif",
-        work_dir / "joblibs" / f"{entity_id}.joblib",
-        work_dir / "extracted" / entity_id,
-    ]:
-        if path.is_file():
-            path.unlink(missing_ok=True)
-        elif path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+def preprocess_status(entity_id: str, output_dir: str | Path, work_dir: str | Path) -> Status:
+    """Status of *entity_id*, read from its output and the ``STATUS_FILE`` of its last run.
 
-    for subdir in (work_dir / d for d in ("joined_images", "joblibs", "extracted")):
-        if subdir.exists() and not any(subdir.iterdir()):
-            subdir.rmdir()
-
-    if work_dir.exists() and not any(work_dir.iterdir()):
-        work_dir.rmdir()
-
-
-def _preprocess_kh9pc(
-    input_paths: Path | list[Path],
-    entity_id: str,
-    output_path: Path,
-    qc_dir: Path,
-    work_dir: Path,
-    overwrite: bool,
-    keep_work: bool,
-) -> None:
-    """Run the actual preprocessing steps (called inside a file-logging context)."""
-    logger.info("Start preprocessing of %s", entity_id)
-
-    # STEP 1 : EXTRACTION (can be skipped if the input is a list)
-    if isinstance(input_paths, Path):
-        tiles = extract_archive(input_paths, work_dir / "extracted" / entity_id, overwrite=overwrite)
-        tiles = sorted(tiles, key=lambda p: p.name.lower())
-    else:
-        tiles = input_paths
-
-    # STEP 2 : JOIN_IMAGES
-    joined_image = work_dir / "joined_images" / f"{entity_id}.tif"
-    image_mosaic(tiles, joined_image, overwrite=overwrite)
-
-    # QC STEP : QUICKVIEW
-    generate_quickview(
-        joined_image,
-        qc_dir / "mosaic_qv" / f"{entity_id}.jpg",
-        scale_factor=0.1,
-        jpeg_quality=70,
-        overwrite=overwrite,
-    )
-
-    # STEP 3 : RESTITUTION
-    strategy = FiducialStrategy().fit(joined_image)
-    (work_dir / "joblibs").mkdir(parents=True, exist_ok=True)
-    joblib.dump(strategy, work_dir / "joblibs" / f"{entity_id}.joblib")
-
-    # QC STEP : RESTITUTION
-    save_figures(strategy, qc_dir / "restitution")
-
-    strategy.transform(output_path)
-
-    # QC STEP : QUICKVIEW
-    generate_quickview(
-        output_path,
-        qc_dir / "final_qv" / f"{entity_id}.jpg",
-        scale_factor=0.1,
-        jpeg_quality=70,
-        overwrite=overwrite,
-    )
-
-    # cleanup only on success — intermediate files are preserved on error to allow resuming
-    if not keep_work:
-        _delete_entity_work_files(work_dir, entity_id)
-
-    logger.info("Finish preprocessing of %s", entity_id)
-
-
-def search_input_dir(input_dir: str | Path) -> list[Path | list[Path]]:
-    """Scan a directory and return inputs ready for preprocess_kh9pc, one entry per image.
-
-    - .tgz files at root       → one Path per archive
-    - subdirectories with .tif → one list[Path] of tiles per subdir
-    - .tif files at root       → grouped by entity_id prefix into list[Path]
-    Mixed directories are supported.
+    ``incomplete`` means a run started but never recorded its end: it was interrupted, or is still running.
     """
-    from itertools import groupby
+    fields = {"entity_id": entity_id, "output_dir": output_dir, "work_dir": work_dir}
+    if Path(resolve_wildcards(STEP_OUTPUTS["restitution"], **fields)[0]).exists():
+        return "done"
+    status_file = Path(resolve_wildcards([STATUS_FILE], **fields)[0])
+    if not status_file.exists():
+        return "todo"
+    return "failed" if RunStatus.load(status_file).state == "failed" else "incomplete"
 
-    input_dir = Path(input_dir)
-    result: list[Path | list[Path]] = []
 
-    result.extend(sorted(input_dir.glob("*.tgz")))
+def batch_preprocess_status(
+    archive_dir: str | Path, output_dir: str | Path, work_dir: str | Path, entity_ids: list[str] | None = None
+) -> dict[str, Status]:
+    """Status of every entity of a batch, *entity_ids* defaulting to the archives found in *archive_dir*."""
+    if entity_ids is None:
+        entity_ids = find_entity_ids(archive_dir)
+    return {entity_id: preprocess_status(entity_id, output_dir, work_dir) for entity_id in entity_ids}
 
-    for subdir in sorted(d for d in input_dir.iterdir() if d.is_dir()):
-        tiles = sorted(subdir.glob("*.tif"), key=lambda p: p.name.lower())
-        if tiles:
-            result.append(tiles)
 
-    loose = sorted(input_dir.glob("*.tif"), key=lambda p: p.name.lower())
-    if loose:
-
-        def _entity_id(p: Path) -> str:
-            return p.stem.split("_")[0]
-
-        for _, group in groupby(loose, key=_entity_id):
-            result.append(list(group))
-
-    return result
+def find_entity_ids(archive_dir: str | Path) -> list[str]:
+    """Entity ids of the archives in *archive_dir* matching ``ARCHIVE_FILE``, the id being the archive file stem."""
+    pattern = resolve_wildcards([ARCHIVE_FILE], archive_dir=archive_dir, entity_id="*")[0]
+    return sorted(Path(path).stem for path in glob.glob(pattern))
 
 
 def batch_preprocess_kh9pc(
-    input_dir: str | Path,
+    archive_dir: str | Path,
     output_dir: str | Path,
+    work_dir: str | Path,
+    scenes_metadata_file: str | Path,
+    plot_dir: str | Path | None = None,
+    entity_ids: list[str] | None = None,
     overwrite: bool = False,
-    keep_work: bool = False,
-    n_jobs: int = 1,
+    clean: Literal["none", "heavy", "all"] = "heavy",
+    n_process: int = 1,
     dry_run: bool = False,
 ) -> None:
-    """Run ``preprocess_kh9pc`` on all images found in ``input_dir`` in parallel.
+    """Run ``preprocess_kh9pc`` in parallel on *entity_ids*, defaulting to the archives found in *archive_dir*.
 
-    Images already present in ``output_dir/images/`` are skipped unless ``overwrite``
-    is set. Failures are logged with a full traceback but do not abort the batch.
-    Pass ``dry_run=True`` to log what would be processed without executing anything.
+    Entities already done are skipped unless *overwrite* is set. A failure is logged without aborting the batch; its
+    traceback is in the entity log. With *dry_run*, only the status of the batch is logged.
     """
-    output_dir = Path(output_dir)
+    statuses = batch_preprocess_status(archive_dir, output_dir, work_dir, entity_ids)
+    todo = list(statuses) if overwrite else [e for e, status in statuses.items() if status != "done"]
 
-    def entity_id(inp: Path | list[Path]) -> str:
-        return inp.stem if isinstance(inp, Path) else inp[0].stem.split("_")[0]
-
-    inputs = search_input_dir(input_dir)
-    done = [inp for inp in inputs if (output_dir / "images" / f"{entity_id(inp)}.tif").exists()]
-    todo = [inp for inp in inputs if inp not in done]
-
-    logger.info("Batch preprocess — %d images found in %s", len(inputs), input_dir)
+    logger.info("Batch preprocess — %d images", len(statuses))
     logger.info("  output_dir : %s", output_dir)
-    logger.info("  n_jobs     : %d  |  keep_work : %s  |  overwrite : %s", n_jobs, keep_work, overwrite)
-    logger.info("  done       : %d  %s", len(done), [entity_id(i) for i in done])
-    logger.info("  remaining  : %d  %s", len(todo), [entity_id(i) for i in todo])
+    logger.info("  n_process  : %d  |  clean : %s  |  overwrite : %s", n_process, clean, overwrite)
+    logger.info("  status     : %s", dict(Counter(statuses.values())))
+    for entity_id, status in statuses.items():
+        if status == "failed":
+            status_file = resolve_wildcards([STATUS_FILE], work_dir=work_dir, entity_id=entity_id)[0]
+            logger.info("  failed     : %s - %s", entity_id, RunStatus.load(status_file).error)
+    logger.info("  to process : %d", len(todo))
 
     if dry_run:
         return
 
-    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-        futures = {executor.submit(preprocess_kh9pc, inp, output_dir, overwrite, keep_work): inp for inp in inputs}
+    failed: list[str] = []
+    with ProcessPoolExecutor(max_workers=n_process) as executor:
+        futures = {
+            executor.submit(
+                preprocess_kh9pc,
+                entity_id,
+                archive_dir,
+                output_dir,
+                work_dir,
+                scenes_metadata_file,
+                plot_dir,
+                overwrite,
+                clean,
+            ): entity_id
+            for entity_id in todo
+        }
         for future in as_completed(futures):
+            entity_id = futures[future]
             try:
                 future.result()
-            except Exception:
-                logger.error("Failed to process %s", entity_id(futures[future]), exc_info=True)
+            # one failed entity must not abort the batch; its traceback is in its own log
+            except Exception as error:  # noqa: BLE001
+                log_file = resolve_wildcards([LOG_FILE], work_dir=work_dir, entity_id=entity_id)[0]
+                logger.error("%s - failed: %s (see %s)", entity_id, error, log_file)
+                failed.append(entity_id)
+
+    logger.info("Batch finished — %d succeeded, %d failed %s", len(todo) - len(failed), len(failed), sorted(failed))

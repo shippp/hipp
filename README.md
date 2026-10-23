@@ -72,39 +72,49 @@ See this [notebook](notebooks/aerial_preprocessing.ipynb) for example.
 
 ### Preprocessing of KH-9 Panoramic Camera Satellite Images
 
-Supports missions 1201–1219. Input is either a `.tgz` archive from USGS Earth Explorer or a list of pre-extracted scan strip `.tif` files.
+Supports missions 1201–1219. Input is the `{entity_id}.tgz` archive from USGS Earth Explorer, plus the USGS scenes metadata file used for georeferencing.
 
 - **Image Joining**
   - Joins scan strips into a single composite image
   - ORB keypoint matching + RANSAC Euclidean alignment between consecutive strips
   - Block-wise compositing via rasterio `WarpedVRT` for memory-efficient handling of large scans
 
-- **Image Restitution**
-  - Detects fiducial markers (disk-shaped for missions ≤ 1213, wagon-wheel for missions ≥ 1214) via template matching and DBSCAN clustering
-  - Builds a Thin Plate Spline (TPS) warp from matched fiducial positions to their known physical layout
-  - Fallback strategy chain for images with missing or low-confidence fiducials:
-    - `CollimationStrategy` — refines edges via collimation line peaks (missions 1206+)
-    - `PolyStrategy` — RANSAC polynomial fit of top/bottom film edges
-    - `FlatStrategy` — flat-edge approximation for older missions without collimation lines
+- **Film Edge Detection**
+  - Left/right film edges
+  - Top/bottom film edges fitted with a RANSAC polynomial
 
-- **Quality Control**
+- **Image Restitution**
+  - Detects fiducial markers (disk-shaped for missions ≤ 1213, wagon-wheel for missions ≥ 1214) along the film edges via template matching and DBSCAN clustering
+  - Builds a Thin Plate Spline (TPS) warp from matched fiducial positions to their known physical layout
+  - Stops with an error when the edge or fiducial detection is not trustworthy
+
+- **Georeferencing**
+  - Writes the final GeoTIFF with the scene footprint corners from the USGS metadata as GCPs (EPSG:4326)
+
+- **Resumable processing**
+  - Each step writes its result to the work directory and is skipped if that result already exists, so a re-run resumes where it stopped
+  - Intermediate files are kept on failure and cleaned after success (`--clean none|heavy|all`)
+  - Per-image log and run status; the batch command reports done / failed / incomplete / todo images
+
+- **Quality Control** (optional, with `--plot-dir`)
   - Quickview JPEGs of the joined mosaic and the final restituted image
-  - Per-image figures showing detected fiducials, edge fits, and warp quality
-  - Per-image log file; failures preserve intermediate files for inspection and retry
+  - Per-image figures of the edge fits, detected fiducials, crop area, deformation grid and georeferencing
 
 - **CLI**
   ```bash
   # Single image
-  hipp-kh9pc preproc -i scan.tgz -o /out/
-  hipp-kh9pc preproc -i t1.tif t2.tif t3.tif -o /out/
+  hipp-kh9pc preproc -e D3C1216-200533A022 -a /data/archives -o /out/images -w /out/work -m scenes.csv -p /out/plots
 
-  # Batch (parallel)
-  hipp-kh9pc batch-preproc -i /data/scans/ -o /out/ -j 4
+  # Batch (parallel), over every archive in /data/archives
+  hipp-kh9pc batch-preproc -a /data/archives -o /out/images -w /out/work -m scenes.csv -p /out/plots -j 4 -v
+
+  # Batch status only
+  hipp-kh9pc batch-preproc -a /data/archives -o /out/images -w /out/work -m scenes.csv --dry-run -v
   ```
 
 See this [notebook](notebooks/kh9pc_preprocessing.ipynb) for a full preprocessing example.
 
-See this [notebook](notebooks/kh9pc_collimation_rectification.ipynb) for a detailed walkthrough of the restitution strategies.
+See this [notebook](notebooks/kh9pc_collimation_rectification.ipynb) for a detailed walkthrough of the edge detection and restitution steps.
 
 ### Preprocessing of KH-9 Mapping Camera Satellite Images *(feature in development)*
 

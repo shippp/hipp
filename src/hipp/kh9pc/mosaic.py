@@ -23,6 +23,7 @@ from skimage.measure import ransac
 from skimage.transform import EuclideanTransform
 
 from hipp.image import LogProgressBar
+from hipp.tools import atomic_output, skip_existing
 
 
 @dataclass
@@ -99,12 +100,8 @@ def image_mosaic(
     ransac_residual_threshold:
         Inlier distance threshold (pixels) for RANSAC.
     """
-    # standardize paths
-    output_tif = Path(output_tif)
 
-    # manage overwrite
-    if output_tif.exists() and not overwrite:
-        logger.info("Skipping image_mosaic: %s (already exists, overwrite=False)", str(output_tif))
+    if skip_existing(output_tif, overwrite):
         return
 
     alignments = compute_sequential_alignments(
@@ -116,7 +113,8 @@ def image_mosaic(
         ransac_residual_threshold=ransac_residual_threshold,
     )
 
-    write_mosaic(alignments, output_tif, resampling=resampling)
+    with atomic_output(output_tif) as tmp:
+        write_mosaic(alignments, tmp, resampling=resampling)
 
 
 def compute_sequential_alignments(
@@ -235,26 +233,28 @@ def write_mosaic(
 
             adjusted_transform = T_offset @ alignment.absolute_transform
 
-            with rasterio.open(alignment.image_path) as src:
-                with WarpedVRT(
+            with (
+                rasterio.open(alignment.image_path) as src,
+                WarpedVRT(
                     src,
                     src_transform=rasterio.Affine(*adjusted_transform.flatten()[:6]),
                     src_crs=fake_crs,
                     dst_crs=fake_crs,
                     resampling=resampling,
                     width=output_width,
-                    height=output_height,
                     transform=dst_transform,
-                ) as vrt:
-                    for block_idx, (_, window) in enumerate(dst.block_windows(1)):
-                        pbar.update(block_idx)
-                        warped = vrt.read(1, window=window)
-                        # no nodata metadata is set: valid pixels can legitimately be 0 (dark areas)
-                        mask = warped != 0
-                        if not mask.any():
-                            continue
-                        existing = dst.read(1, window=window)
-                        dst.write(np.where(mask, warped, existing), 1, window=window)
+                    height=output_height,
+                ) as vrt,
+            ):
+                for block_idx, (_, window) in enumerate(dst.block_windows(1)):
+                    pbar.update(block_idx)
+                    warped = vrt.read(1, window=window)
+                    # no nodata metadata is set: valid pixels can legitimately be 0 (dark areas)
+                    mask = warped != 0
+                    if not mask.any():
+                        continue
+                    existing = dst.read(1, window=window)
+                    dst.write(np.where(mask, warped, existing), 1, window=window)
             pbar.close()
 
     logger.info("Mosaic written to %s", str(output_tif))
@@ -277,7 +277,7 @@ def image_mosaic_asp(
     Kept as a fallback/reference; prefer ``image_mosaic`` for the pure-Python implementation.
     Pass ``cleanup=True`` (default) to remove the auxiliary log and ``.aux.xml`` files ASP leaves behind.
     """
-    str_image_paths = list(sorted([str(f) for f in image_paths]))
+    str_image_paths = sorted([str(f) for f in image_paths])
 
     cmd = [
         "image_mosaic",

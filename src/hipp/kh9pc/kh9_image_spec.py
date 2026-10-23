@@ -5,18 +5,20 @@ Description: KH-9 Hexagon panoramic camera image specification: per-mission look
     pattern names. All properties are derived from the standardised entity ID filename.
 """
 
-from dataclasses import dataclass
-from typing import Literal
-from pathlib import Path
 import re
-import rasterio
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
+import rasterio
 
 from hipp.kh9pc.fiducial_patterns import Patterns
 
 # Nominal widths for 1, 2, 3, and 4-frame scans at 0.007 mm/px resolution.
 IMAGE_WIDTHS_PX: list[int] = [114082, 228165, 342247, 456329]
 IMAGE_HEIGHT_PX: int = 21771
+# Physical distance between the top and bottom collimation lines at 0.007 mm/px resolution.
+COLLIMATION_LINE_DIST_PX: int = 21770
 
 
 @dataclass

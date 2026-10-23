@@ -276,7 +276,7 @@ def plot_fiducial_templates(fiducials_directory: str) -> None:
 
     template_paths = get_fiducial_template_paths(fiducials_directory)
 
-    fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+    _fig, axes = plt.subplots(2, 2, figsize=(8, 8))
     axes = axes.flatten()
 
     # Plot each template if it exists
@@ -296,7 +296,7 @@ def plot_pseudo_fiducial_templates(fiducials_directory: str | Path, max_cols: in
     n = len(paths)
     ncols = min(max_cols, n)
     nrows = (n + max_cols - 1) // max_cols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), constrained_layout=True)
+    _fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), constrained_layout=True)
     axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
 
     for i, (code, (p, template_anchor)) in enumerate(paths.items()):

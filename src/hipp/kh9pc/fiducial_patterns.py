@@ -7,12 +7,10 @@ Description: Fiducial pattern definitions, spacing constants, and scoring utilit
 """
 
 from dataclasses import dataclass, replace
-
-import numpy as np
-
-from numpy.typing import NDArray
 from typing import Literal
 
+import numpy as np
+from numpy.typing import NDArray
 
 Patterns = Literal[
     "regular_sparse", "regular_mid", "regular_dense", "segmented_mid", "segmented_dense", "serialized_time_word"

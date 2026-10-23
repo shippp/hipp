@@ -29,7 +29,7 @@ mypy src/ --strict --ignore-missing-imports --no-warn-unused-ignores --allow-unt
 pre-commit install                # Install git hooks (run once after cloning)
 ```
 
-Line length is 120 characters. Pre-commit hooks run ruff + mypy on every commit.
+Line length is 120 characters. Pre-commit hooks run ruff (lint + format) on every commit; mypy is not a hook, run `hatch run dev:check` before merging.
 
 ## Architecture
 
@@ -46,21 +46,23 @@ hipp/
 │   ├── fiducials.py # Fiducial marker detection, matching, transformation
 │   └── quality_control.py
 ├── kh9pc/           # KH-9 panoramic camera preprocessing
-│   ├── pipeline.py       # preprocess_kh9pc / batch_preprocess_kh9pc (orchestration)
+│   ├── pipeline.py       # preprocess_kh9pc / batch_preprocess_kh9pc, run status, STEP_OUTPUTS layout
 │   ├── mosaic.py         # image_mosaic() — ORB keypoints + RANSAC Euclidean + WarpedVRT compositing
+│   ├── transformations.py    # Transformation model, compute_*_transformation, apply_transformation
+│   ├── georeferencing.py     # read_corners() / set_corner_gcps() — corner GCPs from the USGS metadata
 │   ├── fiducial_patterns.py  # Fiducial pattern geometry, TPS control-point computation
 │   ├── kh9_image_spec.py     # KH9ImageSpec — per-mission dimensions, fiducial type, collimation flag
-│   ├── quality_control.py    # QC figure generation
+│   ├── quality_control.py    # QC plot functions, each reading a step's JSON result
 │   ├── cli.py            # Click CLI (preproc / batch-preproc commands)
 │   ├── __main__.py       # Entry point for `python -m hipp.kh9pc`
-│   └── restitution/      # Geometric correction strategies
-│       ├── base.py       # FittingClass ABC, DetectionError, detect_ruptures, fit_ransac_poly
-│       ├── vertical_detector.py   # VerticalDetector — left/right film-edge detection
-│       ├── poly_strategy.py       # PolyStrategy — RANSAC polynomial top/bottom edges
-│       ├── collimation_strategy.py # CollimationStrategy — refines poly via collimation peaks
-│       ├── flat_strategy.py       # FlatStrategy — fallback for missions without collimation lines
-│       ├── fiducial_strategy.py   # FiducialStrategy — TPS warp via template-matched fiducials
-│       └── mixed_strategy.py      # MixedStrategy — ordered fallback chain across strategies
+│   └── detection/        # Detection steps: raster in → JSON result out
+│       ├── base.py       # DetectionError, JsonModel, DetectionResult, detect_ruptures, fit_ransac_poly
+│       ├── detect_vertical_edges.py         # left/right film edges
+│       ├── detect_poly_horizontal_edges.py  # RANSAC polynomial top/bottom edges
+│       ├── detect_flat_horizontal_edges.py  # flat top/bottom edges
+│       ├── detect_collimation_lines.py      # collimation line peaks
+│       ├── detect_fiducials.py              # template-matched fiducials (templates/*.png)
+│       └── templates/
 └── dataquery/       # USGS/NAGAP data download
 ```
 
@@ -74,33 +76,39 @@ hipp/
 5. `iter_image_restitution()` — crops, applies CLAHE, outputs standardized images
 
 **KH-9 pipeline** (`hipp.kh9pc.pipeline`):
-1. Extract archive (if `.tgz`) → list of TIF scan strips
+1. `extract_archive()` — `{archive_dir}/{entity_id}.tgz` → TIF scan strips
 2. `image_mosaic()` — stitch strips via ORB keypoints + RANSAC Euclidean alignment + WarpedVRT block compositing
-3. `FiducialStrategy().fit(joined_image)` — template-match fiducials, compute TPS control points, build warp
-4. `strategy.transform(output_path)` — apply TPS inverse warp → restituted GeoTIFF
-5. QC quickviews + figures generated at each major step
+3. `detect_vertical_edges()` — left/right film edges
+4. `detect_poly_horizontal_edges()` — top/bottom edges; raises `DetectionError` if not trustworthy
+5. `detect_fiducials()` — template-match fiducials along the edges; raises `DetectionError` if not trustworthy
+6. `compute_fiducial_transformation()` — TPS control points + crop → `transformation.json`
+7. Restitution — `read_corners()` first (fails fast on a scene missing from the metadata), then
+   `apply_transformation()` + `set_corner_gcps()` inside one `atomic_output` → final GeoTIFF with corner GCPs (EPSG:4326),
+   so the full raster is written once
+8. QC plots/quickviews after each step, only when `plot_dir` is given
 
-Output layout under `output_dir/`:
-- `images/{entity_id}.tif` — final restituted image
-- `qc/mosaic_qv/`, `qc/restitution/`, `qc/final_qv/` — quickviews and QC figures
-- `work/joined_images/`, `work/joblibs/` — intermediates (preserved on failure for retry)
-- `logs/{entity_id}.log` — per-image log
+File layout (`STEP_OUTPUTS`, `PLOTS_OUTPUTS` in `pipeline.py`):
+- `{output_dir}/{entity_id}.tif` — final georeferenced image
+- `{work_dir}/{entity_id}/` — `extracted/`, mosaic `{entity_id}.tif`, step JSON results, `preprocess.log`,
+  `status.json`
+- `{plot_dir}/{entity_id}/` — QC figures and quickviews
 
 **CLI** (`python -m hipp.kh9pc` or `hipp-kh9pc`):
 ```bash
-hipp-kh9pc preproc -i scan.tgz -o /out/
-hipp-kh9pc preproc -i t1.tif t2.tif t3.tif -o /out/
-hipp-kh9pc batch-preproc -i /data/scans/ -o /out/ -j 4 -v
+hipp-kh9pc preproc -e D3C1210-... -a /data/archives -o /out/images -w /out/work -m scenes.csv -p /out/plots
+hipp-kh9pc batch-preproc -a /data/archives -o /out/images -w /out/work -m scenes.csv -j 4 -v
+hipp-kh9pc batch-preproc -a /data/archives -o /out/images -w /out/work -m scenes.csv --dry-run -v  # status only
 hipp-kh9pc preproc --help
 ```
 
 ### Key Patterns
 
-- **`FittingClass` ABC** (`restitution/base.py`): all strategies inherit this. `fit(raster_filepath)` calls `_fit()` and records `raster_filepath_`. `is_failed` signals whether the result is usable. `transform(output_path)` applies the computed warp.
-- **Strategy hierarchy**: `VerticalDetector` → `PolyStrategy` (uses VerticalDetector) → `CollimationStrategy` (uses PolyStrategy) → `FiducialStrategy` (uses PolyStrategy + TPS); `FlatStrategy` is the fallback for missions without collimation lines; `MixedStrategy` chains them with ordered fallback.
+- **File-in / file-out steps** (KH-9): every step is a function `step(input_file, output_file, ..., overwrite=False)` that is skipped when its output exists (`skip_existing`), so steps chain through files and a re-run resumes where it stopped.
+- **`JsonModel` / `DetectionResult`** (`detection/base.py`): pydantic models with `load()` / `save()` JSON round-trip. Each detection writes a `*DetectionResult`; `failure_reason` / `is_failed` say whether it is trustworthy. QC plots read these JSON files.
+- **`Transformation`** (`transformations.py`): a `JsonModel` with control points (`kind`: identity / affine / tps), `crop_offset` and `output_size`; `compute_*_transformation()` builds it, `apply_transformation()` warps the raster.
 - **`KH9ImageSpec`** (`kh9_image_spec.py`): derived from filename entity ID (e.g. `D3C1210-…`), gives expected size, fiducial type (`disk` / `wagon_wheel`), collimation presence, and fiducial pattern names. Covers missions 1201–1219.
-- **`Transformation` dataclass**: carries the TPS `deformation`, `crop_offset`, and `output_size`; passed from `FiducialStrategy._compute_transformation()` to `transform()`.
-- **Intermediate files preserved on failure**: `work/joined_images/` and `work/joblibs/` are only deleted on successful completion (`keep_work=False`), so a re-run with `overwrite=False` resumes from the last completed step.
+- **Run status**: `status.json` records `running` / `failed` / `done`; `preprocess_status()` maps it to `done` / `failed` / `incomplete` / `todo`. `batch_preprocess_kh9pc` skips `done` entities unless `overwrite`.
+- **Intermediate files preserved on failure**: the `clean` level (`none` / `heavy` / `all`, see `CLEAN_STEPS`) only removes step outputs after a successful run, so a failed entity can be resumed.
 - **`Pandas Series` for fiducials** (aerial module): coordinate data stored with named keys like `corner_top_left_x`, `midside_left_x`.
 - **`Intrinsics` class**: wraps focal length, pixel pitch, true fiducial coordinates in mm, principal point (aerial module).
 - **3×3 homogeneous matrices** throughout for image transforms.

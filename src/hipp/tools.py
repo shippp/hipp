@@ -5,10 +5,14 @@ Description: Generic tools
 
 import logging
 import os
+import re
+import shutil
 import subprocess
 import tarfile
 import zipfile
+from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +24,62 @@ from tqdm import tqdm
 from hipp.image import apply_clahe, generate_quickview
 
 logger = logging.getLogger(__name__)
+
+
+def skip_existing(path: str | Path, overwrite: bool) -> bool:
+    """Return True, and log it, if *path* exists and *overwrite* is False."""
+    path = Path(path)
+    if not overwrite and path.exists():
+        logger.info("%s - already exists, skipped (use overwrite to redo)", path.name)
+        return True
+    return False
+
+
+@contextmanager
+def atomic_output(path: str | Path) -> Iterator[Path]:
+    """Yield a temporary sibling of *path* to write to; it replaces *path* only if the block succeeds.
+
+    Works for files and directories.
+    """
+    path = Path(path)
+    # keep the suffix so rasterio / savefig still infer the format from the name
+    tmp = path.with_name(f".tmp-{path.name}")
+
+    # remove the left over if existing
+    _remove(tmp)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        yield tmp
+    except BaseException:
+        _remove(tmp)
+        raise
+    if path.is_dir():
+        shutil.rmtree(path)
+    tmp.replace(path)
+
+
+def _remove(path: Path) -> None:
+    """Delete a file or directory tree if it exists."""
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def resolve_wildcards(wildcards: list[str], **kwargs: object) -> list[str]:
+    """Fill the `{key}` wildcards, a list value giving one result per element."""
+    results = list(wildcards)
+    for key, value in kwargs.items():
+        values = value if isinstance(value, list) else [value]
+        results = [wc.replace(f"{{{key}}}", str(v)) for v in values for wc in results]
+
+    unresolved = {key for result in results for key in re.findall(r"\{([^{}]+)\}", result)}
+    if unresolved:
+        raise ValueError(f"Unresolved wildcards: {', '.join(sorted(unresolved))}")
+    # A list value multiplies even the wildcards that do not use its key
+    return list(dict.fromkeys(results))
 
 
 def points_picker(
@@ -43,24 +103,21 @@ def points_picker(
 
     def mouse_callback(event: int, x: int, y: int, flags: int, param: Any) -> None:
         nonlocal picked_points
-        if event == cv2.EVENT_LBUTTONDOWN:
-            # Check if Ctrl is held down (flags & cv2.EVENT_FLAG_CTRLKEY)
-            if flags & cv2.EVENT_FLAG_CTRLKEY:
-                if len(picked_points) < point_count:
-                    # Scale back coordinates to the original image size
-                    picked_points.append((x, y))
+        if event == cv2.EVENT_LBUTTONDOWN and flags & cv2.EVENT_FLAG_CTRLKEY and len(picked_points) < point_count:
+            # Scale back coordinates to the original image size
+            picked_points.append((x, y))
 
-                    # Draw a small circle on the resized image
-                    if len(clone.shape) == 2:  # Grayscale image (single channel)
-                        cv2.circle(clone, (x, y), 5, (255,), -1)  # Use white circle
-                    else:  # RGB image (three channels)
-                        cv2.circle(clone, (x, y), 5, (0, 255, 0), -1)  # Use green circle
+            # Draw a small circle on the resized image
+            if len(clone.shape) == 2:  # Grayscale image (single channel)
+                cv2.circle(clone, (x, y), 5, (255,), -1)  # Use white circle
+            else:  # RGB image (three channels)
+                cv2.circle(clone, (x, y), 5, (0, 255, 0), -1)  # Use green circle
 
-                    # Update the window title
-                    title = f"Pick Points with 'Ctrl + Click' ({len(picked_points)}/{point_count} points picked)"
-                    cv2.setWindowTitle("Pick Points", title)
+            # Update the window title
+            title = f"Pick Points with 'Ctrl + Click' ({len(picked_points)}/{point_count} points picked)"
+            cv2.setWindowTitle("Pick Points", title)
 
-                    cv2.imshow("Pick Points", clone)
+            cv2.imshow("Pick Points", clone)
 
     cv2.namedWindow("Pick Points", cv2.WINDOW_NORMAL)
     cv2.imshow("Pick Points", clone)
@@ -232,65 +289,27 @@ def optimize_geotif_file(geotif_file: str, overwrite: bool = False) -> None:
     os.rename(tmp_tif, geotif_file)
 
 
-def extract_archive(archive_path: str | Path, output_dir: str | Path, overwrite: bool = False) -> list[Path]:
-    """Extract an archive file to a directory and return all extracted file paths sorted.
-
-    Supported formats:
-    - zip
-    - tar, tar.gz / tgz, tar.bz2, tar.xz, tar.zst
-    - 7z (requires ``py7zr``)
-    - rar (requires ``rarfile``)
-
-    A sentinel file ``.extracted`` is written inside ``output_dir`` upon successful extraction.
-    If the sentinel exists and ``overwrite`` is False, extraction is skipped.
-    """
+def extract_archive(archive_path: str | Path, output_dir: str | Path, overwrite: bool = False) -> None:
+    """Extract a zip or tar archive (any compression) to *output_dir*, skipped if it exists and *overwrite* is False."""
     archive_path = Path(archive_path)
     output_dir = Path(output_dir)
-    sentinel = output_dir / ".extracted"
 
-    if sentinel.exists() and not overwrite:
-        logger.info("Skipping extract_archive: %s (already exists, overwrite=False)", str(output_dir))
-        return sorted(p for p in output_dir.rglob("*") if p.is_file() and p != sentinel)
+    if skip_existing(output_dir, overwrite):
+        return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    sentinel.unlink(missing_ok=True)
+    logger.info("%s - extracting to %s", archive_path.name, output_dir)
 
-    name = archive_path.name.lower()
+    with atomic_output(output_dir) as tmp:
+        if zipfile.is_zipfile(archive_path):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(tmp)
+        elif tarfile.is_tarfile(archive_path):
+            with tarfile.open(archive_path) as tf:
+                tf.extractall(tmp, filter="data")
+        else:
+            raise ValueError(f"Unsupported archive format: {archive_path.name!r}, expected a zip or tar archive")
 
-    logger.info("Start extracting %s in %s", str(archive_path), str(output_dir))
-    if name.endswith(".zip"):
-        with zipfile.ZipFile(archive_path) as zf:
-            zf.extractall(output_dir)
-
-    elif tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path) as tf:
-            tf.extractall(output_dir, filter="data")
-
-    elif name.endswith(".7z"):
-        try:
-            import py7zr
-        except ImportError as e:
-            raise ImportError("Install 'py7zr' to extract .7z archives: pip install py7zr") from e
-        with py7zr.SevenZipFile(archive_path, mode="r") as zf:
-            zf.extractall(output_dir)
-
-    elif name.endswith(".rar"):
-        try:
-            import rarfile
-        except ImportError as e:
-            raise ImportError("Install 'rarfile' to extract .rar archives: pip install rarfile") from e
-        with rarfile.RarFile(archive_path) as rf:
-            rf.extractall(output_dir)
-
-    else:
-        raise ValueError(
-            f"Unsupported archive format: '{archive_path.suffix}'. "
-            "Supported: .zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .tar.zst, .7z, .rar"
-        )
-
-    sentinel.touch()
-    logger.info("Extraction of %s finish !", str(archive_path))
-    return sorted(p for p in output_dir.rglob("*") if p.is_file() and p != sentinel)
+    logger.info("%s - extracted to %s", archive_path.name, output_dir)
 
 
 def generate_quickviews(
