@@ -10,7 +10,7 @@ from collections import namedtuple
 import pytest
 
 from hipp.aerial.core import create_fiducial_templates
-from hipp.dataquery import NAGAP_download_images_to_disk
+from hipp.dataquery.nagap import NAGAP_download_images_to_disk
 
 DatasetInfo = namedtuple("DatasetInfo", ["dataset_path", "raw_images"])
 
@@ -31,7 +31,7 @@ def fiducials(dataset: DatasetInfo) -> str:
     coords_corner = {"fiducial_coordinate": (1115, 381), "subpixel_center_coordinate": (805, 803)}
     coords_midside = {"fiducial_coordinate": (1040, 5881), "subpixel_center_coordinate": (803, 803)}
 
-    first_image_path = sorted(glob.glob(os.path.join(dataset.raw_images, "*.tif")))[0]
+    first_image_path = min(glob.glob(os.path.join(dataset.raw_images, "*.tif")))
     fiducial_directory = os.path.join(dataset.dataset_path, "fiducial_templates")
 
     create_fiducial_templates(first_image_path, fiducial_directory, corner=True, **coords_corner)  # type: ignore [arg-type]

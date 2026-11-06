@@ -159,7 +159,7 @@ def iter_detect_fiducials(
             try:
                 result = future.result()
                 results.append(result)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — one failed image must not abort the batch
                 print(f"[!] Error: {e}")
 
     df = pd.DataFrame(results)
@@ -242,7 +242,7 @@ def iter_detect_pseudo_fiducials(
             try:
                 result = future.result()
                 results.append(result)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — one failed image must not abort the batch
                 print(f"[!] Error: {e}")
 
     df = pd.DataFrame(results)
@@ -436,7 +436,7 @@ def iter_image_restitution(
         for future in iterable:
             try:
                 future.result()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — one failed image must not abort the batch
                 print(f"[!] Error: {e}")
 
 
@@ -552,7 +552,7 @@ def detect_fiducial(
 
     # Subpixel matching
     sub_result = cv2.matchTemplate(resized_crop, subpixel_fiducial, cv2.TM_CCOEFF_NORMED)
-    _, sub_max_val, _, sub_max_loc = cv2.minMaxLoc(sub_result)
+    _, _, _, sub_max_loc = cv2.minMaxLoc(sub_result)
 
     sub_h, sub_w = subpixel_fiducial.shape[:2]
 

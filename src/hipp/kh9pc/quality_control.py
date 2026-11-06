@@ -1,64 +1,88 @@
 """
 Copyright (c) 2026 HIPP developers
 Description: Quality control figures for all KH-9 PC restitution strategies.
-    Each ``plot_*`` function targets one fitted object and returns a matplotlib Figure.
-    ``get_figures`` dispatches to the right set of plots based on the strategy type,
-    and ``save_figures`` writes them all to disk.
+    Each ``plot_*`` function reads one detection result or transformation and writes its figure to
+    ``output_file``, skipped if it already exists and ``overwrite`` is False.
 """
 
 import logging
 from pathlib import Path
+from typing import Any, Literal
 
-from typing import Any, Iterator
-
+import contextily as cx
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from matplotlib import patches
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from rasterio.warp import Resampling
+from rasterio.control import GroundControlPoint
+from rasterio.enums import Resampling
+from rasterio.plot import plotting_extent
+from rasterio.warp import calculate_default_transform, reproject
 from rasterio.windows import Window
 
 from hipp.image import SubImage
-from hipp.kh9pc.restitution.base import FittingClass, Transformation
-from hipp.kh9pc.restitution.collimation_strategy import CollimationStrategy
-from hipp.kh9pc.restitution.fiducial_strategy import FiducialStrategy
-from hipp.kh9pc.restitution.flat_strategy import FlatStrategy
-from hipp.kh9pc.restitution.mixed_strategy import MixedStrategy
-from hipp.kh9pc.restitution.poly_strategy import PolyStrategy
-from hipp.kh9pc.restitution.vertical_detector import VerticalDetector
+from hipp.kh9pc.detection.detect_collimation_lines import CollimationDetectionResult
+from hipp.kh9pc.detection.detect_fiducials import FiducialDetectionResult
+from hipp.kh9pc.detection.detect_flat_horizontal_edges import FlatDetectionResult
+from hipp.kh9pc.detection.detect_poly_horizontal_edges import PolyDetectionResult
+from hipp.kh9pc.detection.detect_vertical_edges import VerticalDetectionResult
+from hipp.kh9pc.transformations import Transformation
+from hipp.tools import skip_existing
 
 logger = logging.getLogger(__name__)
 
 
+def _save(fig: Figure, output_file: str | Path) -> None:
+    """Write *fig* to *output_file*, creating parent directories, and close it."""
+    try:
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+        # tight bbox so legends placed outside the axes are not clipped
+        fig.savefig(output_file, bbox_inches="tight")
+    finally:
+        plt.close(fig)
+
+
 # --- Vertical ---
-def plot_vertical_ruptures(detector: VerticalDetector) -> Figure:
-    """Band profiles with detected rupture positions for left and right edges."""
+def plot_vertical_ruptures(
+    result: str | Path | VerticalDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
+    """Band profiles with detected edge positions for left and right sides."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = VerticalDetectionResult.load(result)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-    for ax, side, result in zip(axes, ["left", "right"], [detector.left_, detector.right_]):
-        ax.plot(result.profile, color="gray")
-        ax.axvline(x=result.edge_local, color="red", label=f"edge (local={result.edge_local})")
-        ax.set_title(f"{side} profile \n(global col={result.position}, ratio={result.gradient_ratio:.2f})")
+    for ax, side, edge in zip(axes, ["left", "right"], [result.left, result.right]):
+        sub_image = edge.sub_image.read(result.raster_filepath)
+        local_edge = int(sub_image.to_local_x(edge.position))
+        ax.plot(sub_image.band.flatten(), color="gray")
+        ax.axvline(x=local_edge, color="red", label=f"edge (local={local_edge})")
+        ax.set_title(f"{side} profile \n(global col={edge.position}, ratio={edge.gradient_ratio:.2f})")
         ax.set_xlabel("local column index")
         ax.set_ylabel("intensity")
         ax.legend()
 
-    fig.suptitle(detector.raster_filepath_.stem, fontsize=12, fontweight="bold")
-    return fig
+    fig.suptitle(result.raster_filepath.stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)
 
 
 def plot_vertical_edges(
-    detector: VerticalDetector,
+    result: str | Path | VerticalDetectionResult,
+    output_file: str | Path,
     window_width: int = 10000,
     out_height: int = 800,
-) -> Figure:
+    overwrite: bool = False,
+) -> None:
     """Thumbnails around the left and right edge positions."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = VerticalDetectionResult.load(result)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-    with rasterio.open(detector.raster_filepath_) as src:
-        for ax, side, edge_col in zip(axes, ["left", "right"], detector.edges_):
+    with rasterio.open(result.raster_filepath) as src:
+        for ax, side, edge_col in zip(axes, ["left", "right"], [result.left.position, result.right.position]):
             window = Window(edge_col - window_width // 2, 0, window_width, src.height)
             scale = out_height / window.height
             out_shape = (1, out_height, int(window.width * scale))
@@ -70,95 +94,105 @@ def plot_vertical_edges(
             ax.set_title(f"{side} edge (col={edge_col})")
             ax.axis("off")
 
-    fig.suptitle(detector.raster_filepath_.stem, fontsize=12, fontweight="bold")
-    return fig
+    fig.suptitle(result.raster_filepath.stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)
 
 
 # --- Flat ---
-def plot_flat_ruptures(detector: FlatStrategy) -> Figure:
+def plot_flat_ruptures(
+    result: str | Path | FlatDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
     """Band profiles (collapsed horizontally) with detected rupture row for top and bottom."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = FlatDetectionResult.load(result)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-    for ax, side, result in zip(axes, ["top", "bottom"], [detector.top_, detector.bottom_]):
-        profile = result.sub_image.band.flatten()
-        ax.plot(profile, color="steelblue", linewidth=1)
-        ax.axvline(result.rupture_local, color="red", linewidth=1.5, label=f"rupture={result.rupture_local}")
-        ax.set_title(f"{side} band profile")
-        ax.set_xlabel("row index (downsampled)")
-        ax.set_ylabel("intensity")
-        ax.legend(fontsize=8)
+    with rasterio.open(result.raster_filepath) as src:
+        for ax, side, edge in zip(axes, ["top", "bottom"], [result.top, result.bottom]):
+            sub_image = edge.sub_image.read(src)
+            rupture_local = int(sub_image.to_local_y(edge.position))
+            ax.plot(sub_image.band.flatten(), color="steelblue", linewidth=1)
+            ax.axvline(rupture_local, color="red", linewidth=1.5, label=f"rupture={rupture_local}")
+            ax.set_title(f"{side} band profile")
+            ax.set_xlabel("row index (downsampled)")
+            ax.set_ylabel("intensity")
+            ax.legend(fontsize=8)
 
-    return fig
+    fig.suptitle(result.raster_filepath.stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)
 
 
-def plot_flat_edges(detector: FlatStrategy, margin_fraction: float = 0.03) -> Figure:
+def plot_flat_edges(
+    result: str | Path | FlatDetectionResult,
+    output_file: str | Path,
+    margin_fraction: float = 0.03,
+    overwrite: bool = False,
+) -> None:
     """Thumbnails around the top and bottom edge positions with detected line overlaid."""
-    left, _ = detector.vertical_detector.edges_
-    roi_w = detector.vertical_detector.detected_width_
-
+    if skip_existing(output_file, overwrite):
+        return
+    result = FlatDetectionResult.load(result)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
 
-    with rasterio.open(detector.raster_filepath_) as src:
+    with rasterio.open(result.raster_filepath) as src:
         margin = int(margin_fraction * src.height)
 
-        for ax, side, result in zip(axes, ["top", "bottom"], [detector.top_, detector.bottom_]):
-            row_off = max(0, result.position - margin)
-            row_end = min(src.height, result.position + margin)
-            win_h = row_end - row_off
-            thumb = src.read(
-                1,
-                window=Window(left, row_off, roi_w, win_h),
-                out_shape=(512, 512),
-                resampling=Resampling.average,
-            )
-            line_row = (result.position - row_off) / win_h * 512
-            ax.imshow(thumb, cmap="gray", aspect="auto")
-            ax.axhline(line_row, color="yellow", linewidth=1.5)
-            ax.set_title(f"{side} edge — position={result.position} px")
+        for ax, side, edge in zip(axes, ["top", "bottom"], [result.top, result.bottom]):
+            window = Window(result.left, edge.position - margin, result.right - result.left, 2 * margin)
+            sub_image = SubImage(src, window, out_shape=(1, 512, 512))
+            ax.imshow(sub_image.band, cmap="gray", aspect="auto")
+            ax.axhline(sub_image.to_local_y(edge.position), color="yellow", linewidth=1.5)
+            ax.set_title(f"{side} edge — position={edge.position} px")
             ax.axis("off")
 
-    return fig
+    fig.suptitle(result.raster_filepath.stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)
 
 
 # --- Poly ---
-
-
-def plot_poly_edges(detector: PolyStrategy) -> Figure:
+def plot_poly_edges(result: str | Path | PolyDetectionResult, output_file: str | Path, overwrite: bool = False) -> None:
     """Subimage thumbnails with RANSAC inliers/outliers and polynomial model for top and bottom edges."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = PolyDetectionResult.load(result)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
+    x = np.linspace(result.left, result.right, 500)
 
-    for ax, side, result in zip(axes, ["top", "bottom"], [detector.top_, detector.bottom_]):
-        ax.imshow(result.sub_image.band, cmap="gray", aspect="auto")
+    with rasterio.open(result.raster_filepath) as src:
+        for ax, side, edge in zip(axes, ["top", "bottom"], [result.top, result.bottom]):
+            sub_image = edge.sub_image.read(src)
+            ax.imshow(sub_image.band, cmap="gray", aspect="auto")
 
-        inlier_mask = result.model.inlier_mask_
-        pts = result.edge_points_local
-        ax.scatter(pts[~inlier_mask, 0], pts[~inlier_mask, 1], s=12, c="red", label="outliers")
-        ax.scatter(pts[inlier_mask, 0], pts[inlier_mask, 1], s=12, c="green", label="inliers")
+            inliers = np.array(edge.inlier_mask)
+            pts = sub_image.to_local(np.array(edge.edge_points))
+            ax.scatter(pts[~inliers, 0], pts[~inliers, 1], s=12, c="red", label="outliers")
+            ax.scatter(pts[inliers, 0], pts[inliers, 1], s=12, c="green", label="inliers")
 
-        x_global = result.edge_points_global[:, 0].astype(float)
-        y_global_pred = result.model.predict(x_global.reshape(-1, 1))
-        global_pred = np.column_stack([x_global, y_global_pred.ravel()])
-        local_pred = result.sub_image.to_local(global_pred)
-        ax.plot(local_pred[:, 0], local_pred[:, 1], color="blue", linewidth=1, label="model")
+            model = sub_image.to_local(np.column_stack([x, edge.predict(x)]))
+            ax.plot(model[:, 0], model[:, 1], color="blue", linewidth=1, label="model")
 
-        inlier_pct = 100 * inlier_mask.mean()
-        ax.set_title(f"{side} edge (inliers={inlier_pct:.1f}%)")
-        ax.legend(loc="best", fontsize=8)
-        ax.axis("off")
+            ax.set_title(f"{side} edge (inliers={100 * inliers.mean():.1f}%)")
+            ax.legend(loc="best", fontsize=8)
+            ax.axis("off")
 
-    fig.suptitle(detector.raster_filepath_.stem, fontsize=12, fontweight="bold")
-    return fig
+    fig.suptitle(result.raster_filepath.stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)
 
 
-def plot_poly_distortions(detector: PolyStrategy) -> Figure:
+def plot_poly_distortions(
+    result: str | Path | PolyDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
     """Residual distortion curves (deviation from mean) for top and bottom polynomial fits."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = PolyDetectionResult.load(result)
     fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+    x = np.linspace(result.left, result.right, 500)
 
-    for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
-        x_global = result.edge_points_global[:, 0].astype(float)
-        y_global_pred = result.model.predict(x_global.reshape(-1, 1)).ravel()
-        distortion = y_global_pred - y_global_pred.mean()
-        ax.plot(x_global, distortion, label=side)
+    for side, edge in zip(["top", "bottom"], [result.top, result.bottom]):
+        y = edge.predict(x)
+        ax.plot(x, y - y.mean(), label=side)
 
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
     ax.invert_yaxis()
@@ -167,55 +201,66 @@ def plot_poly_distortions(detector: PolyStrategy) -> Figure:
     ax.set_xlabel("column (px)")
     ax.set_ylabel("distortion (px)")
 
-    return fig
+    _save(fig, output_file)
 
 
 # --- Collimation ---
-
-
-def plot_collimation_edges(detector: CollimationStrategy) -> Figure:
+def plot_collimation_edges(
+    result: str | Path | CollimationDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
     """Subimage thumbnails with RANSAC inliers/outliers and polynomial model for top and bottom collimation lines."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = CollimationDetectionResult.load(result)
     fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
+    x = np.linspace(result.left, result.right, 500)
 
-    for ax, side, result in zip(axes, ["top", "bottom"], [detector.top_, detector.bottom_]):
-        ax.imshow(result.sub_image.band, cmap="gray", aspect="auto")
+    with rasterio.open(result.raster_filepath) as src:
+        for ax, side, line in zip(axes, ["top", "bottom"], [result.top, result.bottom]):
+            sub_image = line.sub_image.read(src)
+            ax.imshow(sub_image.band, cmap="gray", aspect="auto")
 
-        inliers = result.model.inlier_mask_
-        peaks = result.peaks_local
-        ax.scatter(peaks[~inliers, 0], peaks[~inliers, 1], s=12, c="red", label="outliers")
-        ax.scatter(peaks[inliers, 0], peaks[inliers, 1], s=12, c="green", label="inliers")
+            inliers = np.array(line.inlier_mask)
+            peaks = sub_image.to_local(np.array(line.peaks))
+            ax.scatter(peaks[~inliers, 0], peaks[~inliers, 1], s=12, c="red", label="outliers")
+            ax.scatter(peaks[inliers, 0], peaks[inliers, 1], s=12, c="green", label="inliers")
 
-        y_global_pred = result.model.predict(result.peaks_global[:, 0].reshape(-1, 1))
-        global_pred = np.column_stack([result.peaks_global[:, 0], y_global_pred])
-        local_pred = result.sub_image.to_local(global_pred)
-        ax.plot(local_pred[:, 0], local_pred[:, 1], color="blue", linewidth=1, label="model")
+            model = sub_image.to_local(np.column_stack([x, line.predict(x)]))
+            ax.plot(model[:, 0], model[:, 1], color="blue", linewidth=1, label="model")
 
-        ax.set_title(f"{side} collimation line")
-        ax.legend(loc="best", fontsize=8)
-        ax.axis("off")
+            ax.set_title(f"{side} collimation line (inliers={100 * line.inlier_ratio:.1f}%)")
+            ax.legend(loc="best", fontsize=8)
+            ax.axis("off")
 
-    return fig
+    fig.suptitle(result.raster_filepath.stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)
 
 
-def plot_collimation_distortions(detector: CollimationStrategy) -> Figure:
-    """Residual distortion curves for top and bottom collimation line fits."""
+def plot_collimation_distortions(
+    result: str | Path | CollimationDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
+    """Residual distortion curves (deviation from mean) for top and bottom collimation line fits."""
+    if skip_existing(output_file, overwrite):
+        return
+    result = CollimationDetectionResult.load(result)
     fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
+    x = np.linspace(result.left, result.right, 500)
 
-    for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
-        ax.plot(result.distortion[:, 0], result.distortion[:, 1], label=side)
+    for side, line in zip(["top", "bottom"], [result.top, result.bottom]):
+        y = line.predict(x)
+        ax.plot(x, y - y.mean(), label=side)
 
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
     ax.invert_yaxis()
     ax.legend()
     ax.set_title("global distortion (top & bottom)")
     ax.set_xlabel("column (px)")
     ax.set_ylabel("distortion (px)")
 
-    return fig
+    _save(fig, output_file)
 
 
 # --- Fiducial ---
-
-
 _PATTERN_COLORS: dict[str, str] = {
     "regular_sparse": "red",
     "regular_mid": "orange",
@@ -231,7 +276,9 @@ def _coord_index(centers_xy: np.ndarray) -> dict[tuple[float, float], int]:
     return {(float(cx), float(cy)): i for i, (cx, cy) in enumerate(centers_xy)}
 
 
-def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
+def plot_fiducial_filtering(
+    result: str | Path | FiducialDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
     """Pattern detection diagnostics: spatial scatter and feature space for top and bottom sides.
 
     Each row corresponds to one side (top / bottom). The left column shows detections in
@@ -240,20 +287,20 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
 
     Valid patterns are highlighted with distinct colours; unmatched detections appear in light gray.
     """
+    if skip_existing(output_file, overwrite):
+        return
+    result = FiducialDetectionResult.load(result)
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
-    fig.suptitle(f"Fiducial pattern detection ({detector.raster_filepath_.stem})", fontsize=12, fontweight="bold")
+    fig.suptitle(f"Fiducial pattern detection ({result.raster_filepath.stem})", fontsize=12, fontweight="bold")
 
-    sides = ("top", "bottom")
-    results = (detector.top_, detector.bottom_)
-    edge_models = [detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model]
     cmap = plt.get_cmap("tab10")
     _noise = (0.85, 0.85, 0.85, 1.0)
 
-    for row, (side, result, edge_model) in enumerate(zip(sides, results, edge_models)):
+    for row, (side, side_result) in enumerate(zip(("top", "bottom"), (result.top, result.bottom))):
         ax_spatial, ax_feat = axes[row]
 
-        centers_xy = result.centers_xy
-        features = result.features
+        centers_xy = side_result.centers_xy
+        features = side_result.features
         coord_idx = _coord_index(centers_xy)
 
         ax_spatial.scatter(centers_xy[:, 0], centers_xy[:, 1], c=[_noise], s=10, linewidths=0)
@@ -261,12 +308,12 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
 
         legend_handles: list[Line2D] = []
 
-        for i, (name, pattern) in enumerate(result.patterns.items()):
+        for i, (name, pattern) in enumerate(side_result.patterns.items()):
             if pattern.count == 0:
                 continue
             color = cmap(i % 10)
             score = pattern.score
-            star = " ★" if score > detector.min_score_threshold else ""
+            star = " ★" if score > result.options.min_score_threshold else ""
 
             indices = [coord_idx[k] for pt in pattern.points if (k := (float(pt[0]), float(pt[1]))) in coord_idx]
             if indices:
@@ -287,7 +334,7 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
             )
 
         x_grid = np.linspace(0, float(centers_xy[:, 0].max()), 300)
-        y_pred = edge_model.predict(x_grid.reshape(-1, 1)).ravel()
+        y_pred = np.polyval(side_result.edge_coefficients, x_grid)
         ax_spatial.plot(x_grid, y_pred, color="steelblue", linewidth=1.0, linestyle="--")
 
         ax_spatial.invert_yaxis()
@@ -302,23 +349,27 @@ def plot_fiducial_filtering(detector: FiducialStrategy) -> Figure:
         ax_feat.set_xlabel("score")
         ax_feat.set_ylabel("residual (px)")
 
-    return fig
+    _save(fig, output_file)
 
 
-def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
+def plot_fiducial_distortions(
+    result: str | Path | FiducialDetectionResult, output_file: str | Path, overwrite: bool = False
+) -> None:
     """Fiducial center y-deviation from mean, per valid pattern, for top and bottom sides.
 
     In the ideal case all points lie at 0. Divergence reveals scan distortion.
     """
+    if skip_existing(output_file, overwrite):
+        return
+    result = FiducialDetectionResult.load(result)
     fig, ax = plt.subplots(figsize=(14, 4), constrained_layout=True)
-    fig.suptitle(f"Fiducial distortion — {detector.raster_filepath_.stem}", fontsize=12, fontweight="bold")
+    fig.suptitle(f"Fiducial distortion — {result.raster_filepath.stem}", fontsize=12, fontweight="bold")
 
-    for side, result in zip(["top", "bottom"], [detector.top_, detector.bottom_]):
-        for name, pattern in result.patterns.items():
-            if pattern.score <= detector.min_score_threshold or pattern.count < 8:
+    for side, side_result in zip(["top", "bottom"], [result.top, result.bottom]):
+        for name, pattern in side_result.patterns.items():
+            if pattern.score <= result.options.min_score_threshold or pattern.count < 8:
                 continue
-            x = pattern.points[:, 0].astype(np.float64)
-            y = pattern.points[:, 1].astype(np.float64)
+            x, y = np.array(pattern.points).T
             ax.scatter(
                 x,
                 y - y.mean(),
@@ -333,30 +384,38 @@ def plot_fiducial_distortions(detector: FiducialStrategy) -> Figure:
     ax.set_xlabel("column (px)")
     ax.set_ylabel("distortion (px)")
 
-    return fig
+    _save(fig, output_file)
 
 
-def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fraction: float = 0.08) -> Figure:
+def plot_fiducial_detected_profiles(
+    result: str | Path | FiducialDetectionResult,
+    output_file: str | Path,
+    window_height_fraction: float = 0.08,
+    overwrite: bool = False,
+) -> None:
     """Detected fiducial centers overlaid on the top and bottom image strips, one scatter per valid pattern."""
-    sides_results = [detector.top_, detector.bottom_]
+    if skip_existing(output_file, overwrite):
+        return
+    result = FiducialDetectionResult.load(result)
+    min_score = result.options.min_score_threshold
+    sides_results = [result.top, result.bottom]
     n_insets = max(
-        max(sum(1 for p in r.patterns.values() if p.score > detector.min_score_threshold) for r in sides_results),
+        max(sum(1 for p in r.patterns.values() if p.score > min_score) for r in sides_results),
         1,
     )
 
     fig = plt.figure(figsize=(18, 5), constrained_layout=True)
-    fig.suptitle(f"Fiducial detected profiles — {detector.raster_filepath_.stem}", fontsize=18, fontweight="bold")
+    fig.suptitle(f"Fiducial detected profiles — {result.raster_filepath.stem}", fontsize=18, fontweight="bold")
     gs = fig.add_gridspec(2, 1 + n_insets, width_ratios=[14] + [1] * n_insets)
     main_axes = [fig.add_subplot(gs[row, 0]) for row in range(2)]
     inset_slots = [[fig.add_subplot(gs[row, col + 1]) for col in range(n_insets)] for row in range(2)]
 
-    with rasterio.open(detector.raster_filepath_) as src:
+    with rasterio.open(result.raster_filepath) as src:
         window_height = int(src.height * window_height_fraction)
         windows = [
             Window(0, 0, src.width, window_height),
             Window(0, src.height - window_height, src.width, window_height),
         ]
-        edge_models = [detector.poly_strategy.top_.model, detector.poly_strategy.bottom_.model]
 
         def _spacing_info(cx: np.ndarray) -> str:
             if len(cx) >= 2:
@@ -364,21 +423,20 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
                 return f"spacing  mean={float(dists.mean()):.1f}px  std={float(dists.std()):.1f}px"
             return "spacing  n/a"
 
-        for row, (ax, side, window, result, edge_model) in enumerate(
-            zip(main_axes, ["top", "bottom"], windows, sides_results, edge_models)
-        ):
+        sides = zip(main_axes, ["top", "bottom"], windows, sides_results)
+        for row, (ax, side, window, side_result) in enumerate(sides):
             sub_img = SubImage(src, window, (1, 512, 4096))
             ax.imshow(sub_img.band, cmap="gray", aspect="auto")
 
             ax_handles: list[Line2D] = []
             inset_data: list[tuple[str, np.ndarray]] = []
 
-            for name, pattern in result.patterns.items():
-                if pattern.score <= detector.min_score_threshold:
+            for name, pattern in side_result.patterns.items():
+                if pattern.score <= min_score:
                     continue
                 color = _PATTERN_COLORS.get(name, "white")
                 score = pattern.score
-                centers = pattern.points.astype(np.float64)
+                centers = np.array(pattern.points, dtype=np.float64)
 
                 if len(centers) > 0:
                     centers_local = sub_img.to_local(centers)
@@ -391,7 +449,10 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
                             color="w",
                             markerfacecolor=color,
                             markersize=7,
-                            label=f"{side} {name}  |  score={score:.3f}  |  fiducials={pattern.count}  |  {_spacing_info(centers[:, 0])}",
+                            label=(
+                                f"{side} {name}  |  score={score:.3f}  |  fiducials={pattern.count}  |  "
+                                f"{_spacing_info(centers[:, 0])}"
+                            ),
                         )
                     )
                     mp = mean_patch_from_centers(src, centers)
@@ -399,7 +460,7 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
                         inset_data.append((color, mp))
 
             x_edge = np.linspace(0, src.width, 500)
-            edge_local = sub_img.to_local(np.column_stack([x_edge, edge_model.predict(x_edge.reshape(-1, 1)).ravel()]))
+            edge_local = sub_img.to_local(np.column_stack([x_edge, np.polyval(side_result.edge_coefficients, x_edge)]))
             ax.plot(edge_local[:, 0], edge_local[:, 1], color="steelblue", linewidth=1.0, linestyle="--")
 
             ax.legend(handles=ax_handles, loc="lower center", bbox_to_anchor=(0.5, 1.0), fontsize=15, frameon=True)
@@ -417,59 +478,50 @@ def plot_fiducial_detected_profiles(detector: FiducialStrategy, window_height_fr
                 else:
                     inset_ax.set_visible(False)
 
-    return fig
+    _save(fig, output_file)
 
 
-def plot_fiducial_detected_boxes(detector: FiducialStrategy) -> tuple[Figure, Figure]:
-    """One figure per side showing every detected fiducial box as a cropped patch.
+def plot_fiducial_detected_boxes(
+    result: str | Path | FiducialDetectionResult,
+    output_file: str | Path,
+    side: Literal["top", "bottom"],
+    overwrite: bool = False,
+) -> None:
+    """Every detected fiducial box of one side as a cropped patch.
 
     Boxes are colour-coded by pattern; unmatched detections appear in gray.
     """
-    figures: list[Figure] = []
+    if skip_existing(output_file, overwrite):
+        return
+    result = FiducialDetectionResult.load(result)
+    side_result = result.top if side == "top" else result.bottom
     cmap = plt.get_cmap("tab10")
+    noise_color = (0.85, 0.85, 0.85, 1.0)
 
-    for side, side_result in zip(("top", "bottom"), (detector.top_, detector.bottom_)):
-        boxes = side_result.boxes
-        scores = side_result.scores
-        centers_xy = side_result.centers_xy
-        n = len(boxes)
+    coord_to_pattern: dict[tuple[float, float], tuple[str, Any]] = {}
+    for i, (name, pattern) in enumerate(side_result.patterns.items()):
+        color = cmap(i % 10)
+        for pt in pattern.points:
+            coord_to_pattern[(float(pt[0]), float(pt[1]))] = (name, color)
 
-        coord_to_pattern: dict[tuple[float, float], tuple[str, Any]] = {}
-        for i, (name, pattern) in enumerate(side_result.patterns.items()):
-            color = cmap(i % 10)
-            for pt in pattern.points:
-                coord_to_pattern[(float(pt[0]), float(pt[1]))] = (name, color)
+    n = len(side_result.boxes)
+    grid = max(1, int(np.ceil(np.sqrt(n))))
+    fig, axes_2d = plt.subplots(grid, grid, figsize=(grid * 2, grid * 2), squeeze=False, constrained_layout=True)
+    fig.suptitle(f"Detected fiducial boxes — {side}  ({n} boxes)", fontsize=11, fontweight="bold")
+    axes = axes_2d.flatten()
 
-        _noise_color = (0.85, 0.85, 0.85, 1.0)
-
-        grid = max(1, int(np.ceil(np.sqrt(n))))
-        fig, axes_2d = plt.subplots(grid, grid, figsize=(grid * 2, grid * 2), squeeze=False, constrained_layout=True)
-        fig.suptitle(f"Detected fiducial boxes — {side}  ({n} boxes)", fontsize=11, fontweight="bold")
-        axes = axes_2d.flatten()
-
-        with rasterio.open(detector.raster_filepath_) as src:
-            for ax, box, score, (cx, cy) in zip(axes, boxes, scores, centers_xy):
-                x, y, w, h = box
-                band = src.read(1, window=Window(x, y, w, h))
-                ax.imshow(band, cmap="gray", interpolation="nearest")
-
-                match = coord_to_pattern.get((float(cx), float(cy)))
-                if match is not None:
-                    pattern_name, color = match
-                    label_str = pattern_name
-                else:
-                    color = _noise_color
-                    label_str = "unmatched"
-
-                ax.set_title(f"{label_str}  {score:.3f}", fontsize=7, color=color)
-                ax.axis("off")
-
-        for ax in axes[n:]:
+    with rasterio.open(result.raster_filepath) as src:
+        for ax, box, score, (cx, cy) in zip(axes, side_result.boxes, side_result.scores, side_result.centers_xy):
+            x, y, w, h = box
+            ax.imshow(src.read(1, window=Window(x, y, w, h)), cmap="gray", interpolation="nearest")
+            label, color = coord_to_pattern.get((float(cx), float(cy)), ("unmatched", noise_color))
+            ax.set_title(f"{label}  {score:.3f}", fontsize=7, color=color)
             ax.axis("off")
 
-        figures.append(fig)
+    for ax in axes[n:]:
+        ax.axis("off")
 
-    return figures[0], figures[1]
+    _save(fig, output_file)
 
 
 def mean_patch_from_centers(
@@ -512,11 +564,16 @@ def mean_patch_from_centers(
 
 
 def plot_deformation_grid(
-    transform: Transformation,
+    transform: str | Path | Transformation,
+    output_file: str | Path,
     num: int = 20,
     figsize: tuple[int, int] = (6, 6),
-) -> Figure:
+    overwrite: bool = False,
+) -> None:
     """Visualize the deformation field by plotting warped grid lines."""
+    if skip_existing(output_file, overwrite):
+        return
+    transform = Transformation.load(transform)
     with rasterio.open(transform.raster_filepath) as src:
         w, h = src.width, src.height
 
@@ -538,11 +595,19 @@ def plot_deformation_grid(
     ax.set_title("Warped deformation grid")
     ax.invert_yaxis()
 
-    return fig
+    _save(fig, output_file)
 
 
-def plot_crop_area(transform: Transformation, figsize: tuple[int, int] = (6, 6)) -> Figure:
+def plot_crop_area(
+    transform: str | Path | Transformation,
+    output_file: str | Path,
+    figsize: tuple[int, int] = (6, 6),
+    overwrite: bool = False,
+) -> None:
     """Visualize the crop region within the original image frame."""
+    if skip_existing(output_file, overwrite):
+        return
+    transform = Transformation.load(transform)
     fig, ax = plt.subplots(figsize=figsize)
 
     with rasterio.open(transform.raster_filepath) as src:
@@ -565,71 +630,44 @@ def plot_crop_area(transform: Transformation, figsize: tuple[int, int] = (6, 6))
     ax.set_title(f"Crop visualization\ncrop_offset = ({crop_x}, {crop_y}), size = ({crop_w}, {crop_h})")
     ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1))
 
-    return fig
+    _save(fig, output_file)
 
 
-# --- Dispatch ---
-
-
-def save_figures(fitting_class: FittingClass, output_dir: str | Path) -> None:
-    """Save all QC figures for a fitted strategy to ``output_dir/<figure_name>/<stem>.png``.
-
-    Each figure type gets its own sub-directory named after the plot (e.g.
-    ``poly_edges/``, ``deformation_grid/``). Errors on individual figures are
-    logged as warnings so a single bad plot never aborts the whole QC run.
-    """
-    output_dir = Path(output_dir)
-    gen = get_figures(fitting_class)
-    while True:
-        try:
-            name, fig = next(gen)
-            (output_dir / name).mkdir(parents=True, exist_ok=True)
-            fig.savefig(output_dir / name / f"{fitting_class.raster_filepath_.stem}.png")
-            plt.close(fig)
-        except StopIteration:
-            break
-        except Exception as e:
-            logger.warning("Skipping QC figure: %s", e)
-
-
-def get_figures(fitting_class: FittingClass, plot_transformation: bool = True) -> Iterator[tuple[str, Figure]]:
-    """Yield (name, figure) pairs for all QC plots of a fitted FittingClass instance."""
-    if isinstance(fitting_class, VerticalDetector):
-        yield "vertical_edges", plot_vertical_edges(fitting_class)
-        yield "vertical_ruptures", plot_vertical_ruptures(fitting_class)
+def plot_georeferencing(
+    raster_filepath: str | Path, output_file: str | Path, width: int = 1000, overwrite: bool = False
+) -> None:
+    """Raster warped from its GCPs over ESRI World Imagery, opaque then 50% transparent."""
+    if skip_existing(output_file, overwrite):
         return
-    if isinstance(fitting_class, FlatStrategy):
-        yield from get_figures(fitting_class.vertical_detector, plot_transformation=False)
-        yield "flat_edges", plot_flat_edges(fitting_class)
-        yield "flat_ruptures", plot_flat_ruptures(fitting_class)
-        if plot_transformation:
-            yield "crop_area", plot_crop_area(fitting_class.transformation_)
-        return
-    if isinstance(fitting_class, PolyStrategy):
-        yield from get_figures(fitting_class.vertical_detector, plot_transformation=False)
-        yield "poly_edges", plot_poly_edges(fitting_class)
-        yield "poly_distortions", plot_poly_distortions(fitting_class)
-        if plot_transformation:
-            yield "deformation_grid", plot_deformation_grid(fitting_class.transformation_)
-            yield "crop_area", plot_crop_area(fitting_class.transformation_)
-        return
-    if isinstance(fitting_class, CollimationStrategy):
-        yield from get_figures(fitting_class.poly_strategy, plot_transformation=False)
-        yield "collimation_edges", plot_collimation_edges(fitting_class)
-        yield "collimation_distortions", plot_collimation_distortions(fitting_class)
-        if plot_transformation:
-            yield "deformation_grid", plot_deformation_grid(fitting_class.transformation_)
-            yield "crop_area", plot_crop_area(fitting_class.transformation_)
-        return
-    if isinstance(fitting_class, FiducialStrategy):
-        yield from get_figures(fitting_class.poly_strategy, plot_transformation=False)
-        yield "fiducial_filtering", plot_fiducial_filtering(fitting_class)
-        yield "fiducial_distortions", plot_fiducial_distortions(fitting_class)
-        yield "fiducial_detected_profiles", plot_fiducial_detected_profiles(fitting_class)
-        # yield from zip(("fiducial_boxes_top", "fiducial_boxes_bottom"), plot_fiducial_detected_boxes(fitting_class))
-        if plot_transformation:
-            yield "deformation_grid", plot_deformation_grid(fitting_class.transformation_)
-            yield "crop_area", plot_crop_area(fitting_class.transformation_)
-        return
-    if isinstance(fitting_class, MixedStrategy):
-        yield from get_figures(fitting_class.selected_strategy_, plot_transformation=plot_transformation)
+    with rasterio.open(raster_filepath) as src:
+        scale = width / src.width
+        band = src.read(1, out_shape=(round(src.height * scale), width), resampling=Resampling.average)
+        gcps, gcp_crs = src.gcps
+
+    # GDAL rejects GCPs with z=None
+    gcps = [GroundControlPoint(row=g.row * scale, col=g.col * scale, x=g.x, y=g.y, z=0.0) for g in gcps]
+    dst_transform, w, h = calculate_default_transform(gcp_crs, "EPSG:3857", band.shape[1], band.shape[0], gcps=gcps)
+    warped = np.zeros((h, w), dtype=band.dtype)
+    reproject(
+        band,
+        warped,
+        gcps=gcps,
+        src_crs=gcp_crs,
+        dst_transform=dst_transform,
+        dst_crs="EPSG:3857",
+        src_nodata=0,
+        dst_nodata=0,
+    )
+    extent = plotting_extent(warped, dst_transform)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+    for ax, alpha in zip(axes, (1.0, 0.5)):
+        ax.imshow(np.ma.masked_equal(warped, 0), extent=extent, cmap="gray", alpha=alpha, zorder=2)
+        cx.add_basemap(ax, source=cx.providers.Esri.WorldImagery, zorder=1)
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+        ax.set_title(f"alpha={alpha}")
+        ax.axis("off")
+
+    fig.suptitle(Path(raster_filepath).stem, fontsize=12, fontweight="bold")
+    _save(fig, output_file)

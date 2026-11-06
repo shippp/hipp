@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This document describes the preprocessing pipeline applied to KH-9 Hexagon panoramic camera scans. Raw scans are delivered as several overlapping tif tiles per image. The pipeline stitches these tiles into a single mosaic, then corrects the geometric distortions introduced by the scanning process (shear, curved edges) using the film's fiducial marks, producing a single restituted image ready for photogrammetric processing (Structure from Motion).
+This document describes the preprocessing pipeline applied to KH-9 Hexagon panoramic camera scans. Raw scans are delivered as several overlapping tif tiles per image. The pipeline stitches these tiles into a single mosaic, then corrects the geometric distortions introduced by the scanning process (shear, curved edges) using the film's fiducial marks, producing a single restituted and roughly georeferenced image ready for photogrammetric processing (Structure from Motion).
 
 ### Camera format
 
@@ -15,11 +15,11 @@ The physical layout of the KH-9 PC negative drives most of the constants used du
 
 ### Input data
 
-The pipeline accepts two kinds of input:
-- a `.tgz` archive containing all the tif tiles for one image, extracted before processing;
-- a list of individual tif tile paths, already extracted.
+The pipeline takes, for each image:
+- a `{archive_dir}/{entity_id}.tgz` archive containing all its tif tiles, extracted before processing;
+- the USGS scenes metadata file, providing the footprint corners used for [georeferencing](#3-georeferencing).
 
-In both cases, tiles must be named `{entity_id}_<suffix>.tif` (e.g. `{entity_id}_a.tif`, `{entity_id}_b.tif`, ...), where `entity_id` is everything before the first underscore. The suffix itself is not validated — tiles are simply sorted case-insensitively by filename to determine their left-to-right order for mosaicking, so any suffix that sorts correctly works.
+Tiles must be named `{entity_id}_<suffix>.tif` (e.g. `{entity_id}_a.tif`, `{entity_id}_b.tif`, ...), where `entity_id` is everything before the first underscore. The suffix itself is not validated — tiles are simply sorted case-insensitively by filename to determine their left-to-right order for mosaicking, so any suffix that sorts correctly works.
 
 ## 1. Mosaic images
 
@@ -91,7 +91,17 @@ A mission can present several fiducial patterns on the same side (e.g. sparse, m
 Each detector in the restitution chain can fail independently:
 
 - **Left/right edges** ([2.1](#21-detect-left-and-right-edges)): the left edge is searched once, in a window spanning its full possible range given the mission's expected width. The right edge is then searched once, in a window centered on the left edge plus the expected width. Neither side is retried — if either fails, fitting aborts immediately with an exception — every other detector depends on these bounds.
-- **Top/bottom edges** ([2.2](#22-detect-top-and-bottom-edges)): a side with no rupture points at all aborts fitting. Otherwise, the fitted top/bottom models are only flagged as unreliable if the mean gap between them strays too far from the mission's expected effective height or is too inconsistent across the width; the fitted models are still used to bound the fiducial search windows in [2.3](#23-detect-top-and-bottom-fiducial-marks), since the fiducial marks — not the edges — are the actual source of truth for restitution.
-- **Fiducial marks** ([2.3](#23-detect-top-and-bottom-fiducial-marks)): a side with zero template-matching detections aborts fitting. Otherwise, a side only counts as usable once its primary pattern (the one with a known physical spacing) reaches a minimum matching score. If just one side falls short, its control points are synthesized from the other side using the known vertical spacing between fiducial rows, and restitution proceeds. Only if **both** sides fall short is the image marked as failed, in which case computing the TPS transform raises an error.
+- **Top/bottom edges** ([2.2](#22-detect-top-and-bottom-edges)): a side with no rupture points at all aborts fitting. Otherwise, the fitted top/bottom models are flagged as unreliable if the mean gap between them strays too far from the mission's expected effective height or is too inconsistent across the width. An unreliable fit stops the pipeline before the fiducial detection, since the edges bound the fiducial search windows in [2.3](#23-detect-top-and-bottom-fiducial-marks).
+- **Fiducial marks** ([2.3](#23-detect-top-and-bottom-fiducial-marks)): a side with zero template-matching detections aborts fitting. Otherwise, a side only counts as usable once its primary pattern (the one with a known physical spacing) reaches a minimum matching score. If just one side falls short, its control points are synthesized from the other side using the known vertical spacing between fiducial rows, and restitution proceeds. Only if **both** sides fall short is the image marked as failed, and the pipeline stops before computing the TPS transform.
 
-An aborted or failed image raises an exception instead of producing a partial output. `preprocess_kh9pc` does not catch it: for a single image the error propagates to the caller, while `batch_preprocess_kh9pc` catches it per image so the rest of the batch keeps running. The mosaic and the fitted strategy (`work/joined_images/`, `work/joblibs/`) are kept on failure so the image can be retried without redoing the mosaicking step. QC figures under `qc/restitution/` are written as soon as fiducial detection succeeds — even if the image later fails at the transform step — making them the first place to check when diagnosing a failure.
+An aborted or failed image raises a `DetectionError` instead of producing a partial output. `preprocess_kh9pc` records it in `{work_dir}/{entity_id}/status.json` and the log, then re-raises it: for a single image the error propagates to the caller, while `batch_preprocess_kh9pc` catches it per image so the rest of the batch keeps running. Every step writes its result (mosaic, JSON detection results, transformation) under `{work_dir}/{entity_id}/` and is skipped when that result already exists, so a retry resumes from the failed step. These intermediates are only cleaned after a successful run. The QC figures of a detection step are written before its result is checked, so a failed detection still gets its figures under `{plot_dir}/{entity_id}/` — the first place to look when diagnosing a failure.
+
+## 3. Georeferencing
+
+- **Input:** restituted image, USGS scenes metadata file
+- **Output:** final GeoTIFF `{output_dir}/{entity_id}.tif`
+- **Goal:** attach an approximate geolocation to the image
+
+Georeferencing is part of the restitution step. The corners are read from the metadata before the warp, so a scene missing from the metadata fails in seconds rather than after the warp. The warp and the GCPs are then written to the same file through a single atomic output, so the full-size raster is written only once and never exists without its GCPs.
+
+The four footprint corners of the scene (NW, NE, SE, SW) are read from the scenes metadata and attached to the image corners as GCPs in EPSG:4326. Aft camera frames are rotated 180° relative to forward ones, so their corners are swapped accordingly. The pixels are not resampled. The GCPs only give an approximate position, to be refined later during the photogrammetric processing.

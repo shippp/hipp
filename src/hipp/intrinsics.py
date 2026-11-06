@@ -22,7 +22,7 @@ class Intrinsics:
 
     Attributes
     ----------
-    fiducials_keys : list[str]
+    fiducials_keys : tuple[str, ...]
         The canonical order and naming of fiducial marks (corners and midsides).
     focal_length : float
         The focal length of the camera in millimeters.
@@ -33,7 +33,7 @@ class Intrinsics:
         the expected keys (e.g. "corner_top_left_x", "corner_top_left_y", ...).
     """
 
-    fiducials_keys = [
+    fiducials_keys = (
         "corner_top_left",
         "corner_top_right",
         "corner_bottom_right",
@@ -42,7 +42,7 @@ class Intrinsics:
         "midside_top",
         "midside_right",
         "midside_bottom",
-    ]
+    )
 
     def __init__(
         self,
@@ -93,10 +93,7 @@ class Intrinsics:
         data = {"focal_length": self.focal_length, "pixel_pitch": self.pixel_pitch}
         data.update(self.true_fiducials_mm.to_dict())
         data.update({"principal_point_x": self.principal_point[0], "principal_point_y": self.principal_point[1]})
-        renamed_data = {
-            (f"{k}_mm" if k.endswith(("_x", "_y")) else k): v
-            for k, v in data.items()
-        }
+        renamed_data = {(f"{k}_mm" if k.endswith(("_x", "_y")) else k): v for k, v in data.items()}
         df = pd.DataFrame([renamed_data])
         df.to_csv(csv_file, index=False)
 

@@ -5,13 +5,14 @@ Description: some function for the image processing
 
 import logging
 import warnings
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import cv2
 import numpy as np
 import rasterio
 from numpy.typing import NDArray
+from pydantic import BaseModel
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.warp import Resampling
 from rasterio.windows import Window
@@ -576,3 +577,20 @@ class SubImage:
     def to_local_y(self, y: NDArray[np.floating] | float) -> NDArray[np.floating] | float:
         """Convert global raster y coordinate(s) to local sub-image y coordinate(s)."""
         return (y - float(self._offset[1])) / float(self._scale[1])
+
+
+class SubImageSpec(BaseModel):
+    """Serializable recipe to re-read a SubImage: its window and output shape."""
+
+    window: tuple[int, int, int, int]  # col_off, row_off, width, height
+    out_shape: tuple[int, int, int]
+
+    @classmethod
+    def from_sub_image(cls, sub_image: SubImage) -> "SubImageSpec":
+        """Capture the clipped window and actual shape, so read() reproduces the same band."""
+        w = sub_image.window
+        return cls(window=(int(w.col_off), int(w.row_off), int(w.width), int(w.height)), out_shape=sub_image.out_shape)
+
+    def read(self, raster: str | Path | rasterio.DatasetReader) -> SubImage:
+        """Re-read the sub-image from *raster*."""
+        return SubImage(raster, Window(*self.window), out_shape=self.out_shape)
